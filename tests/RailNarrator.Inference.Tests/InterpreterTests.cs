@@ -24,6 +24,7 @@ public sealed class InterpreterTests
     [Theory]
     [InlineData("The short-run component h t equals a constant plus past shocks.", "h")]
     [InlineData("The variance sigma squared depends on past shocks.", "sigma")]
+    [InlineData("It has a finite moment of order two plus phi for some positive phi.", "phi")]
     [InlineData("It equals x_t plus one.", "x_t")]
     [InlineData("The return equals its mean = zero.", "=")]
     [InlineData("The weight α is positive.", "α")]

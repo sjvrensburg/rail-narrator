@@ -41,7 +41,7 @@ public static class NarrationVersions
     public const string LocalMathReader = "local-math/1";
 
     /// <summary>Bump when the prose normalisation pipeline changes.</summary>
-    public const string ProsePipeline = "prose/5-citations-dropped";
+    public const string ProsePipeline = "prose/6-lead-ins";
 }
 
 /// <summary>Planner configuration.</summary>
@@ -179,6 +179,16 @@ public sealed class NarrationPlanner
             ct.ThrowIfCancellationRequested();
             var unit = units[i];
             if (unit.IsMaths) mathsSeen++;
+
+            if (_options.DefersMaths && i + 1 < units.Count && LeadsIntoEquation(unit, units[i + 1]))
+            {
+                // "Let the return series be given as" + equation (1): one sentence, interpreted as one.
+                segments.Add(PendingLeadIn(unit, units[i + 1], seq++, filters));
+                mathsSeen++;
+                i++;
+                progress?.Report(new PlanningProgress(i + 1, units.Count, $"Verbalising equations ({mathsSeen} so far)"));
+                continue;
+            }
 
             NarrationSegment segment = unit.Kind is ReadingUnitKind.Table or ReadingUnitKind.Algorithm
                 ? StructureAnnouncement(unit, seq++)
@@ -372,6 +382,51 @@ public sealed class NarrationPlanner
     /// </summary>
     private static IReadOnlyList<SourceLink> WholeUnitLinks(IReadOnlyList<string> anchors, int spokenLength)
         => anchors.Count > 0 ? [new SourceLink(new TextRange(0, spokenLength), anchors)] : [];
+
+    /// <summary>
+    /// True when a prose unit is an unfinished sentence that the next display equation completes:
+    /// "Let the return series be given as", "is modelled as the GJR-GARCH process of Glosten et
+    /// al.", "Let". Read apart, the narrator says the lead-in, pauses, and gives the equation's
+    /// meaning as a sentence of its own.
+    /// </summary>
+    public static bool LeadsIntoEquation(ReadingUnit unit, ReadingUnit next)
+    {
+        ArgumentNullException.ThrowIfNull(unit);
+        ArgumentNullException.ThrowIfNull(next);
+        if (next.Kind != ReadingUnitKind.DisplayMath || unit.Kind != ReadingUnitKind.Prose) return false;
+        if (next.PageIndex - unit.PageIndex is < 0 or > 1) return false;
+        string text = unit.OriginalText.TrimEnd();
+        if (text.Length == 0 || text.Length > 400) return false;
+        char last = text[^1];
+        // A colon introduces; a full stop, question or exclamation mark ends the sentence.
+        return last is not ('.' or '!' or '?') || text.EndsWith("et al.", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// A lead-in sentence and the equation it introduces, left for interpretation as one passage.
+    /// Until then (or if interpretation fails) it reads the lead-in as printed followed by the
+    /// equation's announcement, each linked to its own region.
+    /// </summary>
+    public NarrationSegment PendingLeadIn(ReadingUnit leadIn, ReadingUnit equation, int seq, NarrationFilterSettings? filters = null)
+    {
+        ArgumentNullException.ThrowIfNull(leadIn);
+        ArgumentNullException.ThrowIfNull(equation);
+        var prose = BuildProseSegment(leadIn, seq, filters);
+        string announcement = _options.AnnouncementTemplate;
+        string text = prose.SpokenText.TrimEnd() + " " + announcement;
+        int start = text.Length - announcement.Length;
+        var links = prose.SourceLinks.ToList();
+        if (equation.AnchorIds.Count > 0)
+            links.Add(new SourceLink(new TextRange(start, announcement.Length), equation.AnchorIds));
+        return prose with
+        {
+            ReadingUnitIds = [leadIn.Id, equation.Id],
+            SpokenText = text,
+            SourceLinks = links,
+            Provenance = ScriptProvenance.PendingInterpretation,
+            Warnings = [.. prose.Warnings, .. equation.ExtractionWarnings.Where(w => !prose.Warnings.Contains(w))],
+        };
+    }
 
     /// <summary>
     /// A maths passage left for interpretation during playback. It carries its fallback until
