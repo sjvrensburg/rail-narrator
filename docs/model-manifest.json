@@ -21,7 +21,7 @@
       "licence": "Apache-2.0 (Kokoro-82M weights)",
       "required": true,
       "optional": false,
-      "notes": "fp16 ONNX export of Kokoro-82M. Verified to have NO 'durations' output, so it cannot supply native phoneme timings; word-level highlighting is therefore unavailable with this file and narration uses clip-boundary (sentence/equation) cues.",
+      "notes": "fp16 ONNX export of Kokoro-82M. Verified to have NO 'durations' output, so it cannot supply native phoneme timings. Word-level highlighting of English prose therefore comes from the optional local forced aligner (mfa-english-acoustic and mfa-english-uk-dictionary below; ADR-0004), which aligns the spoken script against this model's final trimmed PCM. Without the aligner, and always for equations, narration uses clip-boundary (sentence/equation) cues.",
       "measured": {
         "synthesisRtf": 0.11,
         "coldStartMs": 398,
@@ -106,12 +106,44 @@
       "required": false,
       "optional": true,
       "notes": "Without it the model-free TextLayoutAnalyzer is used, which reports every block as plain text. Role-keyed features (header/footer suppression by role, display-maths detection by role) then fall back to geometry and glyph cues, which is less accurate but still functional. Set LayoutModelPath in settings to enable."
+    },
+    {
+      "id": "mfa-english-acoustic",
+      "component": "Word highlighting: forced-alignment acoustic model",
+      "file": "alignment/models/acoustic/english_mfa.zip",
+      "source": "mfa model download acoustic english_mfa (run by tools/setup-word-alignment.sh)",
+      "revision": "english_mfa 3.1.0 (meta.json train_date 2024-06-12)",
+      "bytes": 92170811,
+      "sha256": "2c08bd4f82c3943dd57ac09aeac99dbce17a1e1bfe9fd932c8d95cd13d971068",
+      "licence": "CC BY 4.0 per the MFA model card; the archive itself carries no licence field",
+      "required": false,
+      "optional": true,
+      "notes": "Only needed for word-by-word prose highlighting. Installed by the explicit setup script, never by the application, into $XDG_DATA_HOME/rail-narrator/alignment together with a micromamba environment (MFA 3.3.9, Kalpy 0.10.5, Kaldi 5.5.1172, Python 3.11) that is several GB and is not listed as a single file here. Its hash is folded into the alignment revision, so replacing it retimes cached audio without resynthesis. See docs/word-highlighting.md.",
+      "measured": {
+        "alignedWords": 9,
+        "audioSeconds": 2.952,
+        "coldWorkerSeconds": 2.913,
+        "warmWorkerSeconds": 0.017
+      }
+    },
+    {
+      "id": "mfa-english-uk-dictionary",
+      "component": "Word highlighting: pronunciation dictionary",
+      "file": "alignment/models/dictionary/english_uk_mfa.dict",
+      "source": "mfa model download dictionary english_uk_mfa (run by tools/setup-word-alignment.sh)",
+      "revision": "english_uk_mfa as downloaded by MFA 3.3.9 on 17 Nov 2026; 51770 entries",
+      "bytes": 2310199,
+      "sha256": "a4104e3ef5f98eb86baa11b032da77059dc6180227ddbca31a0c6fa3d5c1802c",
+      "licence": "CC BY 4.0 per the MFA model card; the file itself carries no licence field",
+      "required": false,
+      "optional": true,
+      "notes": "A word missing from this dictionary makes that sentence fall back to sentence highlighting; it never blocks playback. Hash folded into the alignment revision like the acoustic model."
     }
   ],
   "excluded": [
     {
       "id": "fusealign-hub",
-      "reason": "ZONOS3's /v2/edit/align belongs to the speech-editing feature set and needs an edit backbone, encoder companions and a Python worker with fusealign-hub. A synthesis-only installation does not have them, and their presence in documentation is not evidence this install can use them. Sentence and equation highlighting ships without any aligner."
+      "reason": "ZONOS3's /v2/edit/align belongs to the speech-editing feature set and needs an edit backbone, encoder companions and a Python worker with fusealign-hub. A synthesis-only installation does not have them, and their presence in documentation is not evidence this install can use them. Sentence and equation highlighting ships without any aligner, and word highlighting uses the local MFA aligner listed above instead of this endpoint."
     }
   ]
 }

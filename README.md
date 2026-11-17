@@ -104,7 +104,7 @@ Recorded in `docs/decisions/`, each with the measurement that drove it:
 - **[ADR-0002](docs/decisions/ADR-0002-speech-provider.md)** — Kokoro default, ZONOS3 alternative; both measured, neither inert
 - **[ADR-0003](docs/decisions/ADR-0003-audio-backend.md)** — PortAudio callback DAC timestamps and the presented-frame clock
 - **[ADR-0004](docs/decisions/ADR-0004-alignment-policy.md)** — local word alignment with validated sentence/equation fallback
-- **[ADR-0005](docs/decisions/ADR-0005-geometry-and-word-spacing.md)** — coordinate frames, and why word spacing comes from ink gaps
+- **[ADR-0005](docs/decisions/ADR-0005-geometry-and-word-spacing.md)** — coordinate frames, and why word boundaries need both the text layer and the geometry
 
 ## Guarantees worth stating plainly
 

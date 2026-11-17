@@ -258,15 +258,17 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
     public Task PlayAsync(CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
-        lock (_gate)
+        bool nothingLoaded;
+        lock (_gate) nothingLoaded = _segmentId is null || _output.Length == 0;
+        // State events are raised outside the engine lock. A subscriber (the coordinator) takes its
+        // own lock and reads this engine's position from other threads while holding it; raising
+        // under the lock here is the other half of that inversion and deadlocked the UI thread.
+        if (nothingLoaded)
         {
-            if (_segmentId is null || _output.Length == 0)
-            {
-                SetState(PlaybackState.Buffering);
-                return Task.CompletedTask;
-            }
-            SetState(PlaybackState.Playing);
+            SetState(PlaybackState.Buffering);
+            return Task.CompletedTask;
         }
+        SetState(PlaybackState.Playing);
         _device.Start();
         StartWriter();
         return Task.CompletedTask;
@@ -302,8 +304,8 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
             _sourceFloat = [];
             _asset = null;
             _segmentId = null;
-            SetState(PlaybackState.Idle);
         }
+        SetState(PlaybackState.Idle);   // outside the lock: see PlayAsync
     }
 
     public async Task SeekAsync(double seconds, CancellationToken ct = default)

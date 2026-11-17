@@ -232,7 +232,9 @@ public sealed class FakeAudioTransport : IAudioTransport
 
     public Task PauseAsync(CancellationToken ct = default) { PauseCount++; SetState(PlaybackState.Paused); return Task.CompletedTask; }
 
-    public Task ResumeAsync(CancellationToken ct = default) { SetState(PlaybackState.Playing); return Task.CompletedTask; }
+    public int ResumeCount { get; private set; }
+
+    public Task ResumeAsync(CancellationToken ct = default) { ResumeCount++; SetState(PlaybackState.Playing); return Task.CompletedTask; }
 
     public Task StopAsync(CancellationToken ct = default) { StopCount++; SetState(PlaybackState.Idle); return Task.CompletedTask; }
 

@@ -355,6 +355,9 @@ internal static class EnglishNumbers
             || offset > 0 && (char.IsLetterOrDigit(text[offset - 1]) || text[offset - 1] is '.' or '_')) return null;
         var match = System.Text.RegularExpressions.Regex.Match(text[offset..], @"^[+-]?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?");
         if (!match.Success || offset + match.Length < text.Length && (char.IsLetterOrDigit(text[offset + match.Length]) || text[offset + match.Length] == '_')) return null;
+        if (IdentifierAt(text, offset) is { } identifier) return identifier;
+        if (match.Length == 4 && IsYearContext(text, offset, 4) && int.Parse(match.Value) is >= 1100 and <= 1999 and var year)
+            return (4, Year(year));
         string value = match.Value.Replace(",", "", StringComparison.Ordinal);
         string prefix = value[0] == '-' ? "minus " : value[0] == '+' ? "plus " : "";
         value = value.TrimStart('-', '+');
@@ -364,6 +367,126 @@ internal static class EnglishNumbers
         if (parts.Length == 2) words += " point " + string.Join(" ", parts[1].Select(c => Small[c - '0']));
         return (match.Length, prefix + words);
     }
+    /// <summary>"nineteen eighty-nine", "nineteen oh five", "nineteen hundred". Only 1100–1999 are read
+    /// this way: "two thousand twelve" is an ordinary reading of 2012 and needs no special case.</summary>
+    private static string Year(int year)
+    {
+        int high = year / 100, low = year % 100;
+        string tail = low == 0 ? "hundred" : low < 10 ? "oh " + Small[low] : Integer(low);
+        return Integer(high) + " " + tail;
+    }
+
+    private static readonly HashSet<string> Months = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+        "november", "december", "jan", "feb", "mar", "apr", "jun", "jul", "aug", "sep", "sept", "oct", "nov", "dec",
+    };
+
+    private static readonly HashSet<string> YearCues = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "in", "since", "from", "until", "till", "by", "during", "before", "after", "circa", "c.", "year",
+        "january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+        "november", "december", "jan.", "feb.", "mar.", "apr.", "jun.", "jul.", "aug.", "sep.", "sept.",
+        "oct.", "nov.", "dec.", "al.",
+    };
+
+    /// <summary>
+    /// Whether a four-digit number reads as a year where it stands. A bare 1500 may be a count
+    /// ("1500 observations"), so the context has to say so: a citation ("(Hamilton, 1989; …)",
+    /// "et al. 1993"), a temporal word or month before it, or the other end of a year range.
+    /// </summary>
+    private static bool IsYearContext(string text, int offset, int length)
+    {
+        int end = offset + length;
+        // A citation's year is followed by its closing bracket, a separator or a letter suffix
+        // ("1989a" never reaches here: a following letter rejects the match).
+        char after = end < text.Length ? text[end] : ' ';
+        int p = offset - 1;
+        while (p >= 0 && text[p] == ' ') p--;
+        if (p < 0) return false;
+        char before = text[p];
+        if (before == '(' && after is ')' or ';' or ',' or ':') return true;
+        // "May 1, 1997": a day of the month and a comma before the year.
+        if (before == ',' && PreviousWord(text, p) is { } day && int.TryParse(day, out int d) && d is >= 1 and <= 31
+            && PreviousWord(text, p - day.Length) is { } month && Months.Contains(month.TrimEnd('.')))
+            return true;
+        // "Hamilton, 1989" / "Ang & Timmermann, 2012" inside a citation list.
+        if (before == ',' && after is ')' or ';' && PreviousWord(text, p) is { Length: > 0 } name && char.IsUpper(name[0]))
+            return true;
+        // Either end of a range, "1990–1995" ("1990-95" is not attempted) — unless it is a page
+        // range: "48:1749-1779", "pp. 1187-1211".
+        if (before is '-' or '–' && p >= 4 && p == offset - 1 && IsFourDigitYear(text, p - 4)) return !IsPageRange(text, p - 4);
+        if (after is '-' or '–' && IsFourDigitYear(text, end + 1)) return !IsPageRange(text, offset);
+        string? word = PreviousWord(text, p + 1);
+        return word is not null && YearCues.Contains(word) && !CountedNounFollows(text, end);
+    }
+
+    /// <summary>"in 1500 patients": a lowercase plural after the number makes it a count.</summary>
+    private static bool CountedNounFollows(string text, int end)
+    {
+        int b = end;
+        while (b < text.Length && text[b] == ' ') b++;
+        int e = b;
+        while (e < text.Length && char.IsLetter(text[e])) e++;
+        return e - b >= 4 && char.IsLower(text[b]) && text[e - 1] == 's';
+    }
+
+    /// <summary>Whether the range starting at <paramref name="start"/> follows a volume colon or a page label.</summary>
+    private static bool IsPageRange(string text, int start)
+    {
+        if (start > 0 && text[start - 1] == ':') return true;
+        string? word = PreviousWord(text, start);
+        return word is not null && word.TrimEnd(':') is "pp." or "p." or "pp" or "pages" or "page" or "Pages" or "Page";
+    }
+
+    private static bool IsFourDigitYear(string text, int start)
+        => start >= 0 && start + 4 <= text.Length
+           && text.AsSpan(start, 4).ToString() is var digits && digits.All(char.IsAsciiDigit)
+           && (start + 4 == text.Length || !char.IsAsciiDigit(text[start + 4]))
+           && (start == 0 || !char.IsAsciiDigit(text[start - 1]))
+           && int.Parse(digits) is >= 1100 and <= 2099;
+
+    /// <summary>The word ending just before <paramref name="end"/>, skipping spaces and a trailing comma.</summary>
+    private static string? PreviousWord(string text, int end)
+    {
+        int e = end;
+        while (e > 0 && text[e - 1] is ' ' or ',') e--;
+        int b = e;
+        while (b > 0 && !char.IsWhiteSpace(text[b - 1]) && text[b - 1] is not '(' and not ';') b--;
+        return b < e ? text[b..e] : null;
+    }
+
+    /// <summary>
+    /// ISSN and ISBN digits are spoken one at a time: "1532-4168" read as two cardinals joined by
+    /// a hyphen is neither the identifier nor a number.
+    /// </summary>
+    private static (int Length, string Words)? IdentifierAt(string text, int offset)
+    {
+        string? label = PreviousWord(text, offset)?.TrimEnd(':');
+        bool labelled = label is not null && IdentifierLabels.Contains(label);
+        // A second ISSN later in the same line: "ISSN: 0747-4938 (Print) 1532-4168 (Online)". The
+        // ISSN shape (four digits, hyphen, three digits and a check digit) is only trusted with the
+        // label nearby, because "1990-1995" has the same shape.
+        if (!labelled && !(IsIssnShaped(text, offset)
+                && text.AsSpan(Math.Max(0, offset - 48), Math.Min(48, offset)).Contains("ISSN", StringComparison.OrdinalIgnoreCase)))
+            return null;
+        int end = offset;
+        while (end < text.Length && (char.IsAsciiDigit(text[end]) || text[end] is '-' or 'X' or 'x')) end++;
+        while (end > offset && text[end - 1] == '-') end--;
+        var words = text[offset..end].Where(c => c != '-').Select(c => c is 'X' or 'x' ? "ex" : Small[c - '0']);
+        return (end - offset, string.Join(" ", words));
+    }
+
+    private static readonly HashSet<string> IdentifierLabels = new(StringComparer.OrdinalIgnoreCase) { "ISSN", "ISBN", "e-ISSN", "eISSN" };
+
+    private static bool IsIssnShaped(string text, int offset)
+        => offset + 9 <= text.Length
+           && text.AsSpan(offset, 4).IndexOfAnyExceptInRange('0', '9') < 0
+           && text[offset + 4] == '-'
+           && text.AsSpan(offset + 5, 3).IndexOfAnyExceptInRange('0', '9') < 0
+           && (char.IsAsciiDigit(text[offset + 8]) || text[offset + 8] is 'X' or 'x')
+           && (offset + 9 == text.Length || !char.IsLetterOrDigit(text[offset + 9]));
+
     private static string Integer(long n)
     {
         if (n < 20) return Small[n];

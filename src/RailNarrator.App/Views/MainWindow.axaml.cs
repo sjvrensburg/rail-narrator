@@ -58,6 +58,7 @@ public partial class MainWindow : Window
             if (Avalonia.Threading.Dispatcher.UIThread.CheckAccess()) Apply();
             else Avalonia.Threading.Dispatcher.UIThread.Post(Apply);
         };
+        AddHandler(KeyDownEvent, OnPreviewKeyDown, RoutingStrategies.Tunnel);
         Closing += OnClosing;
     }
 
@@ -88,12 +89,6 @@ public partial class MainWindow : Window
 
     private void OnFitClicked(object? sender, RoutedEventArgs e) => Surface.FitToWidth();
     private void OnCloseClicked(object? sender, RoutedEventArgs e) => Close();
-
-    private void OnTranscriptSelectionChanged(object? sender, SelectionChangedEventArgs e)
-    {
-        if (TranscriptList.SelectedItem is TranscriptEntry entry)
-            _viewModel.RunObserved(_viewModel.Coordinator.GoToSegmentAsync(entry.SegmentId), "Could not move to that passage");
-    }
 
     private void OnMathsEditClicked(object? sender, RoutedEventArgs e)
     {
@@ -126,17 +121,40 @@ public partial class MainWindow : Window
                                        : "Region restored to prose. Reopen the document to apply.");
     }
 
-    protected override void OnKeyDown(KeyEventArgs e)
+    /// <summary>
+    /// Space and Escape, handled before any child control sees them.
+    /// </summary>
+    /// <remarks>
+    /// These were window key bindings, which fire wherever focus is: typing a space into the maths
+    /// correction box started playback, and pressing Escape to dismiss a menu stopped it. Handling
+    /// them here lets the context decide. Space toggles play/pause unless a text box has focus, and
+    /// does so even when a toolbar button is focused (a button would otherwise swallow it and click
+    /// itself). Escape stops playback only when it is not being used to close a menu or drop-down.
+    /// </remarks>
+    private void OnPreviewKeyDown(object? sender, KeyEventArgs e)
     {
-        base.OnKeyDown(e);
-        // Space is play/pause unless a text field has focus, where it must still type a space.
-        if (e.Key == Key.Space && FocusManager?.GetFocusedElement() is not TextBox)
+        if (e.KeyModifiers != KeyModifiers.None) return;
+        var focused = FocusManager?.GetFocusedElement();
+
+        if (e.Key == Key.Space)
         {
+            if (focused is TextBox || MainMenu.IsOpen || IsInsideOpenDropDown(focused)) return;
             if (_viewModel.Playback.State == PlaybackState.Playing) _viewModel.Pause.Execute(null);
             else _viewModel.Play.Execute(null);
             e.Handled = true;
         }
+        else if (e.Key == Key.Escape)
+        {
+            if (MainMenu.IsOpen || IsInsideOpenDropDown(focused)) return;
+            // The PDF surface uses Escape to resume following; a text box uses it to give up focus.
+            if (focused is PdfSurface or TextBox) return;
+            if (_viewModel.Stop.CanExecute(null)) _viewModel.Stop.Execute(null);
+            e.Handled = true;
+        }
     }
+
+    private static bool IsInsideOpenDropDown(Avalonia.Input.IInputElement? focused)
+        => focused is ComboBox { IsDropDownOpen: true } or ComboBoxItem or MenuItem;
 
     protected override void OnOpened(EventArgs e)
     {

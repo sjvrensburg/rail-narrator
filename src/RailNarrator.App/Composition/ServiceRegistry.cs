@@ -29,6 +29,9 @@ public sealed class ServiceRegistry : IAsyncDisposable
     public required SettingsStore Settings { get; init; }
     public required RailNarratorSettings CurrentSettings { get; init; }
     public required RailReaderExtractionSource Extraction { get; init; }
+
+    /// <summary>Extraction through the on-disk snapshot cache. Use this to extract; <see cref="Extraction"/> for display.</summary>
+    public required CachingExtractionSource CachedExtraction { get; init; }
     public required SpeechProviderRegistry SpeechProviders { get; init; }
     public required IAudioOutputDevice AudioDevice { get; init; }
     public required AudioPlaybackEngine AudioEngine { get; init; }
@@ -154,6 +157,10 @@ public sealed class ServiceRegistry : IAsyncDisposable
             Settings = settingsStore,
             CurrentSettings = settings,
             Extraction = extraction,
+            CachedExtraction = new CachingExtractionSource(
+                extraction,
+                backendFingerprint: ExtractionBackendFingerprint(settings),
+                isDegraded: () => extraction.OcrStartupError is not null),
             SpeechProviders = registry,
             AudioDevice = audioDevice,
             AudioEngine = audioEngine,
@@ -166,6 +173,26 @@ public sealed class ServiceRegistry : IAsyncDisposable
             MathTranscriber = transcriber,
             StartupNotes = notes,
         };
+    }
+
+    /// <summary>
+    /// Identifies what shapes extraction but <see cref="ExtractionOptions"/> does not carry — the
+    /// extractor and Core assembly versions and the layout model file an analyser id resolves to —
+    /// so replacing any of them does not reuse snapshots made by the old one.
+    /// </summary>
+    private static string ExtractionBackendFingerprint(RailNarratorSettings settings)
+    {
+        // The extractor and the RailReaderCore packages it runs: upgrading either can change a
+        // snapshot without anyone remembering to bump ExtractorVersions.Current.
+        var pdfAssembly = typeof(RailReaderExtractionSource).Assembly;
+        string code = string.Join(";", new[] { pdfAssembly.GetName() }
+            .Concat(pdfAssembly.GetReferencedAssemblies().Where(a => a.Name?.StartsWith("RailReader", StringComparison.Ordinal) == true))
+            .Select(a => $"{a.Name}/{a.Version}")
+            .OrderBy(s => s, StringComparer.Ordinal));
+
+        if (settings.LayoutModelPath is not { Length: > 0 } path) return code;
+        var info = new FileInfo(path);
+        return code + "|" + (info.Exists ? $"{info.FullName}|{info.Length}|{info.LastWriteTimeUtc.Ticks}" : path);
     }
 
     /// <summary>Builds a planner from the current settings.</summary>
@@ -243,14 +270,16 @@ public sealed class ServiceRegistry : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await Coordinator.DisposeAsync();
-        await AudioEngine.DisposeAsync();
+        // ConfigureAwait(false) throughout: this is awaited at exit from the UI thread, and a
+        // continuation that needs that thread back would wait on the very call that is blocking it.
+        await Coordinator.DisposeAsync().ConfigureAwait(false);
+        await AudioEngine.DisposeAsync().ConfigureAwait(false);
         AudioDevice.Dispose();
-        if (Sidecar is not null) await Sidecar.DisposeAsync();
+        if (Sidecar is not null) await Sidecar.DisposeAsync().ConfigureAwait(false);
         if (MathVerbaliser is IDisposable disposableVerbaliser) disposableVerbaliser.Dispose();
         Extraction.Dispose();
         Models.Dispose();
         foreach (string id in SpeechProviders.RegisteredIds)
-            if (SpeechProviders.Get(id) is { } provider) await provider.DisposeAsync();
+            if (SpeechProviders.Get(id) is { } provider) await provider.DisposeAsync().ConfigureAwait(false);
     }
 }

@@ -138,6 +138,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     // it twice concurrently. Entries are removed on completion and the map is cleared whenever the
     // generation advances, so a voice switch or script edit never waits on a stale preparation.
     private readonly ConcurrentDictionary<string, Lazy<Task>> _inflight = new();
+    private readonly object _prepareGate = new();
 
     public NarrationCoordinator(
         ITtsProvider tts,
@@ -219,7 +220,9 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             _audio.SetPlaybackRate(_options.PlaybackRate);
         }
 
-        Publish(PlaybackState.Preparing, "Preparing narration");
+        // Idle, not Preparing: nothing has been asked to play. Lookahead runs in the background, and
+        // a state that never left Preparing told the reader the document was still loading.
+        Publish(PlaybackState.Idle, null);
         StartPreparation(gen);
         await Task.CompletedTask.ConfigureAwait(false);
     }
@@ -228,6 +231,17 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     public async Task PlayAsync(CancellationToken ct = default)
     {
         ThrowIfDisposed();
+        // Play after Pause continues from where the pause left off. Reloading the clip here would
+        // restart the passage from its first word, which for a forty-second paragraph is a long way
+        // back. Anything that invalidates the paused clip (a seek, a voice change, an edit) stops
+        // the transport first, so a transport still in Paused holds the current segment's audio.
+        if (_plan is not null && _audio.State == PlaybackState.Paused)
+        {
+            await ResumeAsync(ct).ConfigureAwait(false);
+            return;
+        }
+        // Play while already playing is not a request to start the passage again; Replay is.
+        if (_plan is not null && _audio.State == PlaybackState.Playing) return;
         long gen = AdvanceGeneration();
         if (_plan is null || _segmentIndex < 0)
         {
@@ -406,6 +420,9 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             _scheduler = new CueScheduler(_plan);
             _prepared.Clear();
         }
+        // A paused transport still holds the old wording. Play resumes a paused clip, so it must be
+        // stopped here or the correction would not be heard until the passage was reached again.
+        if (_audio.State == PlaybackState.Paused) await _audio.StopAsync(ct).ConfigureAwait(false);
         if (_assetStore is not null)
             await _assetStore.InvalidateAsync(_plan.Header.Extraction.DocumentContentHash, ct).ConfigureAwait(false);
         StartPreparation(gen);
@@ -416,10 +433,47 @@ public sealed class NarrationCoordinator : IAsyncDisposable
 
     private void StartPreparation(long generation)
     {
-        _prepareCts?.Cancel();
-        _prepareCts = new CancellationTokenSource();
-        var ct = _prepareCts.Token;
-        _prepareLoop = Task.Run(() => PrepareLoopAsync(generation, ct), ct);
+        lock (_prepareGate)
+        {
+            _prepareCts?.Cancel();
+            _prepareCts = new CancellationTokenSource();
+            var ct = _prepareCts.Token;
+            _prepareLoop = Task.Run(() => PrepareLoopAsync(generation, ct), ct);
+        }
+    }
+
+    /// <summary>
+    /// Slides the lookahead window forward after playback advances on its own.
+    /// </summary>
+    /// <remarks>
+    /// Unlike <see cref="StartPreparation"/> this cancels nothing: the generation has not changed,
+    /// so whatever is being synthesised is still wanted, and restarting it would throw the work
+    /// away at every passage. The next pass is chained behind the one in flight, which keeps the
+    /// one-synthesis-at-a-time bound. Without this the window only ever covered the passages
+    /// after the last Play or seek, and everything beyond them was synthesised at the moment it
+    /// was due — a silence as long as the synthesis before each passage.
+    /// </remarks>
+    private void ExtendPreparation(long generation)
+    {
+        lock (_prepareGate)
+        {
+            if (_prepareCts is not { IsCancellationRequested: false } cts)
+            {
+                _prepareCts = cts = new CancellationTokenSource();
+                _prepareLoop = null;
+            }
+            var ct = cts.Token;
+            var previous = _prepareLoop;
+            _prepareLoop = Task.Run(async () =>
+            {
+                if (previous is not null)
+                {
+                    try { await previous.ConfigureAwait(false); }
+                    catch (Exception) { /* its own failure was already published */ }
+                }
+                await PrepareLoopAsync(generation, ct).ConfigureAwait(false);
+            });
+        }
     }
 
     /// <summary>
@@ -778,7 +832,9 @@ public sealed class NarrationCoordinator : IAsyncDisposable
                 {
                     if (gen != Generation || _segmentIndex != index) return;
                     _segmentIndex = index + 1;
+                    ReleaseClipsOutsideWindow(plan, index + 1);
                 }
+                ExtendPreparation(gen);
                 if (!await EnsureSegmentReadyAsync(index + 1, gen, CancellationToken.None).ConfigureAwait(false)) return;
                 if (gen != Generation) return;
                 await StartCurrentSegmentAsync(gen, CancellationToken.None).ConfigureAwait(false);
@@ -788,6 +844,27 @@ public sealed class NarrationCoordinator : IAsyncDisposable
                 Publish(PlaybackState.Error, null, NarrationError.SpeechSynthesisFailed(ex.Message, segmentId));
             }
         });
+    }
+
+    /// <summary>How many passages behind the current one keep their audio in memory, for Previous and Replay.</summary>
+    public const int RetainedPassagesBehind = 2;
+
+    /// <summary>
+    /// Drops prepared audio that is neither about to be played nor just was. Call with the lock held.
+    /// </summary>
+    /// <remarks>
+    /// Prepared clips were only ever added. A 27-page paper is some 830 passages of about eight
+    /// seconds each, which at 24 kHz float is roughly 650 MB by the last page. A released clip is
+    /// not lost: it is still in the asset store when there is one, and is synthesised again when
+    /// there is not.
+    /// </remarks>
+    private void ReleaseClipsOutsideWindow(NarrationPlan plan, int current)
+    {
+        int first = Math.Max(0, current - RetainedPassagesBehind);
+        int last = Math.Min(plan.SegmentCount - 1, current + Math.Max(1, _options.LookaheadSegments));
+        var keep = new HashSet<string>(StringComparer.Ordinal);
+        for (int i = first; i <= last; i++) keep.Add(plan.Segments[i].Id);
+        foreach (string id in _prepared.Keys.Where(id => !keep.Contains(id)).ToList()) _prepared.Remove(id);
     }
 
     private void OnUnderflow(string segmentId)
@@ -894,6 +971,12 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     {
         var plan = _plan;
         PlaybackSnapshot snap;
+        // Read the transport before taking the coordinator lock, never inside it. The transport has
+        // its own lock and raises its events from its own threads; calling into it while holding
+        // this lock is a lock-order inversion that froze the UI during ordinary playback.
+        double positionSeconds = _audio.PositionSeconds;
+        double clipDurationSeconds = _audio.ClipDurationSeconds;
+        double bufferedAheadSeconds = _audio.BufferedAheadSeconds;
         lock (_gate)
         {
             int index = _segmentIndex;
@@ -904,15 +987,15 @@ public sealed class NarrationCoordinator : IAsyncDisposable
                 SegmentId = segmentId,
                 SegmentIndex = Math.Max(0, index),
                 SegmentCount = plan?.SegmentCount ?? 0,
-                PositionSeconds = _audio.PositionSeconds,
-                ClipDurationSeconds = _audio.ClipDurationSeconds,
+                PositionSeconds = positionSeconds,
+                ClipDurationSeconds = clipDurationSeconds,
                 ActiveCue = _lastCue?.Cue,
                 ActiveAnchorIds = _lastCue?.AnchorIds ?? [],
                 CueGranularity = _lastCue?.Granularity ?? CueGranularity.Sentence,
                 PlaybackRate = _options.PlaybackRate,
                 FollowMode = _options.FollowMode,
                 FollowSuspended = _followSuspended,
-                BufferedAheadSeconds = _audio.BufferedAheadSeconds,
+                BufferedAheadSeconds = bufferedAheadSeconds,
             };
             _snapshot = snap;
         }

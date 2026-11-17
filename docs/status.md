@@ -7,15 +7,15 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 214 passing, 2 opt-in skips, 0 warnings
+## Verified by automated tests — 268 passing, 2 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
-| `RailNarrator.Domain.Tests` | 93 | Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, planner behaviour, coordinator invariants, cache keys, camera policy |
-| `RailNarrator.Pdf.Tests` | 13 | **Real PDFs** through the real RailReaderCore pipeline |
+| `RailNarrator.Domain.Tests` | 131 | Years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
+| `RailNarrator.Pdf.Tests` | 15 | **Real PDFs** through the real RailReaderCore pipeline, including a cached snapshot building the same plan as a fresh one |
 | `RailNarrator.Speech.Tests` | 36 | PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
-| `RailNarrator.Audio.Tests` | 30 | Resampler, time-stretcher, playback engine against a controllable fake device |
-| `RailNarrator.Infrastructure.Tests` | 4 | Cache round-trips and waveform integrity, including same-length replacement |
+| `RailNarrator.Audio.Tests` | 39 | Resampler (polyphase path equal to the direct sinc filter on four rate pairs), time-stretcher (fast grain search equal to the direct search at three rates), playback engine against a controllable fake device, engine lock ordering, coordinator-plus-engine transition stress |
+| `RailNarrator.Infrastructure.Tests` | 9 | Cache round-trips and waveform integrity, including same-length replacement; extraction-cache keying, degraded and encrypted documents never stored, corrupt entries treated as misses |
 | `RailNarrator.Inference.Tests` | 38 | Golden maths semantics, response validator, endpoint client |
 
 Run them with:
@@ -144,18 +144,96 @@ Built, packaged and launched under X11:
 - the **published self-contained binary** launches, loads a PDF passed on the
   command line, and stays up 25 s with no exceptions
 
+### The desktop application, driven as a user would drive it
+
+On 17 November 2026 the built application was run in a headless wlroots compositor, driven with
+synthetic pointer and keyboard input, with its output on a real device (Bluetooth headphones through
+PipeWire's ALSA bridge) recorded from the sink monitor and cross-correlated against the cached
+clips. Three PDFs were used: a 27-page typeset paper with heavy mathematics, a 10-page image-only
+scan with handwriting, and a page of rotated text. That run found the defects listed under
+"Found by driving the application" below. What follows was measured **after** fixing them, except
+the two items marked as measured before.
+
+- **Continuous playback without freezing**: seven minutes across about 68 passage changes, and a
+  further six minutes on the final build, the menu answering at every one-minute check. Before the
+  fixes the window froze within two to three minutes, three sessions out of three.
+- **Device output matches the synthesised clip.** With the PipeWire quantum forced to 2048 frames,
+  a 12-second clip's onset and midpoint were found in the recording exactly 8.63 s apart
+  (correlation 1.00), with no host underflows. Under the same condition the previous stream
+  parameters delivered 1 % of real time.
+- **Word highlighting on real audio.** On a sentence the dictionary covers, the highlight stepped
+  through all 13 words on the correct glyphs, each switch 0.23–0.29 s (median 0.27 s) after the
+  same word in the sink signal — the output latency the DAC timestamps report for this device
+  (about 0.21 s), plus up to one 80 ms capture interval. That is agreement with the clock, not a measured
+  audible-to-visible bound: the Bluetooth leg itself was not captured.
+- **Highlight placement** checked by eye in screenshots of typeset text at 243 %, 306 % and
+  800 %. The scan and the rotated page were checked at fit width before the fixes; the only
+  drawing change since is the padding.
+- **Transport.** Click-to-read, Stop, and Play after Pause continuing from the pause point with no
+  slice of the clip heard twice or skipped. Measured before the fixes and not repeated: Next,
+  Previous and Replay each started the right clip within 0.4 s, 1.5× speed shortened a clip by the
+  expected ratio at 203 Hz median pitch against 202 Hz, and a voice change re-synthesised and
+  resumed in about three seconds.
+- **Silence between passages**: median 0.45 s, maximum 0.60 s over four consecutive prose
+  transitions.
+- **Exit and reopen.** File > Exit ends the process in 0.2–0.4 s with or without playback. Four
+  reopens with a saved mid-document position restored the passage, stayed silent and reported
+  "Restored your position".
+- **A correction typed into the maths review box** is saved, re-synthesised (script revision 2),
+  spoken on the next Play and still present after a restart.
+- **The narration script of the same three documents**, after the word-boundary and ligature
+  fixes. For the 27-page paper, reading units scored against `pdftotext`'s tokens for the same
+  pages went from F1 0.77 to 0.85 (0.46 to 0.63 on tokens containing digits); 96.2 % of prose
+  words are dictionary words against 93.2 %; "ofthe" fell from 38 occurrences to none and all five
+  ligature glyphs (ff, fi, fl, ffi, ft) were identified. 49 running-head and page-number lines are
+  suppressed across all 27 pages, against 2. The rotated page yields its four sentences with
+  every space. The scan reads as sentences ("How does a market practitioner decide, on any given
+  trading day, whether the market is in a calm or turbulent state?") where it read "B ac kground
+  and m otivat ion".
+- **Word highlighting reaches more of a real paper**: 42 % of its prose passages are fully covered
+  by the pronunciation dictionary, against 30 %. A sentence that fell back to sentence
+  highlighting because of "su ciently" now steps through its fourteen words, and word
+  highlighting works on the scan.
+
 ## Not verified — and what it would take
 
 | Gap | Why | What would close it |
 |---|---|---|
-| **Audible playback by a human ear** | This session had no audio-server access initially; the device opens and the clock measures correctly, but nobody has listened | Play a document through speakers and confirm speech is intelligible and correctly paced |
-| **Highlight visual accuracy** | Overlay geometry is unit-tested and the surface renders, but no human has looked at a highlight on a real page | Open a real paper, play it, and check the highlight sits on the spoken line at 100%, 400% and 800% |
+| **Audible playback by a human ear** | The signal reaching the output device was recorded and matches the synthesised clips, but nobody has listened, and the Bluetooth leg after the sink was not captured | Play a document through speakers and confirm speech is intelligible and correctly paced |
+| **Audible-to-visible delay** | Highlights agree with the device's own DAC timestamps; whether those timestamps are right for a given device is unmeasured | Loopback microphone plus display capture, at several speeds and on wired and Bluetooth outputs |
 | **LLM maths narration** | No text LLM endpoint was configured on this machine | Point `MathLlmBaseUrl`/`MathLlmModel` at a local server and run the golden examples in `GoldenMathSemanticsTests` against it — the assertion helpers already check semantics, not wording |
 | **VLM equation transcription** | No vision endpoint configured | Configure one and check a real equation crop round-trips |
-| **Scanned-document OCR** | Wired to real PP-OCRv5 models, but no actual scan was run | Run a 300 dpi scan through `extract` and check coverage, warnings and reading order |
+| **Scanned-document OCR at 300 dpi** | A 131 ppi scan with handwriting was run and reads as sentences; the handwriting is recognised as stray words | Check a clean 300 dpi scan for coverage, warnings and reading order |
 | **Semantic layout roles** | The default is the model-free analyzer, so every block arrives as `Text` | Download PP-DocLayoutV3 and set `LayoutModelPath`; role-keyed suppression and display-maths detection then use roles instead of geometry |
 | **Clean-machine install** | The archive was built and run here, not on a fresh system | Install on a stock Fedora/Debian with only `libportaudio2` added |
-| **Long-document endurance** | Verified on 1–4 page fixtures | A 40-page paper: peak RSS, preparation lag versus playback, cache growth |
+| **Long-document endurance** | Runs of three to seven minutes of a 27-page paper, 1.5–1.7 GB resident; played clips are now released, but a whole document has not been played through | Play a 40-page paper to the end: peak RSS, preparation lag versus playback, cache growth |
+| **File > Open dialog** | The GUI run loaded documents from the command line only | Open a document through the picker under a desktop portal |
+
+## Open defects found by driving the application
+
+Not fixed yet. Each was observed in the run described above.
+
+- **Word highlighting still falls back on most of a technical paper.** 58 % of that paper's prose
+  passages contain a word the pronunciation dictionary lacks ("GARCH", "heteroskedasticity",
+  authors' names), and one such word sends the whole sentence to sentence highlighting.
+- **DOIs are read as numbers and punctuation** ("ten point one zero one six slash …"). Whether a
+  DOI should be read at all, spelled, or skipped is a product decision, so it is left as it was.
+  Years from 2000 on are read as cardinals ("two thousand twelve"), which is an ordinary reading.
+- **A first-page copyright line and a footnote are read mid-sentence.** They occur once, so no
+  repetition rule can find them; they need a layout role or a position rule.
+- **An unmapped glyph that is not an f-ligature stays unspoken.** The resolver knows ff, fi, fl,
+  ffi, ffl, ft, fj, fb, fh, fk and Th. A font with other unmapped ligatures (ct, st, tt) would
+  still lose those letters, and a code that two fonts in one document use differently is resolved
+  for neither unless one clearly dominates.
+- **One display equation becomes several passages**, each announcing that it could not be read,
+  and two of three display equations tried did not respond to a click.
+- **About 0.4 s of silence is still inserted between passages** (on top of the ~0.5 s each Kokoro
+  clip ends with). It is output latency: from a write to the first presented frame takes
+  ~320–335 ms on this machine (PipeWire through its ALSA bridge, Bluetooth sink), even on a
+  stream that is already running, and the next clip is only written once the previous one has
+  drained. Removing it needs gapless queueing — writing the next clip before the current one
+  drains and moving the clock across the boundary — which changes `IAudioTransport` and the
+  coordinator's clip-completion path.
 
 ## Deliberately not implemented
 
@@ -209,3 +287,100 @@ Worth recording because each one was invisible until something asserted against 
    instead of reporting an error. Found by actually trying the duration-enabled
    kokoro-onnx export; the provider now probes the graph first, and the wait for a
    synthesis is bounded so a dead worker cannot hang the caller forever.
+
+## Found by driving the application, and fixed
+
+No test asserted against any of these, because each needs the window, a real device or two
+threads meeting.
+
+10. **The window froze during ordinary playback.** The transcript list seeks when the reader picks
+    a passage; it also did so when its selection merely followed the audio, so every passage change
+    issued a seek. That seek read the engine under the coordinator's lock while the engine was
+    raising its "playing" event under its own lock into a handler that wanted the coordinator's.
+    The handler is gone, the engine raises events outside its lock, and the coordinator reads the
+    transport before taking its own.
+11. **Removing the accidental seek exposed that lookahead never advanced.** It was restarted only
+    by Play and by seeks, so the seek had been hiding that passages past the first window were
+    synthesised when already due. The window now slides on every natural advance, without
+    cancelling work in flight.
+12. **File > Exit never exited.** The UI thread blocked on a disposal whose continuations needed
+    the UI thread. Disposal now runs on the thread pool and the wait is bounded.
+13. **Audio starved whenever another client raised the PipeWire quantum.** The stream asked for
+    the device's low-latency suggestion (about 10 ms). It now asks for at least 100 ms, and the
+    ring is two seconds long, because ring space is counted against presented frames and a ring
+    shorter than the output latency locks the writer out. ADR-0003 has the measurements.
+14. **Reopening a document could start speaking.** Same handler as 10: restoring the selection
+    seeked, and a seek plays. One reopen in three auto-played; the others reported a cancelled task.
+15. **Play after Pause restarted the passage.** Nothing called the resume path.
+16. **Highlight padding was scaled by the zoom twice**, so at 800 % each box covered a line and a
+    half.
+17. **Space and Escape fired wherever focus was.** A space typed into the maths correction box
+    started playback, and Escape used to dismiss a menu stopped it.
+18. **Ligatures vanished from a typeset paper.** PDFium returned glyphs named `f_i`, `f_f`,
+    `f_f_i`, `f_l` and `f_t` as control characters, which were discarded: "su ciently",
+    "speci cation". They are now identified from the document and expanded.
+19. **Word boundaries came from ink gaps alone**, which split numbers at a tabular "1", lost the
+    space after an "f", lost every space in rotated text and put spaces inside OCR words. The
+    text layer's spaces are now used wherever the page's geometry confirms them. ADR-0005.
+20. **A hyphen ending a line was dropped**, so "vari-" and "ance" were two words. PDFium marks it
+    with U+0002; this had been recorded as a limitation of the fixture writer.
+21. **Alternating running heads and journal page numbers were narrated.** Each head is on fewer
+    than half the pages, and "422" is not page 2.
+22. **Play while already playing restarted the passage**, and a click on the page issued a seek
+    and a Play that raced each other.
+23. **A loaded document sat at "State: Preparing"** until Play, and the status line kept "Seeking"
+    or "Preparing speech" for as long as a passage lasted. It now reads "Reading passage 17 of
+    833."
+24. **Prepared audio was kept for the whole document** — by arithmetic about 650 MB for the
+    27-page paper. Clips more than two passages behind the reading position are released, and
+    come back from the asset store, or by synthesis, if the reader goes back.
+25. **Speed, voice and follow mode were never saved as preferences**, and a saved Kokoro voice was
+    replaced by the provider's default on every document load. A restored position also changed
+    the voice, speed and follow mode actually used while the toolbar kept showing the old ones.
+    Choices made in the toolbar are now written to settings and apply to the next document; a
+    document's saved position still takes precedence, and the toolbar shows it. Verified in the
+    GUI: `am_echo` / 1.25 / ReadingRail chosen on one PDF were shown on a different PDF after a
+    restart; with the global settings reset to `af_heart` / 1 / KeepVisible, reopening a document
+    saved with `af_bella` / 1.5 / Off showed those values and left the global settings untouched;
+    the speech cache held `af_bella` clips only after that voice was chosen. The ZONOS3 speaker id
+    is not saved this way, because it also decides whether that provider is registered.
+26. **Extraction was not cached**, so a scan was OCRed again on every open. Snapshots are now kept
+    gzipped under `$XDG_CACHE_HOME/rail-narrator/extraction`, keyed on the document bytes,
+    extraction options, filters, page selection, view rotation, revision, the extractor and
+    RailReaderCore assembly versions and the layout model file. A run where OCR was requested but
+    unavailable, and any password-protected document, are never stored. Measured on the 10-page
+    annotated thesis scan, launch to "Ready": 34.5 s on first open, 3.5 s and 5.7 s on the next
+    two (entry 0.9 MB). The plan file was written once and matched on every cached open, so the
+    cached snapshot produced identical reading units. Fixing this exposed a race: a progress
+    report posted just before extraction returned overwrote "Ready" with "Loaded from cache:
+    page 10 of 10"; late reports are now ignored.
+27. **Rendering each clip sat on the critical path between passages.** Measured with the real engine
+    and device on cached Kokoro clips: the inserted silence was ≈ 550 ms at 1× and ≈ 720 ms at
+    1.25×. The earlier note blamed reopening the device; that costs 11–19 ms. The time went to
+    resampling (245 ms for a 12 s sentence: 32 sine evaluations per output frame) and, at any
+    rate other than 1×, to WSOLA's grain search (~300 ms). The resampler now uses a polyphase
+    weight bank (the rates are integers, so 24→48 kHz has 2 phases and 24→44.1 kHz 147), and the
+    grain search computes the overlap and its energy once per grain, slides the candidate energy,
+    and uses a SIMD dot product. Both are tested equal to the direct versions. Inserted silence
+    is now 366–396 ms at 1× and 426–454 ms at 1.25×; a loopback recording of the sink gave
+    373–405 ms at 1×, agreeing with the engine's clock. The remaining time is output latency
+    (see Open defects). Not re-measured in the GUI: other audio was playing on the sink.
+28. **The reading position was saved only by File > Exit or the close button.** A `SIGTERM`
+    (logout, `kill`), Ctrl+C, a crash or a power cut lost the session's progress, and opening a
+    second document did not save the first one's place. The position is now saved on every move
+    to another passage (the document's hash is computed once at load, not on every save, and
+    saves are serialised so an older one cannot land last), before another document is opened,
+    and SIGTERM, SIGINT and SIGHUP close the window the ordinary way. Verified in the GUI: two
+    Next presses wrote s00009 while the app was running; after `kill -KILL` a relaunch reported
+    "Restored your position" and Next continued to s00010; `kill -TERM` then exited cleanly in
+    under 2 s, saving on the way out.
+29. **Years and identifiers were read as cardinals.** "(Hamilton, 1989)" was "one thousand nine
+    hundred eighty nine" and "ISSN 1532-4168" two cardinals joined by a hyphen. A four-digit
+    number from 1100 to 1999 is now read as a year ("nineteen eighty nine", "nineteen oh five")
+    where the context says it is one: a citation bracket or list, "et al.", a temporal word or
+    month before it, "May 1, 1997", or either end of a year range — not a page range after a
+    volume colon or "pp.", and not before a lowercase plural ("in 1500 patients"). ISSN and ISBN
+    digits are spoken one at a time, including a second ISSN later on the same line. On the
+    27-page paper the spoken text changed in 39 places, every one intended: 34 years, the two
+    ISSNs and two dates; on the thesis, 7 citation years. `ProsePipeline` was bumped so cached
+    plans and audio are rebuilt.

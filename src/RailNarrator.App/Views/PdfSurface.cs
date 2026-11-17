@@ -323,7 +323,10 @@ public sealed class PdfSurface : Control
                       _highlightStyle.OutlineWidthPoints * _zoom)
             : null;
         float radius = (float)(_highlightStyle.CornerRadiusPoints * _zoom);
-        float pad = (float)(_highlightStyle.PaddingPoints * _zoom);
+        // Padding is in page points and is applied before the page-to-screen transform, which
+        // already scales by the zoom. Multiplying by the zoom here as well scaled it twice, so at
+        // 800% each box grew by 64 px a side and covered the neighbouring lines.
+        float pad = _highlightStyle.PaddingPoints;
 
         foreach (var rect in rects)
         {
@@ -352,8 +355,9 @@ public sealed class PdfSurface : Control
             if (SourceHitTester.HitTest(plan, CurrentPage, pageX, pageY) is { } hit
                 && SourceHitTester.SegmentFor(plan, hit.Unit) is { } segment)
             {
-                _ = _viewModel.Coordinator.GoToSegmentAsync(segment.Id);
-                _ = _viewModel.Coordinator.PlayAsync();
+                // Moving to a passage starts it. A second, concurrent Play raced the first and
+                // restarted the passage it had just begun.
+                _viewModel.RunObserved(_viewModel.Coordinator.GoToSegmentAsync(segment.Id), "Could not move to that passage");
                 return;
             }
         }

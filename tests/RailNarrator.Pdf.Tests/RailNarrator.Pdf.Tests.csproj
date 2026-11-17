@@ -11,6 +11,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/RailNarrator.Pdf/RailNarrator.Pdf.csproj" />
+    <ProjectReference Include="../../src/RailNarrator.Infrastructure/RailNarrator.Infrastructure.csproj" />
     <ProjectReference Include="../RailNarrator.TestFixtures/RailNarrator.TestFixtures.csproj" />
   </ItemGroup>
 </Project>

@@ -102,6 +102,52 @@ public sealed class ResamplerTests
         Assert.True(Math.Abs(DominantFrequency(middle, 24000) - 1000) < 25);
     }
 
+    [Theory]
+    [InlineData(24000, 48000)]
+    [InlineData(24000, 44100)]
+    [InlineData(44100, 24000)]
+    [InlineData(22050, 48000)]
+    public void PolyphaseFilter_MatchesTheDirectSincFilter(int inputRate, int outputRate)
+    {
+        // The fast path precomputes one weight set per fractional phase. It must be the same filter,
+        // edges included, as evaluating the windowed sinc at every output frame.
+        var random = new Random(7);
+        var input = new float[inputRate / 5];
+        for (int i = 0; i < input.Length; i++) input[i] = (float)(random.NextDouble() * 2 - 1) * 0.5f;
+
+        var fast = Resampler.Resample(input, inputRate, outputRate);
+        var reference = DirectResample(input, inputRate, outputRate, Resampler.DefaultHalfTaps);
+
+        Assert.Equal(reference.Length, fast.Length);
+        double worst = 0;
+        for (int i = 0; i < fast.Length; i++) worst = Math.Max(worst, Math.Abs(fast[i] - reference[i]));
+        Assert.True(worst < 1e-5, $"largest difference {worst:E2}");
+    }
+
+    private static float[] DirectResample(float[] input, int inputRate, int outputRate, int halfTaps)
+    {
+        double cutoff = Math.Min(1.0, (double)outputRate / inputRate) * 0.95;
+        double step = (double)inputRate / outputRate;
+        var output = new float[Resampler.OutputFramesFor(input.Length, inputRate, outputRate)];
+        var window = Resampler.BuildKaiserWindow(halfTaps);
+        for (int n = 0; n < output.Length; n++)
+        {
+            double srcPos = n * step;
+            int centre = (int)Math.Floor(srcPos);
+            double sum = 0, weightSum = 0;
+            for (int k = -halfTaps + 1; k <= halfTaps; k++)
+            {
+                int index = centre + k;
+                if (index < 0 || index >= input.Length) continue;
+                double w = Resampler.Sinc((index - srcPos) * cutoff) * cutoff * window[k + halfTaps - 1];
+                sum += input[index] * w;
+                weightSum += w;
+            }
+            output[n] = weightSum > 1e-9 ? (float)(sum / weightSum) : 0f;
+        }
+        return output;
+    }
+
     internal static double DominantFrequency(float[] samples, int sampleRate)
     {
         // A coarse DFT over the first 4096 samples is enough to identify a single tone and avoids
@@ -140,6 +186,79 @@ public sealed class TimeStretchTests
         for (int i = 0; i < buffer.Length; i++)
             buffer[i] = (float)(0.4 * Math.Sin(2 * Math.PI * freq * i / sampleRate));
         return buffer;
+    }
+
+    [Theory]
+    [InlineData(0.75)]
+    [InlineData(1.25)]
+    [InlineData(1.5)]
+    public void FastGrainSearch_ChoosesTheSameGrainsAsTheDirectSearch(double rate)
+    {
+        // A voiced, noisy signal with a slowly gliding pitch, so the correlation peak is real but
+        // not trivially periodic. The optimised search (sliding energy, SIMD dot product) must
+        // render what the direct per-candidate search rendered.
+        const int sampleRate = 48000;
+        var random = new Random(11);
+        var input = new float[sampleRate * 2];
+        double phase = 0;
+        for (int i = 0; i < input.Length; i++)
+        {
+            phase += 2 * Math.PI * (140 + 40 * Math.Sin(i * 2.0 / sampleRate)) / sampleRate;
+            input[i] = (float)(0.3 * Math.Sin(phase) + 0.15 * Math.Sin(3 * phase) + 0.05 * (random.NextDouble() - 0.5));
+        }
+
+        var fast = new WsolaTimeStretcher(sampleRate).Render(input, rate).Samples;
+        var reference = DirectWsola(input, sampleRate, rate);
+
+        Assert.Equal(reference.Length, fast.Length);
+        double worst = 0;
+        for (int i = 0; i < fast.Length; i++) worst = Math.Max(worst, Math.Abs(fast[i] - reference[i]));
+        Assert.True(worst < 1e-4, $"largest difference {worst:E2}");
+    }
+
+    /// <summary>The grain search as first written: every quantity recomputed per candidate.</summary>
+    private static float[] DirectWsola(float[] input, int sampleRate, double r)
+    {
+        int frameSize = Math.Max(64, sampleRate * 30 / 1000), tolerance = frameSize / 2 / 3;
+        int length = (int)Math.Round(input.Length / r, MidpointRounding.AwayFromZero);
+        var output = new float[length];
+        var weights = new double[length];
+        int window = Math.Min(frameSize, Math.Min(input.Length, Math.Max(1, length / 2)));
+        int hop = Math.Max(1, window / 2);
+        int previous = 0;
+        for (int target = 0; ; target = Math.Min(target + hop, length - window))
+        {
+            bool last = target == length - window;
+            int nominal = last ? input.Length - window : Math.Clamp((int)Math.Round(target * r), 0, Math.Max(0, input.Length - window));
+            int best = nominal;
+            double bestScore = double.NegativeInfinity;
+            if (target > 0 && !last)
+            {
+                for (int candidate = Math.Max(previous, nominal - tolerance); candidate <= Math.Min(input.Length - window, nominal + tolerance); candidate++)
+                {
+                    double dot = 0, a = 0, b = 0;
+                    for (int i = 0; i < hop && target + i < length; i++)
+                    {
+                        double x = weights[target + i] > 0 ? output[target + i] / weights[target + i] : 0;
+                        double y = input[candidate + i];
+                        dot += x * y; a += x * x; b += y * y;
+                    }
+                    double score = dot / Math.Sqrt(Math.Max(1e-20, a * b)) - Math.Abs(candidate - nominal) * 1e-8;
+                    if (score > bestScore) { bestScore = score; best = candidate; }
+                }
+            }
+            best = Math.Max(previous, best);
+            previous = best;
+            for (int i = 0; i < window && target + i < length; i++)
+            {
+                double weight = Math.Max(1e-6, 0.5 - 0.5 * Math.Cos(2 * Math.PI * (i + 0.5) / window));
+                output[target + i] += (float)(input[best + i] * weight);
+                weights[target + i] += weight;
+            }
+            if (last) break;
+        }
+        for (int i = 0; i < length; i++) if (weights[i] > 0) output[i] = (float)(output[i] / weights[i]);
+        return output;
     }
 
     [Fact]

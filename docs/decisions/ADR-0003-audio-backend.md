@@ -29,6 +29,38 @@ The former blocking-backend result of -0.5 ms versus wall time measured queue
 consumption, not acoustic presentation. It did not establish sub-millisecond
 highlight synchronisation and is superseded by this design.
 
+## Stream latency and ring length
+
+Revised after driving the application on a real device. The first implementation passed the
+device's `defaultLowOutputLatency` (8.7 ms here) as `suggestedLatency` and sized the ring at a
+quarter of a second. Both were wrong for this product.
+
+Narration needs an accurate clock, not a short buffer: highlights follow DAC timestamps, so device
+buffering costs start-up delay and nothing else. Under PipeWire's ALSA bridge a short buffer is
+actively harmful, because the stream cannot fill a graph quantum longer than itself. Measured with
+a silent callback stream on a Bluetooth sink, with a second client holding the quantum at 2048
+frames (43 ms):
+
+| `suggestedLatency` | Frames delivered |
+|---|---|
+| 10 ms (device low-latency suggestion) | 1 % of real time |
+| 35 ms (device high-latency suggestion) | 43 % |
+| 100 ms | 100 % |
+| 200 ms | 100 % |
+
+Polling `Pa_GetStreamTime` from a second thread every millisecond was tested as an alternative
+explanation and made no difference. The stream now requests the larger of 100 ms and the device's
+high-latency suggestion.
+
+Ring space is counted against *presented* frames, not consumed ones, so that a pause can rewind to
+what the listener actually heard. Frames the callback has copied but the device has not yet
+presented therefore still occupy the ring. With a 0.25 s ring and about 0.21 s of Bluetooth
+latency the writer was left some 40 ms of working room, and a device whose total latency exceeds
+the ring would lock the writer out entirely while the callback played silence. The ring is now two
+seconds. With both changes, the real engine on the same device with the quantum forced to 2048
+kept about 1.66 s queued, reported no host underflow, and its output correlated 1.00 with the
+source clip at the expected offsets.
+
 ## Source-audio position
 
 Kokoro's 24 kHz audio is resampled to the selected device rate. WSOLA returns both

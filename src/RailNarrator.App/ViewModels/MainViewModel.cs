@@ -173,12 +173,26 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     public int ZoomPercent => (int)Math.Round(_zoom * 100);
 
-    public double PlaybackRate { get => _playbackRate; set { if (Set(ref _playbackRate, value)) Coordinator.SetPlaybackRate(value); } }
+    public double PlaybackRate
+    {
+        get => _playbackRate;
+        set
+        {
+            if (!Set(ref _playbackRate, value)) return;
+            Coordinator.SetPlaybackRate(value);
+            PersistPreference(s => s with { PlaybackRate = value });
+        }
+    }
 
     public FollowMode FollowMode
     {
         get => _followMode;
-        set { if (Set(ref _followMode, value)) Coordinator.SetFollowMode(value); }
+        set
+        {
+            if (!Set(ref _followMode, value)) return;
+            Coordinator.SetFollowMode(value);
+            PersistPreference(s => s with { FollowMode = value });
+        }
     }
 
     public bool FollowSuspended { get => _followSuspended; private set => Set(ref _followSuspended, value); }
@@ -197,10 +211,15 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             // The coordinator advances its generation token so a synthesis still in flight for the old
             // voice is discarded rather than played over the new one.
             RunObserved(Coordinator.SetVoiceAsync(id), "Could not change voice");
+            // Only the Kokoro voice is a free preference: the ZONOS3 speaker id also decides whether
+            // that provider is registered at all, so it stays a deliberate settings-file choice.
+            if (_voiceProviderId == "kokoro" && !_choosingVoiceForReader)
+                PersistPreference(s => s with { KokoroVoiceId = id });
         }
     }
 
     private TtsVoice? _selectedVoice;
+    private string? _voiceProviderId;
 
     public string? SelectedVoiceId
     {
@@ -233,7 +252,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public string SpeechProviderSummary
         => string.Join(", ", _services.SpeechProviders.RegisteredIds);
 
-    public long CacheBytes => _services.AssetStore.TotalBytes();
+    public long CacheBytes => _services.AssetStore.TotalBytes() + _services.CachedExtraction.TotalBytes();
     private string _timingSummary = "Sentence highlighting until word alignment is available.";
     public string TimingSummary { get => _timingSummary; private set => Set(ref _timingSummary, value); }
 
@@ -296,6 +315,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         Busy = true;
         try
         {
+            // The document being replaced keeps its place, even if the new one fails to open.
+            await SavePositionAsync();
             await Coordinator.StopAsync();
             StatusMessage = "Reading the document…";
 
@@ -304,9 +325,15 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
             _services.Extraction.AttachDocument(path);
             var request = _services.CreateExtractionRequest(path);
-            var snapshot = await _services.Extraction.ExtractAsync(request,
-                new Progress<ExtractionProgress>(p => Dispatcher.UIThread.Post(
-                    () => StatusMessage = $"{p.Stage}: page {p.PagesDone} of {p.PagesTotal}")));
+            // Progress is posted, so a report can land after extraction has returned — with a cache
+            // hit, after "Ready" — and overwrite the status. Reports are ignored once it is done.
+            bool extracting = true;
+            var snapshot = await _services.CachedExtraction.ExtractAsync(request,
+                new Progress<ExtractionProgress>(p => Dispatcher.UIThread.Post(() =>
+                {
+                    if (extracting) StatusMessage = $"{p.Stage}: page {p.PagesDone} of {p.PagesTotal}";
+                })));
+            extracting = false;
 
             foreach (string warning in snapshot.AllWarnings().Take(8))
                 if (!Notes.Contains(warning)) Notes.Add(warning);
@@ -348,6 +375,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             _snapshot = snapshot;
             Plan = plan;
             DocumentPath = path;
+            _documentHash = hash;
             committed = true;
 
             RebuildTranscript();
@@ -355,6 +383,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
             var position = await _services.PlanStore.TryGetPositionAsync(hash);
             await Coordinator.LoadPlanAsync(plan, position);
+            if (position is not null) ShowRestoredPreferences(position);
+            // The starting passage is where the reader already is; only a move is worth saving.
+            _lastSavedSegmentId = Coordinator.Snapshot.SegmentId;
 
             StatusMessage = position is { SegmentId: not null }
                 ? $"Ready. Restored your position ({plan.SegmentCount} passages)."
@@ -398,12 +429,50 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         var provider = _services.SpeechProviders.Get(_services.CurrentSettings.SpeechProviderId)
                        ?? await _services.SpeechProviders.FirstAvailableAsync();
         if (provider is null) return;
+        _voiceProviderId = provider.ProviderId;
 
         foreach (var voice in await provider.ListVoicesAsync()) Voices.Add(voice);
         foreach (var device in _services.AudioDevice.Enumerate())
             AudioDevices.Add($"{device.Id}: {device.Name}{(device.IsDefault ? " (default)" : "")}");
 
-        SelectedVoice = Voices.FirstOrDefault(v => v.IsDefault) ?? Voices.FirstOrDefault();
+        // Keep the voice already in use (from settings, or the reader's last choice); the provider's
+        // default is only for a first run. Selecting the default unconditionally switched every
+        // saved voice back to it on each document load.
+        // The pick made here is not the reader's choice, so it is not saved as a preference.
+        _choosingVoiceForReader = true;
+        try
+        {
+            SelectedVoice = Voices.FirstOrDefault(v => v.Id == _selectedVoiceId)
+                            ?? Voices.FirstOrDefault(v => v.IsDefault) ?? Voices.FirstOrDefault();
+        }
+        finally { _choosingVoiceForReader = false; }
+    }
+
+    private bool _choosingVoiceForReader;
+
+    /// <summary>
+    /// Shows the voice, speed and follow mode a restored position applied to the coordinator, without
+    /// writing them back as global preferences: they belong to that document.
+    /// </summary>
+    private void ShowRestoredPreferences(ReaderPosition position)
+    {
+        if (position.PlaybackRate > 0) Set(ref _playbackRate, position.PlaybackRate, nameof(PlaybackRate));
+        Set(ref _followMode, position.FollowMode, nameof(FollowMode));
+        if (position.VoiceId is { } id && Voices.FirstOrDefault(v => v.Id == id) is { } voice)
+        {
+            Set(ref _selectedVoiceId, id, nameof(SelectedVoiceId));
+            Set(ref _selectedVoice, voice, nameof(SelectedVoice));
+        }
+    }
+
+    /// <summary>Saves a preference; a settings file that cannot be written must not break playback.</summary>
+    private void PersistPreference(Func<RailNarratorSettings, RailNarratorSettings> update)
+    {
+        try { PersistSettings(update); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Notes.Add($"Could not save the preference: {ex.Message}");
+        }
     }
 
     /// <summary>Applies a zoom, remembering it as the reader's preference.</summary>
@@ -456,6 +525,18 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             }
             if (snapshot.Error is { } error) StatusMessage = error.Message;
             else if (snapshot.Message is { } message) StatusMessage = message;
+            // Playing carries no message of its own, so the line used to keep whatever was said
+            // last ("Seeking", "Preparing speech") for as long as the passage lasted.
+            else if (snapshot.State == PlaybackState.Playing && snapshot.SegmentCount > 0)
+                StatusMessage = $"Reading passage {snapshot.SegmentIndex + 1} of {snapshot.SegmentCount}.";
+            // Save the place on every move, not only at exit: a crash, a power cut or a SIGKILL
+            // otherwise lost the whole session's progress. Not while loading, when the snapshot
+            // describes a plan whose restored preferences are not applied yet.
+            if (!Busy && DocumentPath is not null && snapshot.SegmentId is { } segmentId && segmentId != _lastSavedSegmentId)
+            {
+                _lastSavedSegmentId = segmentId;
+                RunObserved(SavePositionAsync(), "Could not save the reading position");
+            }
             RefreshCommands();
         }
         if (Dispatcher.UIThread.CheckAccess()) Apply(); else Dispatcher.UIThread.Post(Apply);
@@ -623,13 +704,22 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     /// <summary>Remembers where the reader stopped. Never triggers auto-play on the next open.</summary>
     public async Task SavePositionAsync()
     {
-        if (DocumentPath is null || Plan is null) return;
-        string hash = CacheKey.Sha256HexOfFile(DocumentPath);
+        if (_documentHash is null || Plan is null) return;
+        // Captured on the caller's thread, then written one at a time: saves now happen on every
+        // passage change, and an older position must never land after a newer one.
         var snapshot = Coordinator.Snapshot;
-        await _services.PlanStore.SavePositionAsync(new ReaderPosition(
-            hash, snapshot.SegmentId, PageIndex: 0, snapshot.PositionSeconds,
-            SelectedVoiceId, _services.CurrentSettings.MathMode, Zoom, FollowMode, PlaybackRate));
+        var position = new ReaderPosition(
+            _documentHash, snapshot.SegmentId, PageIndex: 0, snapshot.PositionSeconds,
+            SelectedVoiceId, _services.CurrentSettings.MathMode, Zoom, FollowMode, PlaybackRate);
+        await _saveGate.WaitAsync();
+        try { await _services.PlanStore.SavePositionAsync(position); }
+        finally { _saveGate.Release(); }
     }
+
+    // The loaded document's content hash, computed once at load rather than on every save.
+    private string? _documentHash;
+    private string? _lastSavedSegmentId;
+    private readonly SemaphoreSlim _saveGate = new(1, 1);
 
     private void RefreshCommands()
     {

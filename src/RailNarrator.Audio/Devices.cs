@@ -62,6 +62,30 @@ internal static class PortAudioNative
 public sealed class PortAudioOutputDevice : IAudioOutputDevice
 {
     public const int FramesPerBuffer = 512;
+
+    /// <summary>
+    /// Smallest stream latency requested from the host, in seconds.
+    /// </summary>
+    /// <remarks>
+    /// Narration needs an accurate clock, not a short buffer: highlights follow DAC timestamps, so a
+    /// longer device buffer costs start-up delay and nothing else. The device's own low-latency
+    /// suggestion (8.7 ms on the reference machine) starves under PipeWire's ALSA bridge as soon as
+    /// another client raises the graph quantum. Measured through the Bluetooth sink with the
+    /// quantum at 2048 frames: 10 ms delivered 1 % of real time, 35 ms delivered 43 %, 100 ms and
+    /// above delivered 100 %. See ADR-0003.
+    /// </remarks>
+    public const double MinimumStreamLatencySeconds = 0.1;
+
+    /// <summary>
+    /// Ring length in seconds of audio.
+    /// </summary>
+    /// <remarks>
+    /// Space in the ring is counted against <i>presented</i> frames, because frames the callback has
+    /// copied but the listener has not yet heard are kept for a pause to rewind to. The ring must
+    /// therefore be longer than the whole output latency (device buffer plus, for Bluetooth, some
+    /// 200 ms of transport) or the writer is locked out while the callback plays silence.
+    /// </remarks>
+    public const double RingSeconds = 2.0;
     private static readonly object InitLock = new();
     private static bool _initialised;
     private static string? _initError;
@@ -134,11 +158,11 @@ public sealed class PortAudioOutputDevice : IAudioOutputDevice
                     SampleFormat.Int16LittleEndian => PortAudioNative.SampleFormatInt16,
                     _ => throw new NotSupportedException("Unsupported output encoding."),
                 },
-                suggestedLatency = Math.Max(0.01, info.defaultLowOutputLatency),
+                suggestedLatency = Math.Max(MinimumStreamLatencySeconds, info.defaultHighOutputLatency),
             };
             _bytesPerFrame = format.BytesPerFrame;
             _sampleRate = format.SampleRate;
-            _capacityFrames = Math.Max(FramesPerBuffer * 8, _sampleRate / 4);
+            _capacityFrames = Math.Max(FramesPerBuffer * 8, (int)(_sampleRate * RingSeconds));
             _ring = new byte[_capacityFrames * _bytesPerFrame];
             _written = _consumed = 0;
             _underflows = 0;
