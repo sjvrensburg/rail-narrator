@@ -47,6 +47,10 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
     private AudioFormat _outputFormat;
     private int _sourceRate;
     private long _writeCursor;
+    // Source seconds already presented before the current device session. A flush resets the
+    // device's presented counter to zero, so without this base a seek would read the position back
+    // as zero and the highlight would jump to the start of the clip.
+    private double _positionBaseSeconds;
     private string? _segmentId;
     private SpeechAsset? _asset;
     private double _rate = 1.0;
@@ -81,9 +85,9 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
             {
                 if (_outputFormat.SampleRate <= 0) return 0;
                 // presented output frames -> output seconds -> source seconds (a rate of R consumes R
-                // source-seconds per output-second).
+                // source-seconds per output-second), plus whatever was presented before the last flush.
                 double outputSeconds = _device.PresentedFrames / (double)_outputFormat.SampleRate;
-                return outputSeconds * _rate;
+                return _positionBaseSeconds + outputSeconds * _rate;
             }
         }
     }
@@ -142,6 +146,7 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
             _sourceFloat = source;
             _output = ApplyRate(atDeviceRate, deviceRate, _rate);
             _writeCursor = 0;
+            _positionBaseSeconds = 0;
             _clipCompletedRaised = false;
         }
 
@@ -172,6 +177,7 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
                 : 0;
 
             _rate = clamped;
+            _positionBaseSeconds = sourceSeconds;
             if (_sourceFloat.Length == 0 || _outputFormat.SampleRate <= 0) return;
 
             var atDeviceRate = Resampler.Resample(_sourceFloat, _sourceRate, _outputFormat.SampleRate);
@@ -296,6 +302,7 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
         lock (_gate)
         {
             _writeCursor = 0;
+            _positionBaseSeconds = 0;
             _output = [];
             _sourceFloat = [];
             _asset = null;
@@ -320,6 +327,9 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
             double clamped = Math.Clamp(seconds, 0, Math.Max(0, ClipDurationSecondsCore()));
             long outputFrame = (long)Math.Round(clamped / _rate * _outputFormat.SampleRate, MidpointRounding.AwayFromZero);
             _writeCursor = Math.Clamp(outputFrame, 0, _output.Length);
+            // The flush below zeroes the device's presented count, so the seek target becomes the new
+            // base for the clock rather than being lost.
+            _positionBaseSeconds = _writeCursor / (double)Math.Max(1, _outputFormat.SampleRate) * _rate;
             _clipCompletedRaised = false;
         }
         if (State == PlaybackState.Playing) { _device.Start(); StartWriter(); }

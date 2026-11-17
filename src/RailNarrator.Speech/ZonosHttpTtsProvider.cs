@@ -151,8 +151,23 @@ public sealed class ZonosHttpTtsProvider : ITtsProvider
     {
         using var response = await _http.GetAsync("/v2/speakers", ct).ConfigureAwait(false);
         response.EnsureSuccessStatusCode();
-        var payload = await response.Content.ReadFromJsonAsync<SpeakerListPayload>(JsonOptions, ct).ConfigureAwait(false);
-        var items = payload?.Speakers ?? payload?.Items ?? [];
+        string json = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+
+        // The ggml server answers with a bare array; the published schema also allows an object
+        // wrapper. Accepting both keeps the client working against either shape rather than failing
+        // the whole capability probe on a payload shape difference.
+        List<SpeakerDto> items;
+        using (var doc = JsonDocument.Parse(string.IsNullOrWhiteSpace(json) ? "[]" : json))
+        {
+            items = doc.RootElement.ValueKind switch
+            {
+                JsonValueKind.Array => doc.RootElement.Deserialize<List<SpeakerDto>>(JsonOptions) ?? [],
+                JsonValueKind.Object => doc.RootElement.Deserialize<SpeakerListPayload>(JsonOptions) is { } payload
+                    ? payload.Speakers ?? payload.Items ?? []
+                    : [],
+                _ => [],
+            };
+        }
         return items
             .Select(s => new TtsVoice(
                 s.Id ?? "",

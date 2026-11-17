@@ -492,11 +492,13 @@ public sealed class FakeAudioOutputDevice : IAudioOutputDevice
     public bool HasDrained { get { lock (_gate) { SettleAutoAdvance(); return QueuedFramesCore() <= 0; } } }
 
     /// <summary>Advances the presented clock by an exact number of frames, consuming buffered audio.</summary>
+    /// <remarks>A stopped or paused device presents nothing, exactly as real hardware does.</remarks>
     public void AdvanceByFrames(long frames)
     {
         lock (_gate)
         {
             AutoAdvance = false;
+            if (!_running) return;
             long queued = QueuedFramesCore();
             long advance = Math.Min(frames, queued);
             _presented += advance;
@@ -517,6 +519,7 @@ public sealed class FakeAudioOutputDevice : IAudioOutputDevice
         lock (_gate)
         {
             AutoAdvance = false;
+            if (!_running) return;
             long queued = QueuedFramesCore();
             _presented += queued;
             Consume(queued);
