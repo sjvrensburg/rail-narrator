@@ -456,6 +456,10 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             }
             if (snapshot.Error is { } error) StatusMessage = error.Message;
             else if (snapshot.Message is { } message) StatusMessage = message;
+            // Playing carries no message of its own, so the line used to keep whatever was said
+            // last ("Seeking", "Preparing speech") for as long as the passage lasted.
+            else if (snapshot.State == PlaybackState.Playing && snapshot.SegmentCount > 0)
+                StatusMessage = $"Reading passage {snapshot.SegmentIndex + 1} of {snapshot.SegmentCount}.";
             RefreshCommands();
         }
         if (Dispatcher.UIThread.CheckAccess()) Apply(); else Dispatcher.UIThread.Post(Apply);

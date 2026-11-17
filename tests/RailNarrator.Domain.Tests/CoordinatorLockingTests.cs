@@ -152,6 +152,72 @@ public sealed class CoordinatorLockingTests
     }
 
     [Fact]
+    public async Task PlayWhileAlreadyPlaying_DoesNotRestartThePassage()
+    {
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(new FakeTtsProvider(), transport);
+        await coordinator.LoadPlanAsync(PlanWith(3));
+        await coordinator.PlayAsync();
+        await WaitUntil(() => transport.PlayCount == 1, "playback to start");
+        long generation = coordinator.Generation;
+
+        await coordinator.PlayAsync();
+
+        Assert.Single(transport.Loaded);
+        Assert.Equal(1, transport.PlayCount);
+        Assert.Equal(generation, coordinator.Generation);
+    }
+
+    [Fact]
+    public async Task ALoadedDocument_IsIdle_NotStillPreparing()
+    {
+        // Lookahead is background work. A document that sat at "Preparing" until Play looked like
+        // one that had not finished loading.
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(new FakeTtsProvider(), transport);
+
+        await coordinator.LoadPlanAsync(PlanWith(3));
+
+        Assert.Equal(PlaybackState.Idle, coordinator.Snapshot.State);
+        Assert.Equal(0, transport.PlayCount);
+    }
+
+    [Fact]
+    public async Task ClipsFarBehindTheReadingPosition_AreReleased_AndPreparedAgainOnDemand()
+    {
+        // Prepared audio used to be kept for the whole document. With no asset store the only way
+        // back to a released clip is to synthesise it again, which makes the release observable.
+        var tts = new FakeTtsProvider();
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(tts, transport,
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 2));
+        var plan = PlanWith(8);
+        await coordinator.LoadPlanAsync(plan);
+        await coordinator.PlayAsync();
+        await WaitUntil(() => transport.PlayCount == 1, "playback to start");
+
+        for (int i = 0; i < 4; i++)
+        {
+            int loads = transport.Loaded.Count;
+            transport.RaiseClipCompleted(plan.Segments[i].Id);
+            await WaitUntil(() => transport.Loaded.Count == loads + 1, $"passage {i + 1} to start");
+        }
+        int firstPassageRequests() => tts.Requests.Count(r => r.Text == plan.Segments[0].SpokenText);
+        Assert.Equal(1, firstPassageRequests());
+
+        // One back is still held: Previous and Replay must not wait for synthesis.
+        int before = tts.Requests.Count;
+        await coordinator.PreviousSegmentAsync();
+        Assert.Equal(plan.Segments[3].Id, coordinator.Snapshot.SegmentId);
+        Assert.DoesNotContain(tts.Requests.Skip(before), r => r.Text == plan.Segments[3].SpokenText);
+
+        // Four back was released, and comes back.
+        await coordinator.GoToSegmentAsync(plan.Segments[0].Id);
+        await WaitUntil(() => transport.Loaded[^1].SegmentId == plan.Segments[0].Id, "the first passage to load again");
+        Assert.Equal(2, firstPassageRequests());
+    }
+
+    [Fact]
     public async Task PlayAfterPause_FollowingACorrection_SpeaksTheCorrectedText()
     {
         var tts = new FakeTtsProvider();

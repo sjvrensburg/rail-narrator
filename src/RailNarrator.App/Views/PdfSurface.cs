@@ -355,8 +355,9 @@ public sealed class PdfSurface : Control
             if (SourceHitTester.HitTest(plan, CurrentPage, pageX, pageY) is { } hit
                 && SourceHitTester.SegmentFor(plan, hit.Unit) is { } segment)
             {
-                _ = _viewModel.Coordinator.GoToSegmentAsync(segment.Id);
-                _ = _viewModel.Coordinator.PlayAsync();
+                // Moving to a passage starts it. A second, concurrent Play raced the first and
+                // restarted the passage it had just begun.
+                _viewModel.RunObserved(_viewModel.Coordinator.GoToSegmentAsync(segment.Id), "Could not move to that passage");
                 return;
             }
         }

@@ -7,11 +7,11 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 231 passing, 2 opt-in skips, 0 warnings
+## Verified by automated tests — 234 passing, 2 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
-| `RailNarrator.Domain.Tests` | 107 | Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, cache keys, camera policy |
+| `RailNarrator.Domain.Tests` | 110 | Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
 | `RailNarrator.Pdf.Tests` | 14 | **Real PDFs** through the real RailReaderCore pipeline |
 | `RailNarrator.Speech.Tests` | 36 | PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
 | `RailNarrator.Audio.Tests` | 32 | Resampler, time-stretcher, playback engine against a controllable fake device, engine lock ordering, coordinator-plus-engine transition stress |
@@ -206,7 +206,7 @@ the two items marked as measured before.
 | **Scanned-document OCR at 300 dpi** | A 131 ppi scan with handwriting was run and reads as sentences; the handwriting is recognised as stray words | Check a clean 300 dpi scan for coverage, warnings and reading order |
 | **Semantic layout roles** | The default is the model-free analyzer, so every block arrives as `Text` | Download PP-DocLayoutV3 and set `LayoutModelPath`; role-keyed suppression and display-maths detection then use roles instead of geometry |
 | **Clean-machine install** | The archive was built and run here, not on a fresh system | Install on a stock Fedora/Debian with only `libportaudio2` added |
-| **Long-document endurance** | Seven minutes of a 27-page paper, 1.7 GB resident; prepared clips are never evicted from memory, so growth over a whole document is unmeasured | Play a 40-page paper to the end: peak RSS, preparation lag versus playback, cache growth |
+| **Long-document endurance** | Runs of three to seven minutes of a 27-page paper, 1.5–1.7 GB resident; played clips are now released, but a whole document has not been played through | Play a 40-page paper to the end: peak RSS, preparation lag versus playback, cache growth |
 | **File > Open dialog** | The GUI run loaded documents from the command line only | Open a document through the picker under a desktop portal |
 
 ## Open defects found by driving the application
@@ -229,8 +229,6 @@ Not fixed yet. Each was observed in the run described above.
 - **Extraction is not cached.** The scan was OCRed again, about 25 s, on every open.
 - **Speed, voice and follow mode** are saved with the reading position but not to settings, so a
   new document starts from the defaults.
-- **The status line keeps stale text** ("Seeking", "Preparing speech") after the state has moved
-  on, and a loaded document sits at "State: Preparing" until Play.
 - **About half a second of silence separates passages.** Each clip is resampled and rendered, and
   the device stream reopened, when it is due rather than ahead of time.
 
@@ -325,3 +323,11 @@ threads meeting.
     with U+0002; this had been recorded as a limitation of the fixture writer.
 21. **Alternating running heads and journal page numbers were narrated.** Each head is on fewer
     than half the pages, and "422" is not page 2.
+22. **Play while already playing restarted the passage**, and a click on the page issued a seek
+    and a Play that raced each other.
+23. **A loaded document sat at "State: Preparing"** until Play, and the status line kept "Seeking"
+    or "Preparing speech" for as long as a passage lasted. It now reads "Reading passage 17 of
+    833."
+24. **Prepared audio was kept for the whole document** — by arithmetic about 650 MB for the
+    27-page paper. Clips more than two passages behind the reading position are released, and
+    come back from the asset store, or by synthesis, if the reader goes back.

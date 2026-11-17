@@ -220,7 +220,9 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             _audio.SetPlaybackRate(_options.PlaybackRate);
         }
 
-        Publish(PlaybackState.Preparing, "Preparing narration");
+        // Idle, not Preparing: nothing has been asked to play. Lookahead runs in the background, and
+        // a state that never left Preparing told the reader the document was still loading.
+        Publish(PlaybackState.Idle, null);
         StartPreparation(gen);
         await Task.CompletedTask.ConfigureAwait(false);
     }
@@ -238,6 +240,8 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             await ResumeAsync(ct).ConfigureAwait(false);
             return;
         }
+        // Play while already playing is not a request to start the passage again; Replay is.
+        if (_plan is not null && _audio.State == PlaybackState.Playing) return;
         long gen = AdvanceGeneration();
         if (_plan is null || _segmentIndex < 0)
         {
@@ -828,6 +832,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
                 {
                     if (gen != Generation || _segmentIndex != index) return;
                     _segmentIndex = index + 1;
+                    ReleaseClipsOutsideWindow(plan, index + 1);
                 }
                 ExtendPreparation(gen);
                 if (!await EnsureSegmentReadyAsync(index + 1, gen, CancellationToken.None).ConfigureAwait(false)) return;
@@ -839,6 +844,27 @@ public sealed class NarrationCoordinator : IAsyncDisposable
                 Publish(PlaybackState.Error, null, NarrationError.SpeechSynthesisFailed(ex.Message, segmentId));
             }
         });
+    }
+
+    /// <summary>How many passages behind the current one keep their audio in memory, for Previous and Replay.</summary>
+    public const int RetainedPassagesBehind = 2;
+
+    /// <summary>
+    /// Drops prepared audio that is neither about to be played nor just was. Call with the lock held.
+    /// </summary>
+    /// <remarks>
+    /// Prepared clips were only ever added. A 27-page paper is some 830 passages of about eight
+    /// seconds each, which at 24 kHz float is roughly 650 MB by the last page. A released clip is
+    /// not lost: it is still in the asset store when there is one, and is synthesised again when
+    /// there is not.
+    /// </remarks>
+    private void ReleaseClipsOutsideWindow(NarrationPlan plan, int current)
+    {
+        int first = Math.Max(0, current - RetainedPassagesBehind);
+        int last = Math.Min(plan.SegmentCount - 1, current + Math.Max(1, _options.LookaheadSegments));
+        var keep = new HashSet<string>(StringComparer.Ordinal);
+        for (int i = first; i <= last; i++) keep.Add(plan.Segments[i].Id);
+        foreach (string id in _prepared.Keys.Where(id => !keep.Contains(id)).ToList()) _prepared.Remove(id);
     }
 
     private void OnUnderflow(string segmentId)
