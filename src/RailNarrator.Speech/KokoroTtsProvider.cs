@@ -75,12 +75,28 @@ public sealed class KokoroTtsProvider : ITtsProvider
     /// <summary>Longest text accepted per request. Longer passages are split by the caller, not here.</summary>
     public const int MaxRequestChars = 1200;
 
+    /// <summary>
+    /// Inputs KokoroSharp feeds the graph. An export that does not declare them cannot be used, and
+    /// must be rejected before it reaches the engine — see <see cref="ProbeModel"/>.
+    /// </summary>
+    public static readonly IReadOnlyList<string> RequiredModelInputs = ["tokens", "style", "speed"];
+
+    /// <summary>The graph output that carries per-phoneme durations, when an export provides it.</summary>
+    public const string DurationsOutputName = "durations";
+
+    /// <summary>
+    /// Upper bound on one synthesis. KokoroSharp gives no awaitable completion, so a worker thread
+    /// that dies mid-job would otherwise leave the caller polling forever.
+    /// </summary>
+    public const int SynthesisTimeoutMs = 120_000;
+
     private readonly KokoroProviderSettings _settings;
     private readonly SemaphoreSlim _initGate = new(1, 1);
     private KokoroEngine? _engine;
     private string? _initError;
     private bool _voicesLoaded;
     private TimingProvenance _observedTiming = TimingProvenance.None;
+    private bool _modelReportsDurations;
     private bool _disposed;
 
     public KokoroTtsProvider(KokoroProviderSettings settings)
@@ -90,6 +106,13 @@ public sealed class KokoroTtsProvider : ITtsProvider
 
     /// <summary>Null until the engine is created; exposed for diagnostics.</summary>
     public string? InitError => _initError;
+
+    /// <summary>
+    /// True when the loaded model's graph declares a <c>durations</c> output, i.e. it can supply
+    /// native phoneme timings. Determined by probing the model at initialisation rather than waiting
+    /// to see whether timings happen to arrive, so capability discovery is accurate up front.
+    /// </summary>
+    public bool ModelReportsDurations => _modelReportsDurations;
 
     public async Task<TtsCapabilities> GetCapabilitiesAsync(CancellationToken ct = default)
     {
@@ -332,13 +355,66 @@ public sealed class KokoroTtsProvider : ITtsProvider
         return buffer;
     }
 
+    /// <summary>
+    /// Opens the model once to check it is an export this runtime can actually drive.
+    /// </summary>
+    /// <remarks>
+    /// This is not defensive padding; it prevents a process crash. KokoroSharp runs inference on its
+    /// own dispatch thread and does not catch ONNX errors, so feeding it an incompatible export
+    /// surfaces as an unhandled exception on a background thread and takes the whole application
+    /// down. Measured with <c>kokoro-v1.0.onnx</c> (the kokoro-onnx export): it loads fine, reports
+    /// itself available, and then aborts the process with
+    /// <c>Input name: 'tokens' is not in the metadata</c> on the first synthesis. A reader who
+    /// downloaded the wrong file would lose the application rather than see an error.
+    /// <para>
+    /// The probe costs one extra model load at startup and is disposed before the engine is created.
+    /// Reading the output metadata also settles whether the model can supply phoneme durations, which
+    /// is what makes word-level highlighting capability-gated on evidence rather than on hope.
+    /// </para>
+    /// </remarks>
+    private string? ProbeModel(string modelPath, SessionOptions options)
+    {
+        try
+        {
+            using var probe = new InferenceSession(modelPath, options);
+            var inputs = probe.InputMetadata.Keys.ToHashSet(StringComparer.Ordinal);
+            var outputs = probe.OutputMetadata.Keys.ToHashSet(StringComparer.Ordinal);
+
+            var missing = RequiredModelInputs.Where(name => !inputs.Contains(name)).ToList();
+            if (missing.Count > 0)
+                return $"This ONNX model is not a KokoroSharp-compatible Kokoro export: it declares no " +
+                       $"'{string.Join("', '", missing)}' input (its inputs are: " +
+                       $"{(inputs.Count == 0 ? "none" : string.Join(", ", inputs.OrderBy(i => i, StringComparer.Ordinal)))}). " +
+                       "Use kokoro-fp16.onnx from the KokoroSharpBinaries release. Exports built for " +
+                       "kokoro-onnx name their tensors differently and cannot be driven by this runtime.";
+
+            _modelReportsDurations = outputs.Contains(DurationsOutputName);
+            if (_modelReportsDurations) _observedTiming = TimingProvenance.NativeDuration;
+            return null;
+        }
+        catch (Exception ex)
+        {
+            return $"Could not open the Kokoro model at '{modelPath}': {ex.GetType().Name}: {ex.Message}";
+        }
+    }
+
     private static async Task WaitForJobAsync(KokoroJob job, CancellationToken ct)
     {
         // KokoroSharp exposes no awaitable completion, so the dispatch thread is polled. The delay is
         // short enough to keep first-audio latency low and long enough not to spin a core.
+        long deadline = Environment.TickCount64 + SynthesisTimeoutMs;
         while (!job.isDone)
         {
             ct.ThrowIfCancellationRequested();
+            if (Environment.TickCount64 > deadline)
+            {
+                // A worker that threw leaves isDone false forever; without this bound the caller hangs
+                // instead of reporting a failure the reader can retry.
+                try { job.Cancel(); } catch { /* already finished */ }
+                throw new InvalidOperationException(
+                    $"Kokoro did not finish synthesising within {SynthesisTimeoutMs / 1000} s. The model may be " +
+                    "incompatible with this runtime, or the machine may be out of memory.");
+            }
             await Task.Delay(5, CancellationToken.None).ConfigureAwait(false);
         }
     }
@@ -415,6 +491,15 @@ public sealed class KokoroTtsProvider : ITtsProvider
                     : Math.Max(1, Math.Min(8, Environment.ProcessorCount));
                 options.IntraOpNumThreads = threads;
                 options.InterOpNumThreads = Math.Max(1, threads / 2);
+
+                // Validate the graph before handing it to KokoroSharp. See ProbeModel.
+                string? probeError = ProbeModel(_settings.ModelPath, options);
+                if (probeError is not null)
+                {
+                    _initError = probeError;
+                    return _initError;
+                }
+
                 _engine = new KokoroEngine(_settings.ModelPath, options);
                 return null;
             }

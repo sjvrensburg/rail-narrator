@@ -14,11 +14,32 @@ Two independent checks showed no timing source is available on this machine:
 
 - **Kokoro.** `kokoro-fp16.onnx` (KokoroSharpBinaries v2.0.0) has inputs
   `tokens`, `style`, `speed` and output `audio` — and **no `durations` output**.
-  Verified two ways: scanning the 163 MB ONNX file finds zero occurrences of the
-  string `durations`, and `KokoroSharp` reports `PhonemeTimestamp[] == null` for
-  every step at runtime. A duration-enabled export exists upstream
-  (`kokoro-v1.0.onnx`, 325.5 MB) and KokoroSharp would pick its `durations`
-  output up automatically, so this is a model-file choice, not a code limit.
+  Verified three ways: scanning the 163 MB ONNX file finds zero occurrences of the
+  string `durations`; `KokoroSharp` reports `PhonemeTimestamp[] == null` for every
+  step at runtime; and the provider now reads the graph's `OutputMetadata` directly
+  at initialisation (`KokoroTtsProvider.ModelReportsDurations`), which is what
+  `TtsCapabilities.CanSupplyWordTiming` reports.
+
+  The obvious alternative does **not** work. `kokoro-v1.0.onnx` (the kokoro-onnx
+  duration-enabled export, 325.5 MB) declares its inputs as **`input_ids`, `speed`,
+  `style`** — there is no `tokens` input, so KokoroSharp cannot feed it. This was
+  initially assumed to be a drop-in path to word timings; it is not, and feeding it
+  to the engine **aborts the process**:
+
+  ```
+  OnnxRuntimeException: Input name: 'tokens' is not in the metadata
+    at KokoroSharp.Core.KokoroModel.Infer(...)
+    at KokoroSharp.Core.KokoroEngine.<.ctor>b__2_0()
+    at System.Threading.Thread.StartCallback()
+  ```
+
+  KokoroSharp runs inference on its own dispatch thread and does not catch ONNX
+  errors, so this arrives as an unhandled exception on a background thread and
+  takes the whole application down. `KokoroTtsProvider` therefore probes the graph
+  before constructing the engine and reports a recoverable, actionable error naming
+  the tensors the file actually declares. Reaching word timings needs either a
+  KokoroSharp-compatible export built with a `durations` output, or a standalone
+  aligner — not a different off-the-shelf model file.
 - **ZONOS3.** `/v2/edit/align` belongs to the speech-editing feature set and needs
   an edit backbone, encoder companions and a Python worker with `fusealign-hub`.
   A synthesis-only install has none of them. Its presence in documentation is not
@@ -56,9 +77,15 @@ highlight reads the wrong line.
 
 ## Path to word timing later
 
-Add a duration-enabled Kokoro export (or a standalone aligner) behind
-`IForcedAligner`. `KokoroTtsProvider` already upgrades
-`TtsCapabilities.NativeTiming` from `None` to `NativeDuration` the first time a
-model actually returns timestamps, so nothing else changes — and the validator
-still gates the result. Until then the word path is reported as unavailable rather
-than offered.
+Either (a) obtain or build a KokoroSharp-compatible export — inputs `tokens`,
+`style`, `speed` — that also emits a `durations` output, or (b) put a standalone
+aligner behind `IForcedAligner`.
+
+No further code is needed for (a): the provider reads the graph's outputs at
+initialisation and upgrades `TtsCapabilities.NativeTiming` to `NativeDuration` when
+`durations` is present, and it also upgrades on observing real timestamps at
+runtime. `TimedCueValidator` still gates whatever comes back, so a duration output
+that is present but unreliable degrades to coarse highlighting rather than
+producing confident, wrong word positions.
+
+Until then the word path is reported as unavailable rather than offered.

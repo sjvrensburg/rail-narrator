@@ -7,13 +7,13 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 171 passing, 0 warnings
+## Verified by automated tests — 174 passing, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
 | `RailNarrator.Domain.Tests` | 75 | Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, planner behaviour, coordinator invariants, cache keys, camera policy |
 | `RailNarrator.Pdf.Tests` | 13 | **Real PDFs** through the real RailReaderCore pipeline |
-| `RailNarrator.Speech.Tests` | 25 | PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
+| `RailNarrator.Speech.Tests` | 28 | PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
 | `RailNarrator.Audio.Tests` | 20 | Resampler, time-stretcher, playback engine against a controllable fake device |
 | `RailNarrator.Inference.Tests` | 38 | Golden maths semantics, response validator, endpoint client |
 
@@ -100,6 +100,23 @@ the response headers (`X-Audio-Sample-Rate`, `X-Audio-Format`, `X-Audio-Channels
 pads clips, and without trimming the first ~240 ms of every clip would hold the
 previous highlight on screen while nothing is being said.
 
+### Model compatibility probing
+Feeding the provider a Kokoro export built for a different runtime
+(`kokoro-v1.0.onnx`, inputs `input_ids`/`speed`/`style` instead of `tokens`) used
+to **abort the process**, because KokoroSharp's dispatch thread does not catch ONNX
+errors. It now reports a recoverable error naming the tensors the file declares:
+
+```
+provider: kokoro rev=kokoro-sharp/0.8.4:kokoro-v1.0.onnx available=False
+Provider unavailable: This ONNX model is not a KokoroSharp-compatible Kokoro
+export: it declares no 'tokens' input (its inputs are: input_ids, speed, style).
+```
+
+Verified in both directions — the incompatible model is refused cleanly (exit 0, no
+crash) and `kokoro-fp16.onnx` still synthesises at RTF 0.15 in the same build. Two
+regression tests cover it; the incompatible-model one is env-gated on
+`RAIL_NARRATOR_KOKORO_INCOMPATIBLE_MODEL` because it needs the real 325 MB file.
+
 ### Full chain in one pass
 `rail-narrator-smoke all` — fixture, extraction, units, plan, audio clock and real
 Kokoro synthesis, in a single process:
@@ -144,8 +161,9 @@ These are choices, not omissions. Each is recorded so it does not look like an
 oversight.
 
 - **Word-level highlighting.** No timing source exists on this machine — the Kokoro
-  export has no `durations` output and ZONOS3's aligner needs assets a
-  synthesis-only install lacks. See ADR-0004. The seam (`IForcedAligner`,
+  export has no `durations` output, the duration-enabled kokoro-onnx export is not
+  loadable by KokoroSharp at all (ADR-0004 has the measured detail), and ZONOS3's
+  aligner needs assets a synthesis-only install lacks. The seam (`IForcedAligner`,
   `TimedCueValidator`, capability-gated `NativeTiming`) is in place.
 - **Streaming synthesis.** The buffered sentence-clip path is the verified one. HTTP
   chunk boundaries are not frame boundaries, and streaming before the baseline is
@@ -189,3 +207,8 @@ Worth recording because each one was invisible until something asserted against 
    never fell inside a margin band. Detection is now per line.
 8. **The PDF text layer is not a transcription.** See ADR-0005 — this one produced
    "Alp h a o n e…" instead of "Alpha one…".
+9. **An incompatible ONNX model aborted the whole process.** KokoroSharp does not
+   catch ONNX errors on its dispatch thread, so a wrong model file crashed the app
+   instead of reporting an error. Found by actually trying the duration-enabled
+   kokoro-onnx export; the provider now probes the graph first, and the wait for a
+   synthesis is bounded so a dead worker cannot hang the caller forever.

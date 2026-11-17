@@ -202,6 +202,68 @@ public sealed class ProviderContractTests
     }
 
     [Fact]
+    public async Task Kokoro_RejectsANonModelFileAsUnavailableRatherThanThrowing()
+    {
+        // Capability probing must never throw: a missing or corrupt model is a diagnosable state the
+        // UI explains, not a crash at startup.
+        string notAModel = Path.Combine(Path.GetTempPath(), $"not-a-model-{Guid.NewGuid():N}.onnx");
+        File.WriteAllText(notAModel, "this is not an ONNX model");
+        try
+        {
+            var tts = new KokoroTtsProvider(new KokoroProviderSettings(notAModel));
+            await using (tts)
+            {
+                var caps = await tts.GetCapabilitiesAsync();
+                Assert.False(caps.IsAvailable);
+                Assert.Contains("Could not open the Kokoro model", caps.Unavailable);
+            }
+        }
+        finally { File.Delete(notAModel); }
+    }
+
+    [Fact]
+    public async Task Kokoro_RejectsAnIncompatibleExportInsteadOfCrashingTheProcess()
+    {
+        // Regression guard for a crash that was actually observed. KokoroSharp runs inference on its
+        // own dispatch thread and does not catch ONNX errors, so an export whose inputs are named
+        // differently (kokoro-onnx uses 'input_ids', KokoroSharp feeds 'tokens') aborts the whole
+        // process on first synthesis. The provider now probes the graph first.
+        //
+        // Needs the real 325 MB file, so it is skipped unless the path is supplied; the assertion is
+        // that we get a recoverable 'unavailable' naming the tensors, never a crash.
+        string? model = Environment.GetEnvironmentVariable("RAIL_NARRATOR_KOKORO_INCOMPATIBLE_MODEL");
+        if (model is null || !File.Exists(model)) return;
+
+        var tts = new KokoroTtsProvider(new KokoroProviderSettings(model));
+        await using (tts)
+        {
+            var caps = await tts.GetCapabilitiesAsync();
+            Assert.False(caps.IsAvailable);
+            Assert.Contains("not a KokoroSharp-compatible Kokoro export", caps.Unavailable);
+            Assert.Contains("tokens", caps.Unavailable);
+        }
+    }
+
+    [Fact]
+    public async Task Kokoro_ReportsDurationsCapabilityFromTheModelGraph()
+    {
+        // Word-level highlighting is capability-gated, so the capability has to come from evidence
+        // about the loaded model rather than from an assumption about Kokoro in general.
+        string? model = Environment.GetEnvironmentVariable("RAIL_NARRATOR_KOKORO_MODEL");
+        if (model is null || !File.Exists(model)) return;
+
+        var tts = new KokoroTtsProvider(new KokoroProviderSettings(model));
+        await using (tts)
+        {
+            var caps = await tts.GetCapabilitiesAsync();
+            Assert.True(caps.IsAvailable, caps.Unavailable);
+            // kokoro-fp16.onnx has no durations output, so no word timings may be claimed.
+            Assert.Equal(tts.ModelReportsDurations, caps.CanSupplyWordTiming);
+            if (!tts.ModelReportsDurations) Assert.Equal(TimingProvenance.None, caps.NativeTiming);
+        }
+    }
+
+    [Fact]
     public async Task FakeProvider_IsDeterministicForTheSameInput()
     {
         var tts = new FakeTtsProvider(new FakeTtsOptions(FixedFrameCount: 24000));

@@ -26,7 +26,7 @@ spoken script range   ──► original PDF source anchors
 
 ## Status
 
-Implemented, built and tested. **171 automated tests pass**, the whole solution
+Implemented, built and tested. **174 automated tests pass**, the whole solution
 builds with **0 warnings**, and the end-to-end path has been run for real:
 
 ```
