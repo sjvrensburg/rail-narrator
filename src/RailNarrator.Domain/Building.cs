@@ -99,6 +99,14 @@ public static class SentenceSplitter
         // number-final sentences never split at all.)
         if (punctIndex + 1 < s.Length && char.IsDigit(s[punctIndex + 1])) return false;
 
+        // A spaced ellipsis ("i = 1, . . . , q") is not three sentence ends. Neither is a period
+        // that the next non-space character is another period, or that follows one.
+        int after = FirstNonWhitespace(s, punctIndex + 1);
+        if (after >= 0 && after < s.Length && s[after] is '.' or '…') return false;
+        int before = punctIndex - 1;
+        while (before >= 0 && s[before] == ' ') before--;
+        if (before >= 0 && s[before] is '.' or '…') return false;
+
         // Abbreviation check: walk back over the token containing this period.
         int start = punctIndex;
         while (start > 0 && (char.IsLetter(s[start - 1]) || s[start - 1] == '.')) start--;

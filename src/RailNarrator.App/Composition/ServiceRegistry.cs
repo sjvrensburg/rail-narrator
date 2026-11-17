@@ -190,7 +190,7 @@ public sealed class ServiceRegistry : IAsyncDisposable
             .Select(a => $"{a.Name}/{a.Version}")
             .OrderBy(s => s, StringComparer.Ordinal));
 
-        if (settings.LayoutModelPath is not { Length: > 0 } path) return code;
+        if (ResolveLayoutModelPath(settings) is not { } path) return code;
         var info = new FileInfo(path);
         return code + "|" + (info.Exists ? $"{info.FullName}|{info.Length}|{info.LastWriteTimeUtc.Ticks}" : path);
     }
@@ -227,11 +227,27 @@ public sealed class ServiceRegistry : IAsyncDisposable
 
     public static ExtractionOptions BuildExtractionOptions(RailNarratorSettings settings)
         => new(
-            settings.LayoutAnalyzer,
+            // The analyzer actually used, not the one named in settings: a discovered layout model
+            // must change the extraction's identity, or its cached model-free snapshots are reused.
+            ResolveLayoutModelPath(settings) is not null ? "pp-doclayout-v3" : "text-layout",
             settings.Ocr,
             AnalysisRenderSize: settings.Ocr == OcrPolicy.Off ? 1024 : 1920,
             DeskewLines: false,
             ExtractorVersions.Current);
+
+    /// <summary>
+    /// The layout model to use: the configured path if it exists, else one the user downloaded into
+    /// the models directory from the Models menu (used without further setup — block roles are what
+    /// let narration skip page furniture, footnotes, references, figures and table cells, and
+    /// recognise formulas). Never fetched implicitly.
+    /// </summary>
+    public static string? ResolveLayoutModelPath(RailNarratorSettings settings)
+    {
+        if (settings.LayoutModelPath is { Length: > 0 } configured)
+            return File.Exists(configured) ? configured : null;
+        string installed = Path.Combine(XdgPaths.Models, ModelManifest.LayoutPpDocV3.FileName);
+        return File.Exists(installed) ? installed : null;
+    }
 
     private static ExtractionBackend BuildBackend(RailNarratorSettings settings, List<string> notes)
     {
@@ -242,12 +258,19 @@ public sealed class ServiceRegistry : IAsyncDisposable
             ? null
             : () => new RailReader.Core.Ocr.RapidOcr.RapidOcrService();
 
-        if (settings.LayoutModelPath is { Length: > 0 } modelPath && File.Exists(modelPath))
-            return ExtractionBackend.OnnxLayout(modelPath, ocrFactory);
+        if (ResolveLayoutModelPath(settings) is { } modelPath)
+        {
+            try { return ExtractionBackend.OnnxLayout(modelPath, ocrFactory); }
+            catch (Exception ex)
+            {
+                notes.Add($"The layout model at '{modelPath}' could not be loaded ({ex.Message}); using the model-free analyzer.");
+                return ExtractionBackend.ModelFree(ocrFactory);
+            }
+        }
 
-        if (settings.LayoutAnalyzer != "text-layout")
-            notes.Add($"Layout model '{settings.LayoutAnalyzer}' was requested but no model path is set; " +
-                      "falling back to the model-free text analyzer, which supplies no semantic block roles.");
+        notes.Add("No layout model is installed, so every block is treated as plain text: headers, footnotes, " +
+                  "references and tables cannot be told apart from prose. Models and endpoints > Download layout model " +
+                  $"({ModelManifest.LayoutPpDocV3.HumanSize}) enables them.");
         return ExtractionBackend.ModelFree(ocrFactory);
     }
 

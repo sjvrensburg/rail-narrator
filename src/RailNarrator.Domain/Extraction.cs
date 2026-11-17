@@ -213,6 +213,12 @@ public sealed record ExtractionSnapshot(
     /// <summary>Pages holding at least one character. Zero means the document is not narratable as extracted.</summary>
     public IReadOnlyList<int> PagesWithText => Pages.Where(p => p.Coverage.CharCount > 0).Select(p => p.PageIndex).ToList();
 
+    /// <summary>
+    /// True when a layout model assigned semantic roles. The model-free analyzer labels every block
+    /// Text, and role-keyed rules then fall back to geometry; with a model they trust the roles.
+    /// </summary>
+    public bool HasSemanticRoles => Pages.Any(p => p.Blocks.Any(b => b.Kind is not (BlockKind.Text or BlockKind.Unknown)));
+
     /// <summary>Every coverage warning across the document, prefixed with its page for display.</summary>
     public IEnumerable<string> AllWarnings()
         => Pages.SelectMany(p => p.Coverage.Warnings.Select(w => $"Page {p.PageIndex + 1}: {w}"));

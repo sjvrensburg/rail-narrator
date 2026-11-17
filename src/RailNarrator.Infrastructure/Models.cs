@@ -104,7 +104,23 @@ public static class ModelManifest
         Required: false,
         FileName: "zac.gguf");
 
-    public static IReadOnlyList<ModelAsset> All { get; } = [KokoroFp16, KokoroVoices, ZonosBackbone, ZonosDecoderFull];
+    /// <summary>
+    /// PP-DocLayoutV3 layout model: block roles (headings, formulas, tables, figures, footnotes,
+    /// references, page furniture) and its own reading order. Optional; without it the model-free
+    /// analyzer labels every block as text. The URL and checksum are RailReaderCore's registry entry.
+    /// </summary>
+    public static ModelAsset LayoutPpDocV3 { get; } = new(
+        Id: "pp-doclayout-v3",
+        Description: "PP-DocLayoutV3 layout model (25 classes, model-supplied reading order).",
+        Url: "https://huggingface.co/stefanj0/PP-DocLayoutV3-ONNX/resolve/main/PP-DocLayoutV3.onnx",
+        Revision: "PP-DocLayoutV3 FP32 (RailReaderCore LayoutModelRegistry)",
+        Bytes: 130_502_049,
+        Sha256: "d24809294b2f9f1a9a2767043a64df2714b66e5be056887be2233d1117d784f6",
+        Licence: "Apache-2.0 (PaddlePaddle model)",
+        Required: false,
+        FileName: "PP-DocLayoutV3.onnx");
+
+    public static IReadOnlyList<ModelAsset> All { get; } = [KokoroFp16, KokoroVoices, ZonosBackbone, ZonosDecoderFull, LayoutPpDocV3];
 
     public static ModelAsset? Find(string id) => All.FirstOrDefault(a => a.Id == id);
 

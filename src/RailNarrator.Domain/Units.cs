@@ -38,11 +38,47 @@ public sealed record ReadingUnitBuilderOptions(
     IReadOnlyDictionary<string, string>? PronunciationDictionary = null,
     IReadOnlyList<MathsRegionOverride>? Overrides = null,
     bool DetectRunningElements = true,
-    int RunningElementMinPages = 3)
+    int RunningElementMinPages = 3,
+    bool SkipPublisherCoverPages = true)
 {
     public static ReadingUnitBuilderOptions Default { get; } = new(NarrationFilterSettings.Default);
 
     public MathsDetectionOptions MathsOptions => Maths ?? new MathsDetectionOptions();
+}
+
+/// <summary>
+/// The cover sheet a publisher or archive prepends to a downloaded article: "To cite this article",
+/// "To link to this article", "Submit your article to this journal", "Article views", a JSTOR
+/// "Stable URL". A reader turns past it; read aloud it is a DOI spelled digit by digit and a list of
+/// view counts.
+/// </summary>
+public static class PublisherCoverPages
+{
+    private static readonly string[] Markers =
+    [
+        "To cite this article", "To link to this article", "Submit your article to this journal",
+        "Article views", "View related articles", "View Crossmark data", "Citing articles",
+        "Full Terms & Conditions of access", "Stable URL", "Your use of the JSTOR archive",
+        "JSTOR is a not-for-profit", "This article was downloaded by", "Published online:",
+    ];
+
+    /// <summary>
+    /// Pages among the first two that carry at least three markers. A single phrase can occur in an
+    /// article's own text; three on one page cannot plausibly be the article.
+    /// </summary>
+    public static IReadOnlyList<int> Find(ExtractionSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        var pages = new List<int>();
+        if (snapshot.PageCount < 2) return pages;   // a one-page document is never only a cover sheet
+        foreach (var page in snapshot.Pages.Take(2))
+        {
+            string flat = string.Join(' ', page.Text.Split((char[])['\n', '\r', ' '], StringSplitOptions.RemoveEmptyEntries));
+            int hits = Markers.Count(m => flat.Contains(m, StringComparison.OrdinalIgnoreCase));
+            if (hits >= 3) pages.Add(page.PageIndex);
+        }
+        return pages;
+    }
 }
 
 /// <summary>One line or block identified as a running header, footer or page number.</summary>
@@ -304,6 +340,14 @@ public sealed class ReadingUnitBuilder
         }).ToList();
 
         var runningBlockSet = running.Where(r => !r.IsLineLevel).Select(r => (r.PageIndex, r.BlockId)).ToHashSet();
+        if (_options.SkipPublisherCoverPages)
+        {
+            foreach (int cover in PublisherCoverPages.Find(snapshot))
+            {
+                foreach (var block in snapshot.Page(cover)?.Blocks ?? []) runningBlockSet.Add((cover, block.BlockId));
+                diag.Add($"Skipped page {cover + 1}: a publisher's download cover sheet (citation, links and view counts), not part of the article.");
+            }
+        }
         var runningLineSet = running.Where(r => r.IsLineLevel).Select(r => (r.PageIndex, r.LineId!)).ToHashSet();
         if (running.Count > 0)
             diag.Add($"Suppressed {running.Count} running header/footer/page-number line(s) across {running.Select(r => r.PageIndex).Distinct().Count()} page(s).");
@@ -789,8 +833,13 @@ public sealed class ReadingUnitBuilder
 
     // ---- unit cutting ------------------------------------------------------------------
 
+    // Inline maths detected in the run being cut, in run offsets. Filled while regions are
+    // classified, read when the prose units around it are made.
+    private readonly List<TextRange> _detectedInlineMaths = [];
+
     private IReadOnlyList<ReadingUnit> CutUnits(ReadingRun run, ExtractionSnapshot snapshot)
     {
+        _detectedInlineMaths.Clear();
         string text = run.AsString();
         var units = new List<ReadingUnit>();
         int unitSeq = 0;
@@ -804,15 +853,72 @@ public sealed class ReadingUnitBuilder
                 continue;
             }
 
-            string prose = text.Substring(region.Range.Start, region.Range.Length);
-            foreach (var sentence in SplitProse(prose, region.Range.Start, text))
+            // A heading, caption or footnote never shares a unit with the paragraph beside it, even
+            // when no full stop separates them: "2. The model In this article…" read as one sentence
+            // and gave the paragraph the heading's kind. A change of block kind is a hard boundary;
+            // a paragraph that merely continues into another block (next column, next page) is not.
+            foreach (var part in SplitAtKindChanges(run, region.Range))
             {
-                var kind = ClassifyProse(run, sentence);
-                foreach (var piece in EnforceMaxLength(sentence, text))
-                    units.Add(MakeUnit(run, text, piece, kind, ref unitSeq, snapshot));
+                // A table or algorithm is shown, not read: one unit over the whole block, which the
+                // planner turns into an announcement. Sentence-splitting a table made its cells
+                // into dozens of "sentences" of numbers.
+                var partKind = ClassifyProse(run, part);
+                if (partKind is ReadingUnitKind.Table or ReadingUnitKind.Algorithm)
+                {
+                    units.Add(MakeUnit(run, text, part, partKind, ref unitSeq, snapshot));
+                    continue;
+                }
+                string prose = text.Substring(part.Start, part.Length);
+                foreach (var sentence in SplitProse(prose, part.Start, text))
+                {
+                    var kind = ClassifyProse(run, sentence);
+                    foreach (var piece in EnforceMaxLength(sentence, text))
+                    {
+                        var unit = MakeUnit(run, text, piece, kind, ref unitSeq, snapshot);
+                        units.Add(HasInlineMaths(run, text, piece) ? unit with { ContainsMaths = true } : unit);
+                    }
+                }
             }
         }
         return units;
+    }
+
+    private bool HasInlineMaths(ReadingRun run, string text, TextRange piece)
+        => _detectedInlineMaths.Any(m => m.Overlaps(piece))
+           || run.LineSpans.Any(s => s.Kind == BlockKind.InlineMath && s.Start >= piece.Start && s.Start < piece.End)
+           || LooksMathematical(text.AsSpan(piece.Start, Math.Min(piece.Length, text.Length - piece.Start)));
+
+    /// <summary>
+    /// A text cue for maths the glyph detector misses: a relation or operator sign, or a Greek
+    /// letter, inside a sentence. Prose uses neither ("E(yt|Ft−1) = 0", "variance σ²").
+    /// </summary>
+    internal static bool LooksMathematical(ReadOnlySpan<char> text)
+    {
+        foreach (char c in text)
+        {
+            if (c is '=' or '<' or '>' or '≤' or '≥' or '≠' or '∼' or '≈' or '≡' or '∈' or '∉' or '⊂' or '⊆'
+                or '∑' or '∏' or '∫' or '√' or '∞' or '±' or '×' or '∂' or '∇' or '→' or '↦')
+                return true;
+            if (c is >= 'α' and <= 'ω' or >= 'Α' and <= 'Ω') return true;
+        }
+        return false;
+    }
+
+    private static IEnumerable<TextRange> SplitAtKindChanges(ReadingRun run, TextRange range)
+    {
+        int start = range.Start;
+        BlockKind? previous = null;
+        foreach (var span in run.LineSpans)
+        {
+            if (span.Start >= range.End) break;
+            if (span.Start > range.Start && previous is { } kind && kind != span.Kind && span.Start > start)
+            {
+                yield return TextRange.FromBounds(start, span.Start);
+                start = span.Start;
+            }
+            if (span.Start <= range.End) previous = span.Kind;
+        }
+        if (range.End > start) yield return TextRange.FromBounds(start, range.End);
     }
 
     private IReadOnlyList<TextRange> SplitProse(string prose, int offsetInRun, string runText)
@@ -884,11 +990,15 @@ public sealed class ReadingUnitBuilder
 
         // Display maths blocks are whole regions: never sentence-split an equation.
         var displayRanges = new List<TextRange>();
+        var displayBlocks = new List<string>();
         foreach (var span in run.LineSpans)
         {
             int end = NextSpanStart(run, span.Start);
             bool isDisplay = span.Kind == BlockKind.DisplayMath;
-            if (!isDisplay && span.Kind is BlockKind.Unknown or BlockKind.Text)
+            // With a layout model the model's formula class decides. The geometric fallback exists
+            // for the model-free analyzer, which labels everything Text; run on a model's Text
+            // blocks it turned prose lines carrying a symbol or two into "equations".
+            if (!isDisplay && !snapshot.HasSemanticRoles && span.Kind is BlockKind.Unknown or BlockKind.Text)
             {
                 // A model-free extraction gives every block the same role, so geometry decides: a
                 // short block carrying operators and sub/superscripts is a display equation.
@@ -899,7 +1009,17 @@ public sealed class ReadingUnitBuilder
                 isDisplay = bbox is { } b && MathsRegionDetector.IsDisplayMathsBlock(
                     span.Kind, b, pageHeight, ToCues(real), _options.MathsOptions);
             }
-            if (isDisplay) displayRanges.Add(TextRange.FromBounds(span.Start, end));
+            if (!isDisplay) continue;
+            // The lines of one display block are one equation: a summation's limits sit on lines of
+            // their own and were read as fragments ("r", "l = 1") either side of it.
+            var range = TextRange.FromBounds(span.Start, end);
+            if (displayRanges.Count > 0 && displayBlocks[^1] == span.BlockId && displayRanges[^1].End == range.Start)
+                displayRanges[^1] = TextRange.FromBounds(displayRanges[^1].Start, range.End);
+            else
+            {
+                displayRanges.Add(range);
+                displayBlocks.Add(span.BlockId);
+            }
         }
 
         // Manual overrides win over both detection paths, and "restore prose" removes a detection.
@@ -979,13 +1099,14 @@ public sealed class ReadingUnitBuilder
         // pass after the detected ones duplicated their text as out-of-order 1-char units.
         // Merging overlapping/adjacent ranges coalesces the per-glyph forced ranges, and the
         // cursor clip guarantees every character is emitted exactly once, in reading order.
-        var mathsRanges = new List<TextRange>();
+        // Detected inline maths no longer becomes a unit of its own: it marks the sentence around it
+        // (see ReadingUnit.ContainsMaths). Only a reader's explicit "treat as maths" cuts a region out.
         foreach (var m in inline)
         {
             if (forcedProse.Any(p => p.Overlaps(m))) continue;
-            mathsRanges.Add(m);
+            _detectedInlineMaths.Add(new TextRange(from + m.Start, m.Length));
         }
-        mathsRanges.AddRange(forcedMaths);
+        var mathsRanges = new List<TextRange>(forcedMaths);
         mathsRanges.Sort((a, b) => a.Start != b.Start ? a.Start.CompareTo(b.Start) : a.End.CompareTo(b.End));
         var merged = new List<TextRange>();
         foreach (var r in mathsRanges)
