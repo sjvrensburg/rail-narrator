@@ -182,10 +182,10 @@ public sealed class ExtractionTests
     [Fact]
     public async Task RealHyphens_SurviveExtraction()
     {
-        // A hyphen that is part of a word must not be removed. Note the fixture limitation found
-        // while writing this: Skia's PDF writer drops a *trailing* hyphen from the text layer, so
-        // end-of-line hyphenation cannot be produced this way. Dehyphenation across a line break is
-        // therefore covered by ReadingUnitTests in the domain suite, where the input is controlled.
+        // A hyphen that is part of a word must not be removed. The trailing hyphen of the first line
+        // used to vanish here, and that was put down to Skia's PDF writer. It was PDFium: a hyphen
+        // that ends a line is reported as U+0002, which the unit builder discarded with every other
+        // control character. See AWordHyphenatedAtALineEnd_IsRejoinedFromARealPdf.
         string path = SyntheticPdf.WriteHyphenated(SyntheticPdf.TempPath("hyphen"),
             ("A state-", "of-the-art baseline was used for comparison."));
 
@@ -195,8 +195,22 @@ public sealed class ExtractionTests
         var plan = await planner.BuildPlanAsync(snapshot, units, NarrationFilterSettings.Default);
         string spoken = string.Join(" ", plan.Segments.Select(s => s.SpokenText));
 
-        // The mid-word hyphens survive intact; only the trailing one is lost, by the PDF writer.
+        // The mid-word hyphens survive intact.
         Assert.Contains("of-the-art baseline was used for comparison.", spoken);
+    }
+
+    [Fact]
+    public async Task AWordHyphenatedAtALineEnd_IsRejoinedFromARealPdf()
+    {
+        string path = SyntheticPdf.WriteHyphenated(SyntheticPdf.TempPath("softhyphen"),
+            ("The estimator is unbiased under the stated assump-", "tions and remains consistent in large samples."));
+
+        var snapshot = await ExtractAsync(path);
+        var units = new ReadingUnitBuilder(new ReadingUnitBuilderOptions(NarrationFilterSettings.Default)).Build(snapshot);
+        var plan = await new NarrationPlanner().BuildPlanAsync(snapshot, units, NarrationFilterSettings.Default);
+        string spoken = string.Join(" ", plan.Segments.Select(s => s.SpokenText));
+
+        Assert.Contains("under the stated assumptions and remains consistent", spoken);
     }
 
     [Fact]

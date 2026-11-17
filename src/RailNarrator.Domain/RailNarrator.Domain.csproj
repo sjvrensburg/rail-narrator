@@ -3,4 +3,7 @@
     <RootNamespace>RailNarrator.Domain</RootNamespace>
     <Description>Narration domain: source anchors, reading units, narration plans, source maps, playback state and follow policy. No hardware, no network, no PDF stack.</Description>
   </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Resources/ligature-words.txt" LogicalName="RailNarrator.Domain.Resources.ligature-words.txt" />
+  </ItemGroup>
 </Project>

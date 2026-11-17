@@ -7,12 +7,12 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 220 passing, 2 opt-in skips, 0 warnings
+## Verified by automated tests — 231 passing, 2 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
-| `RailNarrator.Domain.Tests` | 97 | Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, cache keys, camera policy |
-| `RailNarrator.Pdf.Tests` | 13 | **Real PDFs** through the real RailReaderCore pipeline |
+| `RailNarrator.Domain.Tests` | 107 | Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, cache keys, camera policy |
+| `RailNarrator.Pdf.Tests` | 14 | **Real PDFs** through the real RailReaderCore pipeline |
 | `RailNarrator.Speech.Tests` | 36 | PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
 | `RailNarrator.Audio.Tests` | 32 | Resampler, time-stretcher, playback engine against a controllable fake device, engine lock ordering, coordinator-plus-engine transition stress |
 | `RailNarrator.Infrastructure.Tests` | 4 | Cache round-trips and waveform integrity, including same-length replacement |
@@ -181,6 +181,19 @@ the two items marked as measured before.
   "Restored your position".
 - **A correction typed into the maths review box** is saved, re-synthesised (script revision 2),
   spoken on the next Play and still present after a restart.
+- **The narration script of the same three documents**, after the word-boundary and ligature
+  fixes. For the 27-page paper, reading units scored against `pdftotext`'s tokens for the same
+  pages went from F1 0.77 to 0.85 (0.46 to 0.63 on tokens containing digits); 96.2 % of prose
+  words are dictionary words against 93.2 %; "ofthe" fell from 38 occurrences to none and all five
+  ligature glyphs (ff, fi, fl, ffi, ft) were identified. 49 running-head and page-number lines are
+  suppressed across all 27 pages, against 2. The rotated page yields its four sentences with
+  every space. The scan reads as sentences ("How does a market practitioner decide, on any given
+  trading day, whether the market is in a calm or turbulent state?") where it read "B ac kground
+  and m otivat ion".
+- **Word highlighting reaches more of a real paper**: 42 % of its prose passages are fully covered
+  by the pronunciation dictionary, against 30 %. A sentence that fell back to sentence
+  highlighting because of "su ciently" now steps through its fourteen words, and word
+  highlighting works on the scan.
 
 ## Not verified — and what it would take
 
@@ -190,7 +203,7 @@ the two items marked as measured before.
 | **Audible-to-visible delay** | Highlights agree with the device's own DAC timestamps; whether those timestamps are right for a given device is unmeasured | Loopback microphone plus display capture, at several speeds and on wired and Bluetooth outputs |
 | **LLM maths narration** | No text LLM endpoint was configured on this machine | Point `MathLlmBaseUrl`/`MathLlmModel` at a local server and run the golden examples in `GoldenMathSemanticsTests` against it — the assertion helpers already check semantics, not wording |
 | **VLM equation transcription** | No vision endpoint configured | Configure one and check a real equation crop round-trips |
-| **Scanned-document OCR at 300 dpi** | A 131 ppi scan was run: recognition and highlight placement work, but the narration script is not usable (see open defects) | Fix word spacing for OCR text, then check a 300 dpi scan for coverage, warnings and reading order |
+| **Scanned-document OCR at 300 dpi** | A 131 ppi scan with handwriting was run and reads as sentences; the handwriting is recognised as stray words | Check a clean 300 dpi scan for coverage, warnings and reading order |
 | **Semantic layout roles** | The default is the model-free analyzer, so every block arrives as `Text` | Download PP-DocLayoutV3 and set `LayoutModelPath`; role-keyed suppression and display-maths detection then use roles instead of geometry |
 | **Clean-machine install** | The archive was built and run here, not on a fresh system | Install on a stock Fedora/Debian with only `libportaudio2` added |
 | **Long-document endurance** | Seven minutes of a 27-page paper, 1.7 GB resident; prepared clips are never evicted from memory, so growth over a whole document is unmeasured | Play a 40-page paper to the end: peak RSS, preparation lag versus playback, cache growth |
@@ -200,18 +213,17 @@ the two items marked as measured before.
 
 Not fixed yet. Each was observed in the run described above.
 
-- **Ligatures are dropped from some typeset PDFs.** PDFium returned the fi/ff/ffi glyphs of a
-  dvips-produced paper as control characters (U+0002, U+0000, U+0008), and the reading-unit builder
-  discards control characters. The script reads "su ciently", "speci cation", "e ect".
-- **Word spacing from ink gaps fails in four ways.** Digits split around "1" in fonts with wide
-  side bearings ("2017" is spoken as "two hundred one seven"); tightly set words merge ("ofthe",
-  34 times in one paper); rotated text loses every space; OCR text gets spaces inside words
-  ("B ac kground and m otivat ion"). ADR-0005's measurement held for the fixture it was taken on.
-- **Word highlighting is rare on a real paper.** 30 % of that paper's prose passages were fully
-  covered by the pronunciation dictionary; the rest fell back to sentence highlighting, partly
-  because of the two defects above.
-- **Running headers, the copyright footer and a footnote are read mid-sentence** on most pages of
-  the paper; suppression caught 2 lines across 2 of 27 pages.
+- **Word highlighting still falls back on most of a technical paper.** 58 % of that paper's prose
+  passages contain a word the pronunciation dictionary lacks ("GARCH", "heteroskedasticity",
+  authors' names), and one such word sends the whole sentence to sentence highlighting.
+- **Identifiers are read as numbers.** "ISSN 1532-4168" is spoken as two cardinals and a DOI
+  digit by digit with "point" between; 1993 is read as "one thousand nine hundred ninety three".
+- **A first-page copyright line and a footnote are read mid-sentence.** They occur once, so no
+  repetition rule can find them; they need a layout role or a position rule.
+- **An unmapped glyph that is not an f-ligature stays unspoken.** The resolver knows ff, fi, fl,
+  ffi, ffl, ft, fj, fb, fh, fk and Th. A font with other unmapped ligatures (ct, st, tt) would
+  still lose those letters, and a code that two fonts in one document use differently is resolved
+  for neither unless one clearly dominates.
 - **One display equation becomes several passages**, each announcing that it could not be read,
   and two of three display equations tried did not respond to a click.
 - **Extraction is not cached.** The scan was OCRed again, about 25 s, on every open.
@@ -303,3 +315,13 @@ threads meeting.
     half.
 17. **Space and Escape fired wherever focus was.** A space typed into the maths correction box
     started playback, and Escape used to dismiss a menu stopped it.
+18. **Ligatures vanished from a typeset paper.** PDFium returned glyphs named `f_i`, `f_f`,
+    `f_f_i`, `f_l` and `f_t` as control characters, which were discarded: "su ciently",
+    "speci cation". They are now identified from the document and expanded.
+19. **Word boundaries came from ink gaps alone**, which split numbers at a tabular "1", lost the
+    space after an "f", lost every space in rotated text and put spaces inside OCR words. The
+    text layer's spaces are now used wherever the page's geometry confirms them. ADR-0005.
+20. **A hyphen ending a line was dropped**, so "vari-" and "ance" were two words. PDFium marks it
+    with U+0002; this had been recorded as a limitation of the fixture writer.
+21. **Alternating running heads and journal page numbers were narrated.** Each head is on fewer
+    than half the pages, and "422" is not page 2.

@@ -112,12 +112,18 @@ and pure, so an extraction is a deterministic function of the document plus opti
 — which is what makes cached plans and cached audio safe to reuse, and what makes
 the geometry tests reproducible.
 
-Word spacing is derived from ink gaps between marking glyphs, not read from the text
-layer. ADR-0005 has the measurement: on a real PDF the text layer read
-`"Alp \nh \na o \nn…"` for `"Alpha one in the left column."`, and the phantom
-characters carry zero-area `CharBox` entries exactly like real spaces, so no amount
-of index or whitespace filtering separates them. Ink gaps do — 1.85× separation with
-nothing in between.
+Word boundaries are the text layer's own spaces wherever the page's geometry confirms
+them, and ink gaps between marking glyphs where it does not; neither is trusted alone.
+ADR-0005 has both measurements. On one generated PDF the text layer read
+`"Alp \nh \na o \nn…"` for `"Alpha one in the left column."`, with phantom
+characters indistinguishable from real spaces, and only ink gaps separated the words.
+On a typeset article the text layer was right and ink gaps were not: the white beside
+a tabular "1" read as a space and the space after an overhanging "f" did not, so
+"2017" was narrated as "two hundred one seven" and "of the" as "ofthe".
+
+Control characters in a page's text are information, not noise. They are ligature
+glyphs whose names PDFium could not map — identified from the document by
+`UnmappedGlyphResolver` — or PDFium's marker for a hyphen that ends a line.
 
 ## Host services are supplied, not inherited
 

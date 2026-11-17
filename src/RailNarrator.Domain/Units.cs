@@ -92,7 +92,8 @@ public static class RunningElementDetector
 
         var found = new List<RunningElement>();
         var textCounts = new Dictionary<string, int>(StringComparer.Ordinal);
-        var candidates = new List<(PageExtraction Page, ExtractedBlock Block, ExtractedLine? Line, string Normalised, bool InHeaderBand, bool InFooterBand)>();
+        var candidates = new List<(PageExtraction Page, ExtractedBlock Block, ExtractedLine? Line, string Normalised, string Key, bool InHeaderBand, bool InFooterBand)>();
+        var printedNumbers = new List<(PageExtraction Page, ExtractedBlock Block, ExtractedLine Line, string Normalised, int Number)>();
 
         foreach (var page in snapshot.Pages)
         {
@@ -134,22 +135,42 @@ public static class RunningElementDetector
                         continue;
                     }
 
-                    candidates.Add((page, block, line, normalised, inHeaderBand, inFooterBand));
-                    textCounts[normalised] = textCounts.GetValueOrDefault(normalised) + 1;
+                    // A bare number that is not this page's index may still be a printed page number:
+                    // a journal article starts at 421, a chapter at 37. Decided below, across pages.
+                    if (TryParseBareNumber(normalised, out int printed))
+                    {
+                        printedNumbers.Add((page, block, line, normalised, printed));
+                        continue;
+                    }
+
+                    string key = RepetitionKey(normalised);
+                    if (key.Length == 0) continue;
+                    candidates.Add((page, block, line, normalised, key, inHeaderBand, inFooterBand));
+                    textCounts[key] = textCounts.GetValueOrDefault(key) + 1;
                 }
             }
         }
 
         int pages = snapshot.Pages.Count;
-        // A header printed on every page repeats once per page, but a cover page often differs, so the
-        // threshold scales with document length rather than being an absolute count.
-        int threshold = Math.Max(minPages, Math.Min(pages, (int)Math.Ceiling(pages * 0.5)));
+        // Books and journals alternate their running heads — author on the left-hand page, title on
+        // the right — and a cover page or two carries neither, so each head appears on rather fewer
+        // than half the pages. Measured on a 27-page article: 13 and 13. A half-the-pages rule
+        // missed both, and they were read aloud in the middle of sentences that cross a page.
+        int threshold = Math.Max(minPages, Math.Min(pages, (int)Math.Ceiling(pages * RunningShareOfPages)));
 
         foreach (var c in candidates)
         {
-            if (textCounts[c.Normalised] < threshold) continue;
+            if (textCounts[c.Key] < threshold) continue;
             var kind = c.InHeaderBand ? RunningElementKind.RepeatedHeader : RunningElementKind.RepeatedFooter;
             found.Add(new RunningElement(c.Page.PageIndex, c.Block.BlockId, c.Line!.LineId, c.Normalised, kind));
+        }
+
+        // Printed page numbers: the same offset from the page index, page after page.
+        foreach (var run in printedNumbers.GroupBy(n => n.Number - n.Page.PageIndex))
+        {
+            if (run.Select(n => n.Page.PageIndex).Distinct().Count() < threshold) continue;
+            foreach (var n in run)
+                found.Add(new RunningElement(n.Page.PageIndex, n.Block.BlockId, n.Line.LineId, n.Normalised, RunningElementKind.PageNumber));
         }
         return found;
     }
@@ -178,6 +199,32 @@ public static class RunningElementDetector
             else if (char.IsWhiteSpace(c) && sb.Length > 0 && sb[^1] != ' ') sb.Append(' ');
         }
         return sb.ToString().Trim();
+    }
+
+    /// <summary>Share of a document's pages a margin line must recur on to count as a running head or foot.</summary>
+    public const double RunningShareOfPages = 0.3;
+
+    /// <summary>
+    /// What two margin lines must share to be the same running element: their letters. Digits are
+    /// left out because a running head often carries the page number or the year with it.
+    /// </summary>
+    private static string RepetitionKey(string normalised)
+    {
+        var sb = new System.Text.StringBuilder(normalised.Length);
+        foreach (char c in normalised)
+        {
+            if (char.IsLetter(c)) sb.Append(c);
+            else if (c == ' ' && sb.Length > 0 && sb[^1] != ' ') sb.Append(' ');
+        }
+        string key = sb.ToString().Trim();
+        return key.Count(char.IsLetter) >= 3 ? key : "";
+    }
+
+    private static bool TryParseBareNumber(string normalised, out int number)
+    {
+        number = 0;
+        string compact = normalised.Replace(" ", "");
+        return compact.Length is > 0 and <= 5 && compact.All(char.IsAsciiDigit) && int.TryParse(compact, out number);
     }
 
     private static bool IsPageNumberLike(string normalised, int pageIndex, int pageCount)
@@ -315,19 +362,29 @@ public sealed class ReadingUnitBuilder
         public string AsString() => Text.ToString();
     }
 
+    /// <summary>A glyph that leaves ink on the page, and whether the text layer put whitespace before it.</summary>
+    private readonly record struct LineGlyph(int Index, char Char, PageRect Rect, bool WhitespaceBefore);
+
+    /// <summary>One source line with its word boundaries decided, ready to be written into the run.</summary>
+    private sealed record PreparedLine(
+        PageExtraction Page, ExtractedBlock Block, ExtractedLine Line, int LineIndex,
+        float MedianHeight, float Baseline, List<LineGlyph> Glyphs, bool[] SpaceBefore);
+
     private ReadingRun BuildRun(
         ExtractionSnapshot snapshot,
         HashSet<(int PageIndex, string BlockId)> runningBlockSet,
         HashSet<(int PageIndex, string LineId)> runningLineSet,
         List<string> diag)
     {
-        var run = new ReadingRun();
         int droppedFiltered = 0, droppedDuplicateOcr = 0, droppedRunning = 0;
+        var prepared = new List<PreparedLine>();
 
+        // Pass one: for every narratable line, collect the glyphs and decide where the words end.
         foreach (var page in snapshot.Pages.OrderBy(p => p.PageIndex))
         {
             var charRects = BuildCharRectLookup(page);
             var nativeLines = page.Lines.Where(l => !l.FromOcr).ToList();
+            bool trustTextLayer = TextLayerSpacesAgreeWithGeometry(page, charRects);
 
             foreach (var block in page.OrderedBlocks)
             {
@@ -358,64 +415,80 @@ public sealed class ReadingUnitBuilder
                         continue;
                     }
 
-                    int lineStart = run.Text.Length;
+                    var glyphs = MarkingGlyphs(page, charRects, line.Text);
+                    if (glyphs.Count == 0) continue;
                     float median = MedianGlyphHeight(page, charRects, line.Text);
-                    float baseline = line.Rect.Bottom;
-
-                    // Collect the line's *marking* glyphs, then decide where the word spaces go.
-                    //
-                    // The text layer cannot be used as a transcription. Measured on a real PDF, the
-                    // producer had embedded " \n" pairs inside words, so a line whose text range read
-                    // back as "Alp \nh \na o \nn..." stood for "Alpha one in the left column." Those
-                    // phantom characters do carry CharBox entries — zero-area, exactly like a real
-                    // space — so neither index filtering nor a whitespace test can tell them apart.
-                    //
-                    // Geometry can, but not from ink gaps: a glyph box is tight around the ink and
-                    // excludes side bearings, so the gap between two letters of a word routinely
-                    // exceeds a fifth of an em. Advances (left edge to left edge) are regular, so a
-                    // space shows up as an advance well above the line's median advance.
-                    var lineGlyphs = new List<(int Index, char Char, PageRect Rect)>();
-                    for (int ci = line.Text.Start; ci < line.Text.End && ci < page.Text.Length; ci++)
-                    {
-                        if (!charRects.TryGetValue(ci, out var rect)) continue;
-                        if (rect.IsEmpty) continue;          // whitespace and other non-marking glyphs
-                        char ch = page.Text[ci];
-                        if (char.IsWhiteSpace(ch) || char.IsControl(ch)) continue;
-                        lineGlyphs.Add((ci, ch, rect));
-                    }
-                    if (lineGlyphs.Count == 0) continue;
-
-                    float spaceGap = SpaceGapThreshold(lineGlyphs, median);
-                    bool emittedAny = false;
-
-                    for (int gi = 0; gi < lineGlyphs.Count; gi++)
-                    {
-                        var (ci, ch, rect) = lineGlyphs[gi];
-                        // Ink-to-ink gap, not advance: advance includes the previous glyph's own
-                        // width, which varies far more than the space it is being compared against.
-                        if (gi > 0 && rect.Left - lineGlyphs[gi - 1].Rect.Right > spaceGap)
-                        {
-                            // A synthesised space: no box of its own, so it inherits the preceding
-                            // glyph's source offset and contributes no highlight geometry.
-                            run.Text.Append(' ');
-                            run.Glyphs.Add(new RunGlyph(' ', default, lineGlyphs[gi - 1].Index, page.PageIndex,
-                                block.BlockId, line.LineId, lineIndex, block.Kind, line.FromOcr, median, baseline));
-                        }
-
-                        run.Text.Append(ch);
-                        run.Glyphs.Add(new RunGlyph(ch, rect, ci, page.PageIndex, block.BlockId, line.LineId,
-                            lineIndex, block.Kind, line.FromOcr, median, baseline));
-                        emittedAny = true;
-                    }
-                    if (!emittedAny) continue;
-
-                    run.LineSpans.Add((lineStart, page.PageIndex, block.BlockId, line.LineId, block.Kind));
-                    // Mark the break so dehyphenation only joins words across a real line boundary.
-                    run.LineBreakOffsets.Add(run.Text.Length);
-                    run.Text.Append('\n');
-                    run.Glyphs.Add(default); // placeholder keeps Text and Glyphs index-aligned
+                    prepared.Add(new PreparedLine(page, block, line, lineIndex, median, line.Rect.Bottom, glyphs,
+                        DecideSpaces(glyphs, median, line.FromOcr, trustTextLayer)));
                 }
             }
+        }
+
+        // Between the passes: glyphs the text layer returned without a Unicode value are identified
+        // from the whole document at once, because one occurrence proves nothing and fifty do.
+        var ligatures = UnmappedGlyphResolver.Infer(prepared.SelectMany(TokensWithUnmappedGlyphs));
+        if (ligatures.Count > 0)
+            diag.Add($"Identified {ligatures.Count} ligature glyph(s) the PDF text layer left unmapped: " +
+                     string.Join(", ", ligatures.Values.OrderBy(v => v, StringComparer.Ordinal)) + ".");
+
+        // Pass two: write the run.
+        var run = new ReadingRun();
+        foreach (var p in prepared)
+        {
+            int lineStart = run.Text.Length;
+            bool emittedAny = false, pendingSpace = false;
+            int lastIndex = p.Glyphs[0].Index;
+
+            for (int gi = 0; gi < p.Glyphs.Count; gi++)
+            {
+                var g = p.Glyphs[gi];
+                if (gi > 0 && p.SpaceBefore[gi]) pendingSpace = true;
+
+                string? expansion = null;
+                if (IsLineEndHyphen(p, gi))
+                {
+                    // Restored as a real hyphen so dehyphenation can rejoin the word across the break.
+                    expansion = "-";
+                }
+                else if (UnmappedGlyphResolver.IsUnmapped(g.Char))
+                {
+                    if (!(ligatures.TryGetValue(g.Char, out expansion) && SitsInsideAWord(p, gi)))
+                    {
+                        // Unidentified: usually a symbol from a mathematical font. It is not spoken,
+                        // and it separates what stands on either side of it, as it does on the page.
+                        pendingSpace = true;
+                        continue;
+                    }
+                }
+
+                if (pendingSpace && emittedAny)
+                {
+                    // A synthesised space: no box of its own, so it inherits the preceding glyph's
+                    // source offset and contributes no highlight geometry.
+                    run.Text.Append(' ');
+                    run.Glyphs.Add(new RunGlyph(' ', default, lastIndex, p.Page.PageIndex,
+                        p.Block.BlockId, p.Line.LineId, p.LineIndex, p.Block.Kind, p.Line.FromOcr, p.MedianHeight, p.Baseline));
+                }
+                pendingSpace = false;
+
+                // A ligature becomes its letters. They share the glyph's box and source offset, so the
+                // word still highlights as one piece and still maps back to one place in the PDF.
+                foreach (char ch in expansion ?? g.Char.ToString())
+                {
+                    run.Text.Append(ch);
+                    run.Glyphs.Add(new RunGlyph(ch, g.Rect, g.Index, p.Page.PageIndex, p.Block.BlockId, p.Line.LineId,
+                        p.LineIndex, p.Block.Kind, p.Line.FromOcr, p.MedianHeight, p.Baseline));
+                }
+                emittedAny = true;
+                lastIndex = g.Index;
+            }
+            if (!emittedAny) continue;
+
+            run.LineSpans.Add((lineStart, p.Page.PageIndex, p.Block.BlockId, p.Line.LineId, p.Block.Kind));
+            // Mark the break so dehyphenation only joins words across a real line boundary.
+            run.LineBreakOffsets.Add(run.Text.Length);
+            run.Text.Append('\n');
+            run.Glyphs.Add(default); // placeholder keeps Text and Glyphs index-aligned
         }
 
         if (droppedFiltered > 0) diag.Add($"Skipped {droppedFiltered} block(s) excluded by the content filters.");
@@ -432,8 +505,226 @@ public sealed class ReadingUnitBuilder
         return map;
     }
 
+    // ---- word boundaries ---------------------------------------------------------------
+
     /// <summary>
-    /// The ink-to-ink gap above which two consecutive marking glyphs are separated by a word space.
+    /// Share of a line's glyph pairs that may carry text-layer whitespace before that whitespace
+    /// stops being believable. A layer with a space between most letters is the phantom-character
+    /// case, not a line of one-letter words.
+    /// </summary>
+    public const float MaxWhitespacePairShare = 0.45f;
+
+    /// <summary>
+    /// Share of a page's text-layer spaces that must coincide with a visible gap for the layer's
+    /// spacing to be trusted on that page.
+    /// </summary>
+    public const float MinWhitespaceAgreement = 0.75f;
+
+    /// <summary>
+    /// Without text-layer whitespace, how many times the geometric threshold a gap must reach to be
+    /// taken as a word space on a page whose text layer is otherwise trusted.
+    /// </summary>
+    public const float UnmarkedGapMultiple = 2.5f;
+
+    /// <summary>A backwards jump of this many glyph heights is a wrapped line, not kerning.</summary>
+    public const float WrapJumpHeights = 2.0f;
+
+    /// <summary>The line's glyphs that leave ink, in text order, noting text-layer whitespace between them.</summary>
+    private static List<LineGlyph> MarkingGlyphs(PageExtraction page, Dictionary<int, PageRect> charRects, TextRange lineRange)
+    {
+        var glyphs = new List<LineGlyph>();
+        bool whitespaceSeen = false;
+        for (int ci = lineRange.Start; ci < lineRange.End && ci < page.Text.Length; ci++)
+        {
+            char ch = page.Text[ci];
+            if (char.IsWhiteSpace(ch)) { whitespaceSeen = true; continue; }
+            if (!charRects.TryGetValue(ci, out var rect) || rect.IsEmpty) continue;   // non-marking
+            glyphs.Add(new LineGlyph(ci, ch, rect, glyphs.Count > 0 && whitespaceSeen));
+            whitespaceSeen = false;
+        }
+        return glyphs;
+    }
+
+    /// <summary>The direction a line's glyphs advance in. Text is not always set left to right.</summary>
+    private enum RunAxis { Right, Left, Down, Up }
+
+    private static RunAxis DominantAxis(IReadOnlyList<LineGlyph> glyphs)
+    {
+        if (glyphs.Count < 3) return RunAxis.Right;
+        var dx = new List<float>(glyphs.Count - 1);
+        var dy = new List<float>(glyphs.Count - 1);
+        for (int i = 1; i < glyphs.Count; i++)
+        {
+            dx.Add(glyphs[i].Rect.MidX - glyphs[i - 1].Rect.MidX);
+            dy.Add(glyphs[i].Rect.MidY - glyphs[i - 1].Rect.MidY);
+        }
+        dx.Sort(); dy.Sort();
+        // The median step, so the one large jump at a wrap does not outvote the whole line.
+        float mx = dx[dx.Count / 2], my = dy[dy.Count / 2];
+        if (Math.Abs(my) > Math.Abs(mx)) return my > 0 ? RunAxis.Down : RunAxis.Up;
+        return mx < 0 ? RunAxis.Left : RunAxis.Right;
+    }
+
+    /// <summary>Where a glyph starts along the reading direction.</summary>
+    private static float Leading(PageRect r, RunAxis axis) => axis switch
+    {
+        RunAxis.Left => -r.Right, RunAxis.Down => r.Top, RunAxis.Up => -r.Bottom, _ => r.Left,
+    };
+
+    /// <summary>Where a glyph ends along the reading direction.</summary>
+    private static float Trailing(PageRect r, RunAxis axis) => axis switch
+    {
+        RunAxis.Left => -r.Left, RunAxis.Down => r.Bottom, RunAxis.Up => -r.Top, _ => r.Right,
+    };
+
+    /// <summary>Ink-to-ink gap before each glyph along the reading direction. Index 0 is unused.</summary>
+    private static float[] GapsAlong(IReadOnlyList<LineGlyph> glyphs, RunAxis axis)
+    {
+        var gaps = new float[glyphs.Count];
+        for (int i = 1; i < glyphs.Count; i++)
+            gaps[i] = Leading(glyphs[i].Rect, axis) - Trailing(glyphs[i - 1].Rect, axis);
+        return gaps;
+    }
+
+    /// <summary>Glyph size across the reading direction: height for horizontal text, width for rotated text.</summary>
+    private static float CrossSize(IReadOnlyList<LineGlyph> glyphs, RunAxis axis, float medianHeight)
+    {
+        if (axis is RunAxis.Right or RunAxis.Left) return medianHeight;
+        var widths = glyphs.Select(g => g.Rect.Width).Where(w => w > 0).OrderBy(w => w).ToList();
+        return widths.Count == 0 ? medianHeight : widths[widths.Count / 2];
+    }
+
+    /// <summary>
+    /// Decides, for each glyph, whether a word space precedes it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Two sources of evidence, neither sufficient alone. The text layer's own whitespace is usually
+    /// right, because the PDF library places it from font metrics this code cannot see — but not
+    /// always: one real producer embedded " \n" inside words, so a line read back as "Alp \nh \na
+    /// o \nn..." (ADR-0005). Ink gaps cannot be faked, but a glyph box excludes side bearings, so
+    /// gaps mislead in both directions: a tabular "1" has enough white around it to look like a
+    /// space, and an "f" overhangs far enough to hide one.
+    /// </para>
+    /// <para>
+    /// So geometry is used to check the text layer rather than to replace it. Where a page's
+    /// text-layer spaces coincide with visible gaps, they are taken as the word boundaries and the
+    /// gaps only confirm them. Where they do not, the page falls back to gaps alone. Measured on a
+    /// 27-page typeset paper against an independent extractor's tokens: gaps alone scored F1 0.80
+    /// (0.46 on tokens containing digits), this rule 0.85 (0.66); "2017" stopped being read as
+    /// "201 7" and "of the" stopped being read as "ofthe".
+    /// </para>
+    /// <para>
+    /// OCR text carries the recogniser's own spaces and character boxes that are estimates, not ink,
+    /// so there the text is believed outright.
+    /// </para>
+    /// </remarks>
+    private static bool[] DecideSpaces(List<LineGlyph> glyphs, float medianHeight, bool fromOcr, bool trustTextLayer)
+    {
+        var space = new bool[glyphs.Count];
+        if (glyphs.Count < 2) return space;
+
+        int marked = 0;
+        for (int i = 1; i < glyphs.Count; i++) if (glyphs[i].WhitespaceBefore) marked++;
+
+        if (fromOcr && marked > 0)
+        {
+            for (int i = 1; i < glyphs.Count; i++) space[i] = glyphs[i].WhitespaceBefore;
+            return space;
+        }
+
+        var axis = DominantAxis(glyphs);
+        float size = CrossSize(glyphs, axis, medianHeight);
+        var gaps = GapsAlong(glyphs, axis);
+        float threshold = SpaceGapThreshold(gaps, size);
+        bool believeLayer = trustTextLayer && !fromOcr && marked < MaxWhitespacePairShare * (glyphs.Count - 1);
+
+        for (int i = 1; i < glyphs.Count; i++)
+        {
+            float gap = gaps[i];
+            // A merged line that wraps: the next glyph starts a whole line back from the last.
+            bool wrapped = gap < -WrapJumpHeights * size;
+            space[i] = wrapped || (believeLayer
+                ? (glyphs[i].WhitespaceBefore && gap > 0) || gap > UnmarkedGapMultiple * threshold
+                : gap > threshold);
+        }
+        return space;
+    }
+
+    /// <summary>
+    /// Whether this page's text-layer whitespace falls where the glyphs actually part.
+    /// </summary>
+    private static bool TextLayerSpacesAgreeWithGeometry(PageExtraction page, Dictionary<int, PageRect> charRects)
+    {
+        int marked = 0, markedWithGap = 0, unmarked = 0;
+        foreach (var line in page.Lines)
+        {
+            if (line.FromOcr) continue;
+            var glyphs = MarkingGlyphs(page, charRects, line.Text);
+            if (glyphs.Count < 2) continue;
+            var axis = DominantAxis(glyphs);
+            float size = CrossSize(glyphs, axis, MedianGlyphHeight(page, charRects, line.Text));
+            var gaps = GapsAlong(glyphs, axis);
+            float threshold = SpaceGapThreshold(gaps, size);
+            for (int i = 1; i < glyphs.Count; i++)
+            {
+                if (!glyphs[i].WhitespaceBefore) { unmarked++; continue; }
+                marked++;
+                if (gaps[i] > 0.5f * threshold || gaps[i] < -WrapJumpHeights * size) markedWithGap++;
+            }
+        }
+        return marked >= 5
+            && markedWithGap >= MinWhitespaceAgreement * marked
+            && marked < MaxWhitespacePairShare * (marked + unmarked);
+    }
+
+    /// <summary>The document's tokens that still contain an unmapped glyph, for <see cref="UnmappedGlyphResolver"/>.</summary>
+    private static IEnumerable<string> TokensWithUnmappedGlyphs(PreparedLine line)
+    {
+        var token = new System.Text.StringBuilder();
+        bool unmapped = false;
+        for (int i = 0; i < line.Glyphs.Count; i++)
+        {
+            if (i > 0 && line.SpaceBefore[i])
+            {
+                if (unmapped) yield return token.ToString();
+                token.Clear();
+                unmapped = false;
+            }
+            if (IsLineEndHyphen(line, i)) { token.Append('-'); continue; }
+            token.Append(line.Glyphs[i].Char);
+            unmapped |= UnmappedGlyphResolver.IsUnmapped(line.Glyphs[i].Char);
+        }
+        if (unmapped) yield return token.ToString();
+    }
+
+    /// <summary>
+    /// PDFium reports a hyphen that ends a line as U+0002 rather than as a hyphen.
+    /// </summary>
+    /// <remarks>
+    /// The same value is, in some fonts, the character code of a ligature (the paper this was
+    /// measured on encodes "fi" at 2), so position decides: last on its line and attached to a
+    /// letter, it is the hyphen marker. Reading it as the ligature turned "time-" at a line end into
+    /// "timefi"; dropping it, as before, left "vari ance" where the page has "variance".
+    /// </remarks>
+    private const char PdfiumLineEndHyphen = '\u0002';
+
+    private static bool IsLineEndHyphen(PreparedLine line, int index)
+        => line.Glyphs[index].Char == PdfiumLineEndHyphen
+           && index == line.Glyphs.Count - 1
+           && index > 0 && !line.SpaceBefore[index] && char.IsLetter(line.Glyphs[index - 1].Char);
+
+    /// <summary>True when the glyph touches a letter of the same word on either side.</summary>
+    private static bool SitsInsideAWord(PreparedLine line, int index)
+    {
+        bool before = index > 0 && !line.SpaceBefore[index] && char.IsLetter(line.Glyphs[index - 1].Char);
+        bool after = index + 1 < line.Glyphs.Count && !line.SpaceBefore[index + 1] && char.IsLetter(line.Glyphs[index + 1].Char);
+        return before || after;
+    }
+
+    /// <summary>
+    /// The ink-to-ink gap above which two consecutive glyphs are taken to be separated by a word
+    /// space when geometry is the only evidence.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -455,19 +746,19 @@ public sealed class ReadingUnitBuilder
     /// towards the joining error for that reason.
     /// </para>
     /// </remarks>
-    private static float SpaceGapThreshold(IReadOnlyList<(int Index, char Char, PageRect Rect)> glyphs, float medianGlyphHeight)
+    /// <param name="gaps">Gap before each glyph; index 0 is unused.</param>
+    private static float SpaceGapThreshold(float[] gaps, float glyphSize)
     {
-        if (glyphs.Count < 4 || medianGlyphHeight <= 0f)
-            return Math.Max(1.0f, medianGlyphHeight * SpaceGapFallbackFraction);
+        if (gaps.Length < 4 || glyphSize <= 0f)
+            return Math.Max(1.0f, glyphSize * SpaceGapFallbackFraction);
 
-        var gaps = new List<float>(glyphs.Count - 1);
-        for (int i = 1; i < glyphs.Count; i++)
-            gaps.Add(glyphs[i].Rect.Left - glyphs[i - 1].Rect.Right);
-        gaps.Sort();
-        float median = gaps[gaps.Count / 2];
+        var sorted = new float[gaps.Length - 1];
+        Array.Copy(gaps, 1, sorted, 0, sorted.Length);
+        Array.Sort(sorted);
+        float median = sorted[sorted.Length / 2];
 
         // A floor keeps a face whose glyphs touch (median gap near zero) from splitting on kerning.
-        return Math.Max(median * SpaceGapMultiple, medianGlyphHeight * SpaceGapMinFractionOfHeight);
+        return Math.Max(median * SpaceGapMultiple, glyphSize * SpaceGapMinFractionOfHeight);
     }
 
     private static float MedianGlyphHeight(PageExtraction page, Dictionary<int, PageRect> charRects, TextRange lineRange)
