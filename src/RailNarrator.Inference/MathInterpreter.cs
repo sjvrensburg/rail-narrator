@@ -20,7 +20,7 @@ namespace RailNarrator.Inference;
 /// </remarks>
 public static class MathInterpretationPrompt
 {
-    public const string Version = "math-interpret/2";
+    public const string Version = "math-interpret/3";
 
     public const string System = """
         You are the narrator of an academic document that is being read aloud, passage by passage,
@@ -90,7 +90,7 @@ public static partial class SpokenMathsValidator
     [GeneratedRegex(@"[$\\^_{}]|\b[a-zA-Z]_[a-zA-Z0-9]|[=<>±×÷∑∏∫√≤≥≈≠∞∂∇∈∼]|[α-ωΑ-Ω]")]
     private static partial Regex Notation();
 
-    [GeneratedRegex(@"\b(alpha|beta|gamma|delta|epsilon|zeta|theta|iota|kappa|lambda|sigma|upsilon|omega|subscript|superscript|sub|hat|tilde)\b", RegexOptions.IgnoreCase)]
+    [GeneratedRegex(@"\b(alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|lambda|mu|nu|xi|rho|sigma|tau|upsilon|phi|chi|psi|omega|subscript|superscript|sub|hat|tilde)\b", RegexOptions.IgnoreCase)]
     private static partial Regex NotationWords();
 
     // Letter variables: a lone letter other than the words "a", "A" and "I", or a short lowercase

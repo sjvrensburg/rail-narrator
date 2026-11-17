@@ -151,9 +151,14 @@ public sealed class MathInterpretationResolver : ISegmentResolver
     {
         ArgumentNullException.ThrowIfNull(plan);
 
-        int unitIndex = IndexOfUnit(plan, segment);
-        if (unitIndex < 0) return Fallback(segment, null, "The passage's source unit is not in the plan.");
-        var unit = plan.Units[unitIndex];
+        // A passage is one unit, or a lead-in sentence and the equation it introduces.
+        var indices = segment.ReadingUnitIds.Select(id => IndexOf(plan, id)).Where(i => i >= 0).OrderBy(i => i).ToList();
+        if (indices.Count == 0) return Fallback(segment, null, "The passage's source unit is not in the plan.");
+        int unitIndex = indices[0], lastIndex = indices[^1];
+        var parts = indices.Select(i => plan.Units[i]).ToList();
+        var unit = parts.Count == 1 ? parts[0]
+            : parts[0] with { Kind = ReadingUnitKind.Prose, Anchors = parts.SelectMany(p => p.Anchors).ToList(),
+                OriginalText = string.Join(" ", parts.Select(p => p.OriginalText)), ContainsMaths = true };
         var kind = unit.Kind == ReadingUnitKind.DisplayMath ? MathPassageKind.DisplayEquation : MathPassageKind.SentenceWithMaths;
 
         if (!await _interpreter.IsAvailableAsync(ct).ConfigureAwait(false))
@@ -161,7 +166,7 @@ public sealed class MathInterpretationResolver : ISegmentResolver
 
         var images = await CropsAsync(unit, ct).ConfigureAwait(false);
         var request = new MathInterpretationRequest(kind, unit.OriginalText, images,
-            ContextBefore(plan, unitIndex), ContextAfter(plan, unitIndex), segment.Language);
+            ContextBefore(plan, unitIndex), ContextAfter(plan, lastIndex), segment.Language);
 
         string key = CacheKey.Sha256Hex(string.Join("␟", "interpret/1", _interpreter.Revision, kind.ToString(),
             request.TextLayer, request.ContextBefore, request.ContextAfter, request.Language,
@@ -218,10 +223,8 @@ public sealed class MathInterpretationResolver : ISegmentResolver
         };
     }
 
-    private static int IndexOfUnit(NarrationPlan plan, NarrationSegment segment)
+    private static int IndexOf(NarrationPlan plan, string id)
     {
-        string? id = segment.ReadingUnitIds.FirstOrDefault();
-        if (id is null) return -1;
         for (int i = 0; i < plan.Units.Count; i++) if (plan.Units[i].Id == id) return i;
         return -1;
     }

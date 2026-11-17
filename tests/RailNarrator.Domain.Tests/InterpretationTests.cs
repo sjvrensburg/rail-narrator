@@ -47,7 +47,7 @@ public sealed class InterpretationTests
         return
         [
             SyntheticNarration.ProseUnit("u0", "Here h describes the short-run dynamics of the variance of the returns.", a0),
-            SyntheticNarration.ProseUnit("u1", "The variance σ 2t is assumed to have a multiplicative decomposition", a1) with { ContainsMaths = true },
+            SyntheticNarration.ProseUnit("u1", "The variance σ 2t is assumed to have a multiplicative decomposition.", a1) with { ContainsMaths = true },
             new ReadingUnit("u2", ReadingUnitKind.DisplayMath, [a2], "σ2t = htgt,", null, "", "", [], 0),
             SyntheticNarration.ProseUnit("u3", "where g is a positive-valued deterministic component.", a3),
         ];
@@ -198,6 +198,73 @@ public sealed class InterpretationTests
         Assert.Equal("Second wording of the passage.", fresh?.SpokenText);
         Assert.Equal("Second wording of the passage.", coordinator.Plan!.Segments[1].SpokenText);
         await WaitUntil(() => tts.Requests.Any(r => r.Text == "Second wording of the passage."), "the regenerated wording to be synthesised");
+    }
+
+    private static IReadOnlyList<ReadingUnit> LeadInUnits(string leadIn)
+    {
+        var a0 = SyntheticNarration.Anchor("b0", 0, new PageRect(72, 100, 500, 112));
+        var a1 = SyntheticNarration.Anchor("b1", 0, new PageRect(200, 120, 400, 140));
+        var a2 = SyntheticNarration.Anchor("b2", 0, new PageRect(72, 146, 500, 158));
+        return
+        [
+            SyntheticNarration.ProseUnit("v0", leadIn, a0),
+            new ReadingUnit("v1", ReadingUnitKind.DisplayMath, [a1], "yt = E(yt |Ft−1) + εt , (1)", null, "", "", [], 0),
+            SyntheticNarration.ProseUnit("v2", "where F contains the historical information available at the previous time.", a2) with { ContainsMaths = true },
+        ];
+    }
+
+    private static Task<NarrationPlan> PlanOf(IReadOnlyList<ReadingUnit> units, NarrationPlannerOptions options)
+        => new NarrationPlanner(options: options).BuildPlanAsync(
+            new ExtractionSnapshot(new ExtractionIdentity("deadbeefcafebabe", 1), CoordinateFrameId.DisplayedPagePoints(), ExtractionOptions.ModelFree, []),
+            units, NarrationFilterSettings.Default);
+
+    [Fact]
+    public async Task ALeadInAndTheEquationItIntroducesAreOnePassage()
+    {
+        var plan = await PlanOf(LeadInUnits("Let the return series be given as"), Interpret);
+
+        Assert.Equal(2, plan.Segments.Count);
+        var passage = plan.Segments[0];
+        Assert.Equal(["v0", "v1"], passage.ReadingUnitIds);
+        Assert.Equal(ScriptProvenance.PendingInterpretation, passage.Provenance);
+        // The fallback reads the lead-in as printed, then announces the equation, each linked to its own region.
+        Assert.Equal("Let the return series be given as " + Interpret.AnnouncementTemplate, passage.SpokenText);
+        Assert.Contains(passage.SourceLinks, l => l.AnchorIds.Contains("b1")
+            && passage.SpokenText.Substring(l.SpokenRange.Start, l.SpokenRange.Length) == Interpret.AnnouncementTemplate);
+        Assert.Contains(passage.SourceLinks, l => l.AnchorIds.Contains("b0"));
+    }
+
+    [Theory]
+    [InlineData("The model is defined below.")]
+    [InlineData("Is this the right model?")]
+    public async Task AFinishedSentenceIsNotMergedWithTheEquationAfterIt(string sentence)
+    {
+        var plan = await PlanOf(LeadInUnits(sentence), Interpret);
+        Assert.Equal(3, plan.Segments.Count);
+    }
+
+    [Fact]
+    public async Task WithoutInterpretationALeadInStaysApart()
+    {
+        var plan = await PlanOf(LeadInUnits("Let the return series be given as"), Interpret with { InterpretMaths = false });
+        Assert.Equal(3, plan.Segments.Count);
+    }
+
+    [Fact]
+    public async Task TheMergedPassageIsInterpretedAsOneSentence_WithContextAfterTheEquation()
+    {
+        var plan = await PlanOf(LeadInUnits("Let the return series be given as"), Interpret);
+        var interpreter = FakeInterpreter.Saying("Let the return be its expected value given the past, plus a surprise.");
+
+        var resolved = await new MathInterpretationResolver(interpreter, options: Interpret).ResolveAsync(plan, plan.Segments[0]);
+
+        var request = Assert.Single(interpreter.Requests);
+        Assert.Equal(MathPassageKind.SentenceWithMaths, request.Kind);
+        Assert.Contains("Let the return series be given as", request.TextLayer, StringComparison.Ordinal);
+        Assert.Contains("E(yt", request.TextLayer, StringComparison.Ordinal);
+        Assert.StartsWith("where F contains", request.ContextAfter, StringComparison.Ordinal);
+        Assert.Equal(ScriptProvenance.ModelGenerated, resolved.Provenance);
+        Assert.Equal(["b0", "b1"], resolved.AnchorIds.OrderBy(a => a));
     }
 
     private static async Task WaitUntil(Func<bool> condition, string what, int timeoutMs = 5000)
