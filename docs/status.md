@@ -7,11 +7,11 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 247 passing, 2 opt-in skips, 0 warnings
+## Verified by automated tests — 268 passing, 2 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
-| `RailNarrator.Domain.Tests` | 110 | Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
+| `RailNarrator.Domain.Tests` | 131 | Years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
 | `RailNarrator.Pdf.Tests` | 15 | **Real PDFs** through the real RailReaderCore pipeline, including a cached snapshot building the same plan as a fresh one |
 | `RailNarrator.Speech.Tests` | 36 | PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
 | `RailNarrator.Audio.Tests` | 39 | Resampler (polyphase path equal to the direct sinc filter on four rate pairs), time-stretcher (fast grain search equal to the direct search at three rates), playback engine against a controllable fake device, engine lock ordering, coordinator-plus-engine transition stress |
@@ -216,8 +216,9 @@ Not fixed yet. Each was observed in the run described above.
 - **Word highlighting still falls back on most of a technical paper.** 58 % of that paper's prose
   passages contain a word the pronunciation dictionary lacks ("GARCH", "heteroskedasticity",
   authors' names), and one such word sends the whole sentence to sentence highlighting.
-- **Identifiers are read as numbers.** "ISSN 1532-4168" is spoken as two cardinals and a DOI
-  digit by digit with "point" between; 1993 is read as "one thousand nine hundred ninety three".
+- **DOIs are read as numbers and punctuation** ("ten point one zero one six slash …"). Whether a
+  DOI should be read at all, spelled, or skipped is a product decision, so it is left as it was.
+  Years from 2000 on are read as cardinals ("two thousand twelve"), which is an ordinary reading.
 - **A first-page copyright line and a footnote are read mid-sentence.** They occur once, so no
   repetition rule can find them; they need a layout role or a position rule.
 - **An unmapped glyph that is not an f-ligature stays unspoken.** The resolver knows ff, fi, fl,
@@ -373,3 +374,13 @@ threads meeting.
     Next presses wrote s00009 while the app was running; after `kill -KILL` a relaunch reported
     "Restored your position" and Next continued to s00010; `kill -TERM` then exited cleanly in
     under 2 s, saving on the way out.
+29. **Years and identifiers were read as cardinals.** "(Hamilton, 1989)" was "one thousand nine
+    hundred eighty nine" and "ISSN 1532-4168" two cardinals joined by a hyphen. A four-digit
+    number from 1100 to 1999 is now read as a year ("nineteen eighty nine", "nineteen oh five")
+    where the context says it is one: a citation bracket or list, "et al.", a temporal word or
+    month before it, "May 1, 1997", or either end of a year range — not a page range after a
+    volume colon or "pp.", and not before a lowercase plural ("in 1500 patients"). ISSN and ISBN
+    digits are spoken one at a time, including a second ISSN later on the same line. On the
+    27-page paper the spoken text changed in 39 places, every one intended: 34 years, the two
+    ISSNs and two dates; on the thesis, 7 citation years. `ProsePipeline` was bumped so cached
+    plans and audio are rebuilt.
