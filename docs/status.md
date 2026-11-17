@@ -7,14 +7,14 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 240 passing, 2 opt-in skips, 0 warnings
+## Verified by automated tests — 247 passing, 2 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
 | `RailNarrator.Domain.Tests` | 110 | Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
 | `RailNarrator.Pdf.Tests` | 15 | **Real PDFs** through the real RailReaderCore pipeline, including a cached snapshot building the same plan as a fresh one |
 | `RailNarrator.Speech.Tests` | 36 | PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
-| `RailNarrator.Audio.Tests` | 32 | Resampler, time-stretcher, playback engine against a controllable fake device, engine lock ordering, coordinator-plus-engine transition stress |
+| `RailNarrator.Audio.Tests` | 39 | Resampler (polyphase path equal to the direct sinc filter on four rate pairs), time-stretcher (fast grain search equal to the direct search at three rates), playback engine against a controllable fake device, engine lock ordering, coordinator-plus-engine transition stress |
 | `RailNarrator.Infrastructure.Tests` | 9 | Cache round-trips and waveform integrity, including same-length replacement; extraction-cache keying, degraded and encrypted documents never stored, corrupt entries treated as misses |
 | `RailNarrator.Inference.Tests` | 38 | Golden maths semantics, response validator, endpoint client |
 
@@ -229,8 +229,13 @@ Not fixed yet. Each was observed in the run described above.
 - **Closing by signal saves no reading position.** Only File > Exit (and, untested, the window's
   close button) disposes the view model, which is where the position is written; a `SIGTERM`
   ends the process without it.
-- **About half a second of silence separates passages.** Each clip is resampled and rendered, and
-  the device stream reopened, when it is due rather than ahead of time.
+- **About 0.4 s of silence is still inserted between passages** (on top of the ~0.5 s each Kokoro
+  clip ends with). It is output latency: from a write to the first presented frame takes
+  ~320–335 ms on this machine (PipeWire through its ALSA bridge, Bluetooth sink), even on a
+  stream that is already running, and the next clip is only written once the previous one has
+  drained. Removing it needs gapless queueing — writing the next clip before the current one
+  drains and moving the clock across the boundary — which changes `IAudioTransport` and the
+  coordinator's clip-completion path.
 
 ## Deliberately not implemented
 
@@ -351,3 +356,14 @@ threads meeting.
     cached snapshot produced identical reading units. Fixing this exposed a race: a progress
     report posted just before extraction returned overwrote "Ready" with "Loaded from cache:
     page 10 of 10"; late reports are now ignored.
+27. **Rendering each clip sat on the critical path between passages.** Measured with the real engine
+    and device on cached Kokoro clips: the inserted silence was ≈ 550 ms at 1× and ≈ 720 ms at
+    1.25×. The earlier note blamed reopening the device; that costs 11–19 ms. The time went to
+    resampling (245 ms for a 12 s sentence: 32 sine evaluations per output frame) and, at any
+    rate other than 1×, to WSOLA's grain search (~300 ms). The resampler now uses a polyphase
+    weight bank (the rates are integers, so 24→48 kHz has 2 phases and 24→44.1 kHz 147), and the
+    grain search computes the overlap and its energy once per grain, slides the candidate energy,
+    and uses a SIMD dot product. Both are tested equal to the direct versions. Inserted silence
+    is now 366–396 ms at 1× and 426–454 ms at 1.25×; a loopback recording of the sink gave
+    373–405 ms at 1×, agreeing with the engine's clock. The remaining time is output latency
+    (see Open defects). Not re-measured in the GUI: other audio was playing on the sink.

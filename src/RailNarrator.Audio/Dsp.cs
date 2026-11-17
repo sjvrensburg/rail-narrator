@@ -65,6 +65,51 @@ public static class Resampler
 
         var window = BuildKaiserWindow(halfTaps);
 
+        // Polyphase path. The rates are integers, so output frame n sits at source position
+        // n·M/L (M, L the rates over their gcd): its fractional part takes only L distinct values.
+        // Computing each phase's normalised weights once replaces 2·halfTaps sine evaluations per
+        // output frame with a dot product — 245 ms down to a few ms for a sentence at 24→48 kHz,
+        // which sat on the critical path between two passages. Frames whose filter would read past
+        // either end keep the general path below, which renormalises over the taps that exist.
+        int g = Gcd(inputRate, outputRate);
+        long m = inputRate / g, l = outputRate / g;
+        int taps = halfTaps * 2;
+        if (l <= MaxPolyphasePhases)
+        {
+            var bank = new double[l * taps];
+            for (int p = 0; p < l; p++)
+            {
+                double frac = (double)p / l;
+                double weightSum = 0;
+                for (int k = -halfTaps + 1; k <= halfTaps; k++)
+                {
+                    double w = Sinc((k - frac) * cutoff) * cutoff * window[k + halfTaps - 1];
+                    bank[p * taps + k + halfTaps - 1] = w;
+                    weightSum += w;
+                }
+                for (int j = 0; j < taps; j++)
+                    bank[p * taps + j] = weightSum > 1e-9 ? bank[p * taps + j] / weightSum : 0;
+            }
+
+            for (int n = 0; n < outLength; n++)
+            {
+                long numerator = n * m;
+                int centre = (int)(numerator / l);
+                int phase = (int)(numerator % l);
+                int first = centre - halfTaps + 1;
+                if (first < 0 || centre + halfTaps >= input.Length)
+                {
+                    output[n] = EdgeSample(input, (double)numerator / l, centre, halfTaps, cutoff, window);
+                    continue;
+                }
+                double sum = 0;
+                int offset = phase * taps;
+                for (int j = 0; j < taps; j++) sum += input[first + j] * bank[offset + j];
+                output[n] = (float)sum;
+            }
+            return output;
+        }
+
         for (int n = 0; n < outLength; n++)
         {
             double srcPos = n * step;
@@ -84,6 +129,30 @@ public static class Resampler
             output[n] = weightSum > 1e-9 ? (float)(sum / weightSum) : 0f;
         }
         return output;
+    }
+
+    /// <summary>Above this many phases the weight bank stops paying for itself; odd rate pairs use the direct path.</summary>
+    private const long MaxPolyphasePhases = 4096;
+
+    private static int Gcd(int a, int b)
+    {
+        while (b != 0) (a, b) = (b, a % b);
+        return a;
+    }
+
+    /// <summary>One output frame near either end of the input, renormalised over the taps that exist.</summary>
+    private static float EdgeSample(ReadOnlySpan<float> input, double srcPos, int centre, int halfTaps, double cutoff, double[] window)
+    {
+        double sum = 0, weightSum = 0;
+        for (int k = -halfTaps + 1; k <= halfTaps; k++)
+        {
+            int index = centre + k;
+            if (index < 0 || index >= input.Length) continue;
+            double w = Sinc((index - srcPos) * cutoff) * cutoff * window[k + halfTaps - 1];
+            sum += input[index] * w;
+            weightSum += w;
+        }
+        return weightSum > 1e-9 ? (float)(sum / weightSum) : 0f;
     }
 
     /// <summary>Normalised sinc, with the removable singularity at zero handled explicitly.</summary>
@@ -197,6 +266,7 @@ public sealed class WsolaTimeStretcher
         int window = Math.Min(_frameSize, Math.Min(input.Length, Math.Max(1, length / 2)));
         int hop = Math.Max(1, window / 2);
         int previous = 0;
+        float[] overlap = [];
         for (int target = 0; ; target = Math.Min(target + hop, length - window))
         {
             bool last = target == length - window;
@@ -206,19 +276,35 @@ public sealed class WsolaTimeStretcher
                 : Math.Clamp((int)Math.Round(target * r), 0, Math.Max(0, input.Length - window));
             int best = nominal;
             double bestScore = double.NegativeInfinity;
-            if (target > 0 && !last)
+            int firstCandidate = Math.Max(previous, nominal - _tolerance);
+            int lastCandidate = Math.Min(input.Length - window, nominal + _tolerance);
+            if (target > 0 && !last && firstCandidate <= lastCandidate)
             {
                 // Correlate against the actual output overlap, not another slice of the input.
-                for (int candidate = Math.Max(previous, nominal - _tolerance);
-                    candidate <= Math.Min(input.Length - window, nominal + _tolerance); candidate++)
+                // The overlap and its energy are fixed for this grain, and each candidate's energy
+                // slides by one sample, so only the dot product is per candidate. Evaluating all
+                // three per candidate, with a division per sample, made a 1.25× render of one
+                // sentence take ~300 ms — heard as extra silence between passages.
+                int n = Math.Min(hop, length - target);
+                if (overlap.Length < n) overlap = new float[n];
+                double a = 0;
+                for (int i = 0; i < n; i++)
                 {
-                    double dot = 0, a = 0, b = 0;
-                    for (int i = 0; i < hop && target + i < length; i++)
+                    float x = weights[target + i] > 0 ? (float)(output[target + i] / weights[target + i]) : 0f;
+                    overlap[i] = x;
+                    a += (double)x * x;
+                }
+                var xs = overlap.AsSpan(0, n);
+                double b = 0;
+                for (int i = 0; i < n; i++) b += (double)input[firstCandidate + i] * input[firstCandidate + i];
+                for (int candidate = firstCandidate; candidate <= lastCandidate; candidate++)
+                {
+                    if (candidate > firstCandidate)
                     {
-                        double x = weights[target + i] > 0 ? output[target + i] / weights[target + i] : 0;
-                        double y = input[candidate + i];
-                        dot += x * y; a += x * x; b += y * y;
+                        double leaving = input[candidate - 1], entering = input[candidate + n - 1];
+                        b = Math.Max(0, b - leaving * leaving + entering * entering);
                     }
+                    double dot = Dot(xs, input.Slice(candidate, n));
                     double score = dot / Math.Sqrt(Math.Max(1e-20, a * b)) - Math.Abs(candidate - nominal) * 1e-8;
                     if (score > bestScore) { bestScore = score; best = candidate; }
                 }
@@ -242,6 +328,19 @@ public sealed class WsolaTimeStretcher
         positions[0] = 0;
         positions[length] = input.Length;
         return new PlaybackRender(output, input.Length, positions);
+    }
+
+    /// <summary>SIMD dot product of two equal-length spans.</summary>
+    private static double Dot(ReadOnlySpan<float> x, ReadOnlySpan<float> y)
+    {
+        int width = System.Numerics.Vector<float>.Count;
+        var acc = System.Numerics.Vector<float>.Zero;
+        int i = 0;
+        for (; i <= x.Length - width; i += width)
+            acc += new System.Numerics.Vector<float>(x.Slice(i, width)) * new System.Numerics.Vector<float>(y.Slice(i, width));
+        double sum = System.Numerics.Vector.Sum(acc);
+        for (; i < x.Length; i++) sum += (double)x[i] * y[i];
+        return sum;
     }
 }
 
