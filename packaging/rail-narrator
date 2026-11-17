@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Rail Narrator launcher.
+#
+# Resolves the install root from its own location so the package can be relocated
+# or run from a build tree, then execs the application with any arguments passed
+# through (a PDF path is loaded, never auto-played).
+set -euo pipefail
+
+link="$0"
+while [ -L "$link" ]; do
+  dir="$(cd -P "$(dirname "$link")" && pwd)"
+  link="$(readlink "$link")"
+  [[ "$link" != /* ]] && link="$dir/$link"
+done
+bin="$(cd -P "$(dirname "$link")" && pwd)"
+
+exec "$bin/rail-narrator" "$@"

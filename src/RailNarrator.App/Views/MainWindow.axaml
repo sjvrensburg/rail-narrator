@@ -159,7 +159,7 @@
             <TextBlock Text="Spoken version:" FontSize="11" Opacity="0.75" />
             <TextBox Name="MathsEditBox" Text="{Binding SpokenVersion}" AcceptsReturn="True"
                      TextWrapping="Wrap" MinHeight="60" MaxHeight="120"
-                     Watermark="Correct the spoken text; the previous audio for it is discarded" />
+                     PlaceholderText="Correct the spoken text; the previous audio for it is discarded" />
             <TextBlock Text="{Binding Provenance, StringFormat=Source: {0}}" FontSize="11" Opacity="0.75" />
             <ItemsControl ItemsSource="{Binding Warnings}">
               <ItemsControl.ItemTemplate>
