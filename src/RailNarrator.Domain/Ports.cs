@@ -470,12 +470,16 @@ public interface IExtractionSource
 /// <param name="Pages">Pages to extract, or null for all.</param>
 /// <param name="Options">Analyser, OCR policy and render size.</param>
 /// <param name="Filters">Which block kinds to keep.</param>
+/// <param name="ViewRotation">Extra clockwise quarter-turns composed on top of the page's own rotation. Geometry is returned in that displayed frame.</param>
+/// <param name="Revision">Extraction revision to stamp on the snapshot. Bump it to invalidate everything derived from a previous extraction.</param>
 public sealed record ExtractionRequest(
     string FilePath,
     string? Password,
     IReadOnlyList<int>? Pages,
     ExtractionOptions Options,
-    NarrationFilterSettings Filters);
+    NarrationFilterSettings Filters,
+    int ViewRotation = 0,
+    int Revision = 1);
 
 /// <summary>Extraction progress, for a UI that says what it is doing.</summary>
 public sealed record ExtractionProgress(int PagesDone, int PagesTotal, string Stage);

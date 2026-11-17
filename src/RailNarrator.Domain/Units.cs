@@ -45,8 +45,13 @@ public sealed record ReadingUnitBuilderOptions(
     public MathsDetectionOptions MathsOptions => Maths ?? new MathsDetectionOptions();
 }
 
-/// <summary>One block identified as a running header, footer or page number.</summary>
-public sealed record RunningElement(int PageIndex, string BlockId, string NormalisedText, RunningElementKind Kind);
+/// <summary>One line or block identified as a running header, footer or page number.</summary>
+/// <param name="LineId">The suppressed line, or null when a whole block was suppressed.</param>
+public sealed record RunningElement(int PageIndex, string BlockId, string? LineId, string NormalisedText, RunningElementKind Kind)
+{
+    /// <summary>True when this element suppresses a single line rather than a whole block.</summary>
+    public bool IsLineLevel => LineId is not null;
+}
 
 /// <summary>Why a block was classified as running content.</summary>
 public enum RunningElementKind { RepeatedHeader, RepeatedFooter, PageNumber }
@@ -56,15 +61,20 @@ public enum RunningElementKind { RepeatedHeader, RepeatedFooter, PageNumber }
 /// </summary>
 /// <remarks>
 /// <para>
-/// Two inspectable rules, not a learned classifier, so a reader can see why something was dropped
-/// and turn it back on. A block counts as running when either its normalised text repeats across
-/// enough pages in a margin band, or its text is nothing but a page number.
+/// Detection works on <b>lines</b>, not blocks, and that is a measured decision. On a sparse page a
+/// model-free analyzer groups the running header, the body and the footer into a single block, so a
+/// block whose bounding box straddles the whole page never falls inside a margin band and is never
+/// seen. Lines keep their own geometry whatever the block grouping did, so the same rule works for a
+/// one-line page and a dense one.
 /// </para>
 /// <para>
-/// Only <see cref="BlockKind.Header"/>, <see cref="BlockKind.Footer"/> and
-/// <see cref="BlockKind.PageNumber"/> blocks are candidates when the layout model supplied roles.
-/// With a model-free extraction every block is plain text, so the geometric band is the only
-/// evidence — and the band is deliberately narrow to avoid eating a real first or last paragraph.
+/// Two inspectable rules, not a learned classifier, so a reader can see why something was dropped and
+/// turn it back on. A line counts as running when either its normalised text repeats across enough
+/// pages inside a margin band, or its text is nothing but a page number.
+/// </para>
+/// <para>
+/// When a layout model did supply roles, a block tagged header/footer/page-number is suppressed whole,
+/// which catches running elements that sit outside the geometric bands.
 /// </para>
 /// </remarks>
 public static class RunningElementDetector
@@ -82,7 +92,7 @@ public static class RunningElementDetector
 
         var found = new List<RunningElement>();
         var textCounts = new Dictionary<string, int>(StringComparer.Ordinal);
-        var candidates = new List<(PageExtraction Page, ExtractedBlock Block, string Normalised, bool InHeaderBand, bool InFooterBand)>();
+        var candidates = new List<(PageExtraction Page, ExtractedBlock Block, ExtractedLine? Line, string Normalised, bool InHeaderBand, bool InFooterBand)>();
 
         foreach (var page in snapshot.Pages)
         {
@@ -93,38 +103,53 @@ public static class RunningElementDetector
             foreach (var block in page.Blocks)
             {
                 bool roleSaysRunning = block.Kind is BlockKind.Header or BlockKind.Footer or BlockKind.PageNumber;
-                bool inHeaderBand = block.BBox.Top >= 0 && block.BBox.Bottom <= headerLimit;
-                bool inFooterBand = block.BBox.Top >= footerLimit && block.BBox.Bottom <= page.PageHeight;
-                if (!roleSaysRunning && !(inHeaderBand || inFooterBand)) continue;
 
-                string text = page.TextOf(BlockTextRange(page, block)) ?? "";
-                string normalised = NormaliseForComparison(text);
-                if (normalised.Length == 0) continue;
-
-                // A page number is a number, possibly with decoration. Never narrated by default.
-                if (IsPageNumberLike(normalised, page.PageIndex, snapshot.PageCount))
+                // A block the layout model explicitly tagged is suppressed whole, whatever its geometry.
+                if (roleSaysRunning)
                 {
-                    found.Add(new RunningElement(page.PageIndex, block.BlockId, normalised, RunningElementKind.PageNumber));
+                    string blockText = NormaliseForComparison(page.TextOf(RunningElementDetector.BlockTextRange(page, block)) ?? "");
+                    if (blockText.Length > 0)
+                        found.Add(new RunningElement(page.PageIndex, block.BlockId, null, blockText,
+                            block.Kind == BlockKind.PageNumber ? RunningElementKind.PageNumber
+                            : block.Kind == BlockKind.Footer ? RunningElementKind.RepeatedFooter
+                            : RunningElementKind.RepeatedHeader));
                     continue;
                 }
 
-                candidates.Add((page, block, normalised, inHeaderBand || block.Kind == BlockKind.Header, inFooterBand || block.Kind == BlockKind.Footer));
-                textCounts[normalised] = textCounts.GetValueOrDefault(normalised) + 1;
+                foreach (int li in block.LineIndices)
+                {
+                    if (li < 0 || li >= page.Lines.Count) continue;
+                    var line = page.Lines[li];
+                    bool inHeaderBand = line.Rect.Top >= 0 && line.Rect.Bottom <= headerLimit;
+                    bool inFooterBand = line.Rect.Top >= footerLimit && line.Rect.Bottom <= page.PageHeight;
+                    if (!inHeaderBand && !inFooterBand) continue;
+
+                    string normalised = NormaliseForComparison(page.TextOf(line.Text) ?? "");
+                    if (normalised.Length == 0) continue;
+
+                    // A page number is a number, possibly with decoration. Never narrated by default.
+                    if (IsPageNumberLike(normalised, page.PageIndex, snapshot.PageCount))
+                    {
+                        found.Add(new RunningElement(page.PageIndex, block.BlockId, line.LineId, normalised, RunningElementKind.PageNumber));
+                        continue;
+                    }
+
+                    candidates.Add((page, block, line, normalised, inHeaderBand, inFooterBand));
+                    textCounts[normalised] = textCounts.GetValueOrDefault(normalised) + 1;
+                }
             }
         }
 
         int pages = snapshot.Pages.Count;
-        // A header printed on every page repeats (pages - 1) times at most if page 1 differs, so the
+        // A header printed on every page repeats once per page, but a cover page often differs, so the
         // threshold scales with document length rather than being an absolute count.
         int threshold = Math.Max(minPages, Math.Min(pages, (int)Math.Ceiling(pages * 0.5)));
 
         foreach (var c in candidates)
         {
             if (textCounts[c.Normalised] < threshold) continue;
-            var kind = c.InHeaderBand ? RunningElementKind.RepeatedHeader
-                     : c.InFooterBand ? RunningElementKind.RepeatedFooter
-                     : RunningElementKind.RepeatedHeader;
-            found.Add(new RunningElement(c.Page.PageIndex, c.Block.BlockId, c.Normalised, kind));
+            var kind = c.InHeaderBand ? RunningElementKind.RepeatedHeader : RunningElementKind.RepeatedFooter;
+            found.Add(new RunningElement(c.Page.PageIndex, c.Block.BlockId, c.Line!.LineId, c.Normalised, kind));
         }
         return found;
     }
@@ -184,6 +209,23 @@ public static class RunningElementDetector
 /// </remarks>
 public sealed class ReadingUnitBuilder
 {
+    /// <summary>
+    /// Multiple of the line's median ink gap that marks a word space. Measured on real 9–11 pt body
+    /// text: the widest intra-word gap was 1.48× the median and the narrowest word space was 2.08×,
+    /// so 1.6 sits inside that separation with margin on both sides. See
+    /// <see cref="SpaceGapThreshold"/>.
+    /// </summary>
+    public const float SpaceGapMultiple = 1.6f;
+
+    /// <summary>Fallback space gap as a fraction of glyph height, for lines too short to measure.</summary>
+    public const float SpaceGapFallbackFraction = 0.55f;
+
+    /// <summary>
+    /// Floor on the space gap as a fraction of glyph height, so a face whose glyphs touch cannot have
+    /// a near-zero median that splits ordinary kerning into words.
+    /// </summary>
+    public const float SpaceGapMinFractionOfHeight = 0.30f;
+
     private readonly ReadingUnitBuilderOptions _options;
 
     public ReadingUnitBuilder(ReadingUnitBuilderOptions? options = null)
@@ -202,11 +244,24 @@ public sealed class ReadingUnitBuilder
         var running = _options.DetectRunningElements
             ? RunningElementDetector.Detect(snapshot, _options.RunningElementMinPages)
             : [];
-        var runningSet = running.Select(r => (r.PageIndex, r.BlockId)).ToHashSet();
-        if (running.Count > 0)
-            diag.Add($"Suppressed {running.Count} running header/footer/page-number block(s) across {running.Select(r => r.PageIndex).Distinct().Count()} page(s).");
 
-        var run = BuildRun(snapshot, runningSet, diag);
+        // Detection decides what IS running content; the filters decide whether the reader wants it
+        // suppressed. Conflating the two would make the toggles in settings inert, and a reader who
+        // wants the running headers read back would have no way to ask for them.
+        running = running.Where(r => r.Kind switch
+        {
+            RunningElementKind.RepeatedHeader => _options.Filters.ExcludeRunningHeaders,
+            RunningElementKind.RepeatedFooter => _options.Filters.ExcludeFooters,
+            RunningElementKind.PageNumber => _options.Filters.ExcludePageNumbers,
+            _ => true,
+        }).ToList();
+
+        var runningBlockSet = running.Where(r => !r.IsLineLevel).Select(r => (r.PageIndex, r.BlockId)).ToHashSet();
+        var runningLineSet = running.Where(r => r.IsLineLevel).Select(r => (r.PageIndex, r.LineId!)).ToHashSet();
+        if (running.Count > 0)
+            diag.Add($"Suppressed {running.Count} running header/footer/page-number line(s) across {running.Select(r => r.PageIndex).Distinct().Count()} page(s).");
+
+        var run = BuildRun(snapshot, runningBlockSet, runningLineSet, diag);
         if (run.Glyphs.Count == 0)
         {
             diag.Add("No narratable text found. Check the extraction and the content filters before concluding the document is empty.");
@@ -226,16 +281,18 @@ public sealed class ReadingUnitBuilder
     /// <summary>One source character pulled into the reading run, with everything needed to anchor it.</summary>
     internal readonly struct RunGlyph
     {
-        public RunGlyph(char character, PageRect rect, int pageIndex, string blockId, string lineId, int lineOrdinal,
-                        BlockKind kind, bool fromOcr, float lineMedianHeight, float lineBaselineY)
+        public RunGlyph(char character, PageRect rect, int sourceIndex, int pageIndex, string blockId, string lineId,
+                        int lineOrdinal, BlockKind kind, bool fromOcr, float lineMedianHeight, float lineBaselineY)
         {
-            Character = character; Rect = rect; PageIndex = pageIndex; BlockId = blockId; LineId = lineId;
-            LineOrdinal = lineOrdinal; Kind = kind; FromOcr = fromOcr;
+            Character = character; Rect = rect; SourceIndex = sourceIndex; PageIndex = pageIndex;
+            BlockId = blockId; LineId = lineId; LineOrdinal = lineOrdinal; Kind = kind; FromOcr = fromOcr;
             LineMedianHeight = lineMedianHeight; LineBaselineY = lineBaselineY;
             IsReal = true;
         }
         public char Character { get; }
         public PageRect Rect { get; }
+        /// <summary>This character's offset in its own page's extracted text. Carried per glyph because a text layer is not contiguous: see <c>BuildRun</c>.</summary>
+        public int SourceIndex { get; }
         public int PageIndex { get; }
         public string? BlockId { get; }
         public string? LineId { get; }
@@ -258,10 +315,14 @@ public sealed class ReadingUnitBuilder
         public string AsString() => Text.ToString();
     }
 
-    private ReadingRun BuildRun(ExtractionSnapshot snapshot, HashSet<(int PageIndex, string BlockId)> runningSet, List<string> diag)
+    private ReadingRun BuildRun(
+        ExtractionSnapshot snapshot,
+        HashSet<(int PageIndex, string BlockId)> runningBlockSet,
+        HashSet<(int PageIndex, string LineId)> runningLineSet,
+        List<string> diag)
     {
         var run = new ReadingRun();
-        int droppedFiltered = 0, droppedDuplicateOcr = 0;
+        int droppedFiltered = 0, droppedDuplicateOcr = 0, droppedRunning = 0;
 
         foreach (var page in snapshot.Pages.OrderBy(p => p.PageIndex))
         {
@@ -271,7 +332,7 @@ public sealed class ReadingUnitBuilder
             foreach (var block in page.OrderedBlocks)
             {
                 if (!_options.Filters.Allows(block.Kind)) { droppedFiltered++; continue; }
-                if (runningSet.Contains((page.PageIndex, block.BlockId))) continue;
+                if (runningBlockSet.Contains((page.PageIndex, block.BlockId))) { droppedRunning++; continue; }
                 if (block.Kind is BlockKind.Figure or BlockKind.Chart or BlockKind.Decoration)
                 {
                     // A figure has no text of its own. Its caption is a separate block and is
@@ -284,6 +345,11 @@ public sealed class ReadingUnitBuilder
                     if (lineIndex < 0 || lineIndex >= page.Lines.Count) continue;
                     var line = page.Lines[lineIndex];
 
+                    // Running headers and footers are suppressed per line, because on a sparse page a
+                    // model-free analyzer merges them into the body block and block-level suppression
+                    // would either miss them or throw the body away with them.
+                    if (runningLineSet.Contains((page.PageIndex, line.LineId))) { droppedRunning++; continue; }
+
                     // Mixed-content guard: an OCR line that sits on top of native text would be
                     // narrated twice. The native layer wins because it is exact.
                     if (line.FromOcr && nativeLines.Any(n => Overlaps(n.Rect, line.Rect, 0.5)))
@@ -293,17 +359,52 @@ public sealed class ReadingUnitBuilder
                     }
 
                     int lineStart = run.Text.Length;
-                    bool emittedAny = false;
                     float median = MedianGlyphHeight(page, charRects, line.Text);
                     float baseline = line.Rect.Bottom;
 
+                    // Collect the line's *marking* glyphs, then decide where the word spaces go.
+                    //
+                    // The text layer cannot be used as a transcription. Measured on a real PDF, the
+                    // producer had embedded " \n" pairs inside words, so a line whose text range read
+                    // back as "Alp \nh \na o \nn..." stood for "Alpha one in the left column." Those
+                    // phantom characters do carry CharBox entries — zero-area, exactly like a real
+                    // space — so neither index filtering nor a whitespace test can tell them apart.
+                    //
+                    // Geometry can, but not from ink gaps: a glyph box is tight around the ink and
+                    // excludes side bearings, so the gap between two letters of a word routinely
+                    // exceeds a fifth of an em. Advances (left edge to left edge) are regular, so a
+                    // space shows up as an advance well above the line's median advance.
+                    var lineGlyphs = new List<(int Index, char Char, PageRect Rect)>();
                     for (int ci = line.Text.Start; ci < line.Text.End && ci < page.Text.Length; ci++)
                     {
-                        char c = page.Text[ci];
-                        var rect = charRects.TryGetValue(ci, out var r) ? r : default;
-                        run.Text.Append(c);
-                        run.Glyphs.Add(new RunGlyph(c, rect, page.PageIndex, block.BlockId, line.LineId, lineIndex,
-                            block.Kind, line.FromOcr, median, baseline));
+                        if (!charRects.TryGetValue(ci, out var rect)) continue;
+                        if (rect.IsEmpty) continue;          // whitespace and other non-marking glyphs
+                        char ch = page.Text[ci];
+                        if (char.IsWhiteSpace(ch) || char.IsControl(ch)) continue;
+                        lineGlyphs.Add((ci, ch, rect));
+                    }
+                    if (lineGlyphs.Count == 0) continue;
+
+                    float spaceGap = SpaceGapThreshold(lineGlyphs, median);
+                    bool emittedAny = false;
+
+                    for (int gi = 0; gi < lineGlyphs.Count; gi++)
+                    {
+                        var (ci, ch, rect) = lineGlyphs[gi];
+                        // Ink-to-ink gap, not advance: advance includes the previous glyph's own
+                        // width, which varies far more than the space it is being compared against.
+                        if (gi > 0 && rect.Left - lineGlyphs[gi - 1].Rect.Right > spaceGap)
+                        {
+                            // A synthesised space: no box of its own, so it inherits the preceding
+                            // glyph's source offset and contributes no highlight geometry.
+                            run.Text.Append(' ');
+                            run.Glyphs.Add(new RunGlyph(' ', default, lineGlyphs[gi - 1].Index, page.PageIndex,
+                                block.BlockId, line.LineId, lineIndex, block.Kind, line.FromOcr, median, baseline));
+                        }
+
+                        run.Text.Append(ch);
+                        run.Glyphs.Add(new RunGlyph(ch, rect, ci, page.PageIndex, block.BlockId, line.LineId,
+                            lineIndex, block.Kind, line.FromOcr, median, baseline));
                         emittedAny = true;
                     }
                     if (!emittedAny) continue;
@@ -318,6 +419,7 @@ public sealed class ReadingUnitBuilder
         }
 
         if (droppedFiltered > 0) diag.Add($"Skipped {droppedFiltered} block(s) excluded by the content filters.");
+        if (droppedRunning > 0) diag.Add($"Skipped {droppedRunning} running header/footer/page-number element(s).");
         if (droppedDuplicateOcr > 0) diag.Add($"Dropped {droppedDuplicateOcr} OCR line(s) that overlapped native text, so nothing is narrated twice.");
         return run;
     }
@@ -328,6 +430,44 @@ public sealed class ReadingUnitBuilder
         foreach (var c in page.Chars)
             if (!map.ContainsKey(c.Index)) map[c.Index] = c.Rect;
         return map;
+    }
+
+    /// <summary>
+    /// The ink-to-ink gap above which two consecutive marking glyphs are separated by a word space.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Measured, not assumed. On a real 11 pt body line the gaps between letters inside a word topped
+    /// out at 2.07 pt while every one of the five word boundaries was at least 3.88 pt — a clean
+    /// 1.85× separation with nothing in between. A multiple of the line's own median gap sits inside
+    /// that separation and adapts to face, size and tracking.
+    /// </para>
+    /// <para>
+    /// Two things this must not be. Not the <i>advance</i> (left edge to left edge): that is
+    /// confounded by glyph width, and on the same line a genuine space measured 7.4 pt while the
+    /// non-space pair "mn" measured 10.0 pt, so no threshold separates them. Not a fraction of the
+    /// type size either: a glyph box is tight around the ink and excludes side bearings, so the
+    /// letter-to-letter gap inside a word routinely exceeds a fifth of an em.
+    /// </para>
+    /// <para>
+    /// Missing a space joins two words, which costs a stumble in the audio. Inventing one splits a
+    /// word, which puts a word in the narration that is not in the document. The multiplier is set
+    /// towards the joining error for that reason.
+    /// </para>
+    /// </remarks>
+    private static float SpaceGapThreshold(IReadOnlyList<(int Index, char Char, PageRect Rect)> glyphs, float medianGlyphHeight)
+    {
+        if (glyphs.Count < 4 || medianGlyphHeight <= 0f)
+            return Math.Max(1.0f, medianGlyphHeight * SpaceGapFallbackFraction);
+
+        var gaps = new List<float>(glyphs.Count - 1);
+        for (int i = 1; i < glyphs.Count; i++)
+            gaps.Add(glyphs[i].Rect.Left - glyphs[i - 1].Rect.Right);
+        gaps.Sort();
+        float median = gaps[gaps.Count / 2];
+
+        // A floor keeps a face whose glyphs touch (median gap near zero) from splitting on kerning.
+        return Math.Max(median * SpaceGapMultiple, medianGlyphHeight * SpaceGapMinFractionOfHeight);
     }
 
     private static float MedianGlyphHeight(PageExtraction page, Dictionary<int, PageRect> charRects, TextRange lineRange)
@@ -718,10 +858,10 @@ public sealed class ReadingUnitBuilder
                 blockId ??= lineGroup.First().Glyph.BlockId;
             }
 
-            // Source character range within the page's own text.
-            var pageChars = pageGroup
-                .Select(x => CharIndexInPage(page, x.Glyph, x.RunIndex, run))
-                .Where(i => i >= 0).ToList();
+            // Source character range within the page's own text, taken from the glyphs themselves.
+            // Reconstructing it by counting positions would be wrong: a text layer carries
+            // characters that have no glyph, so offsets in it are not contiguous.
+            var pageChars = pageGroup.Select(x => x.Glyph.SourceIndex).ToList();
             TextRange? sourceRange = pageChars.Count > 0
                 ? TextRange.FromBounds(pageChars.Min(), pageChars.Max() + 1)
                 : null;
@@ -744,37 +884,4 @@ public sealed class ReadingUnitBuilder
         return anchors;
     }
 
-    /// <summary>
-    /// Recovers a glyph's offset in its page's extracted text. The run interleaves newline
-    /// placeholders, so the offset is counted from the line span the glyph belongs to rather than
-    /// from the run offset.
-    /// </summary>
-    private static int CharIndexInPage(PageExtraction? page, RunGlyph glyph, int runIndex, ReadingRun run)
-    {
-        if (page is null) return -1;
-        // Find the line span containing runIndex; the character's page offset is that line's start
-        // plus the glyph's position within the span.
-        (int Start, int PageIndex, string BlockId, string LineId, BlockKind Kind) best = default;
-        bool found = false;
-        foreach (var span in run.LineSpans)
-        {
-            if (span.PageIndex != glyph.PageIndex || span.LineId != glyph.LineId) continue;
-            best = span; found = true; break;
-        }
-        if (!found) return -1;
-        if (glyph.LineId is not { } lineId) return -1;
-
-        var line = page.FindLine(lineId);
-        if (line is null) return -1;
-
-        // Count non-placeholder glyphs from the span start to this one.
-        int offsetWithinLine = 0;
-        for (int i = best.Start; i < runIndex && i < run.Glyphs.Count; i++)
-        {
-            var g = run.Glyphs[i];
-            if (g.LineId == glyph.LineId && g.PageIndex == glyph.PageIndex && g.BlockId == glyph.BlockId) offsetWithinLine++;
-        }
-        int index = line.Text.Start + offsetWithinLine;
-        return index < line.Text.End ? index : -1;
-    }
 }
