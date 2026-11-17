@@ -66,29 +66,68 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         _services.Coordinator.ActiveCueChanged += OnActiveCueChanged;
         _services.Coordinator.FollowRequested += OnFollowRequested;
 
-        OpenDocument = new RelayCommand(() => OpenDocumentAsync(), () => !Busy);
-        Play = new RelayCommand(() => _services.Coordinator.PlayAsync(), () => Plan is { SegmentCount: > 0 });
-        Pause = new RelayCommand(() => _services.Coordinator.PauseAsync());
-        Stop = new RelayCommand(() => _services.Coordinator.StopAsync());
-        Next = new RelayCommand(() => _services.Coordinator.NextSegmentAsync());
-        Previous = new RelayCommand(() => _services.Coordinator.PreviousSegmentAsync());
-        Replay = new RelayCommand(() => _services.Coordinator.ReplaySegmentAsync());
-        ToggleFollow = new RelayCommand(CycleFollowMode);
-        ResumeFollow = new RelayCommand(() => _services.Coordinator.ResumeFollow(), () => FollowSuspended);
-        ZoomIn = new RelayCommand(() => ApplyZoom(Zoom * 1.25));
-        ZoomOut = new RelayCommand(() => ApplyZoom(Zoom / 1.25));
-        Zoom200 = new RelayCommand(() => ApplyZoom(2.0));
-        Zoom400 = new RelayCommand(() => ApplyZoom(4.0));
-        Zoom800 = new RelayCommand(() => ApplyZoom(8.0));
-        TestMathEndpoint = new RelayCommand(() => TestMathEndpointAsync(), () => !Busy);
-        TestVisionEndpoint = new RelayCommand(() => TestVisionEndpointAsync(), () => !Busy);
-        DownloadKokoroModel = new RelayCommand(() => DownloadModelAsync(ModelManifest.KokoroFp16), () => !Busy);
-        RegenerateMaths = new RelayCommand(() => RegenerateMathsAsync(), () => MathsReview is { CanRegenerate: true });
-        ApplyMathsEdit = new RelayCommand(() => ApplyMathsEditAsync(), () => !Busy);
+        OpenDocument = new RelayCommand(() => OpenDocumentAsync(TopLevelProvider?.Invoke()), () => !Busy, OnCommandError);
+        Play = new RelayCommand(() => _services.Coordinator.PlayAsync(), () => Plan is { SegmentCount: > 0 }, OnCommandError);
+        Pause = new RelayCommand(() => _services.Coordinator.PauseAsync(), () => _playback.State == PlaybackState.Playing, OnCommandError);
+        Stop = new RelayCommand(() => _services.Coordinator.StopAsync(),
+            () => Plan is { SegmentCount: > 0 } && _playback.State is not PlaybackState.Idle, OnCommandError);
+        Next = new RelayCommand(() => _services.Coordinator.NextSegmentAsync(), () => Plan is { SegmentCount: > 0 }, OnCommandError);
+        Previous = new RelayCommand(() => _services.Coordinator.PreviousSegmentAsync(), () => Plan is { SegmentCount: > 0 }, OnCommandError);
+        Replay = new RelayCommand(() => _services.Coordinator.ReplaySegmentAsync(), () => Plan is { SegmentCount: > 0 }, OnCommandError);
+        ToggleFollow = new RelayCommand(CycleFollowMode, null, OnCommandError);
+        ResumeFollow = new RelayCommand(() => _services.Coordinator.ResumeFollow(), () => FollowSuspended, OnCommandError);
+        ZoomIn = new RelayCommand(() => ApplyZoom(Zoom * 1.25), null, OnCommandError);
+        ZoomOut = new RelayCommand(() => ApplyZoom(Zoom / 1.25), null, OnCommandError);
+        Zoom200 = new RelayCommand(() => ApplyZoom(2.0), null, OnCommandError);
+        Zoom400 = new RelayCommand(() => ApplyZoom(4.0), null, OnCommandError);
+        Zoom800 = new RelayCommand(() => ApplyZoom(8.0), null, OnCommandError);
+        TestMathEndpoint = new RelayCommand(() => TestMathEndpointAsync(), () => !Busy, OnCommandError);
+        TestVisionEndpoint = new RelayCommand(() => TestVisionEndpointAsync(), () => !Busy, OnCommandError);
+        DownloadKokoroModel = new RelayCommand(() => DownloadModelAsync(ModelManifest.KokoroFp16), () => !Busy, OnCommandError);
+        RegenerateMaths = new RelayCommand(() => RegenerateMathsAsync(), () => MathsReview is { CanRegenerate: true }, OnCommandError);
+        ApplyMathsEdit = new RelayCommand(() => ApplyMathsEditAsync(), () => !Busy, OnCommandError);
     }
 
     /// <summary>Raised when the PDF surface must repaint (a new highlight, a page change).</summary>
     public event Action? InvalidateSurface;
+
+    /// <summary>
+    /// Raised only after a document has loaded successfully, with its path. The window uses it to
+    /// open the document in the PDF surface (the view model has no surface reference, and opening
+    /// on <see cref="DocumentPath"/> change would display files that then fail extraction).
+    /// </summary>
+    public event Action<string>? DocumentLoaded;
+
+    /// <summary>
+    /// Supplies the window for file pickers. Set by the window; a Ctrl+O key binding has no
+    /// TopLevel of its own to pass, so without this the shortcut could only tell the user to use
+    /// the menu instead.
+    /// </summary>
+    public Func<TopLevel?>? TopLevelProvider { get; set; }
+
+    /// <summary>Surfaces a failed command/background operation on the status line and in the notes.</summary>
+    private void OnCommandError(Exception ex) => ReportFailure("Something went wrong", ex);
+
+    /// <summary>
+    /// Runs a fire-and-forget task with its failure observed and reported, instead of discarded
+    /// with <c>_ =</c> where a fault would vanish (or surface as an unhandled async-void crash).
+    /// </summary>
+    public void RunObserved(Task task, string what)
+    {
+        _ = ObserveAsync();
+        async Task ObserveAsync()
+        {
+            try { await task.ConfigureAwait(true); }
+            catch (Exception ex) { ReportFailure(what, ex); }
+        }
+    }
+
+    private void ReportFailure(string what, Exception ex)
+        => Dispatcher.UIThread.Post(() =>
+        {
+            StatusMessage = $"{what}: {ex.Message}";
+            Notes.Add($"{what}: {ex.GetType().Name}: {ex.Message}");
+        });
 
     /// <summary>Raised when the camera should move to a page and region.</summary>
     public event Action<int, IReadOnlyList<PageRect>>? CameraRequested;
@@ -122,7 +161,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         {
             if (!Set(ref _selectedTranscriptIndex, value)) return;
             if (value >= 0 && value < Transcript.Count)
-                _ = Coordinator.GoToSegmentAsync(Transcript[value].SegmentId);
+                RunObserved(Coordinator.GoToSegmentAsync(Transcript[value].SegmentId), "Could not move to that passage");
         }
     }
 
@@ -157,7 +196,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             // A voice change invalidates every prepared clip: that audio was made by another voice.
             // The coordinator advances its generation token so a synthesis still in flight for the old
             // voice is discarded rather than played over the new one.
-            _ = Coordinator.SetVoiceAsync(id);
+            RunObserved(Coordinator.SetVoiceAsync(id), "Could not change voice");
         }
     }
 
@@ -244,12 +283,18 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public async Task LoadDocumentAsync(string path)
     {
         if (!File.Exists(path)) { StatusMessage = $"No such file: {path}"; return; }
+        if (Busy) return;   // re-entrancy: argv/menu/keyboard can all call this directly
 
+        // Build into locals and commit DocumentPath/_snapshot/Plan together only on success. A
+        // failed open (corrupt PDF, empty extraction) then leaves the previous document fully
+        // intact, instead of a half-state where the new path was paired with the old plan — which
+        // also corrupted the saved reading position on exit.
+        string? previousPath = DocumentPath;
+        bool committed = false;
         Busy = true;
         try
         {
             await Coordinator.StopAsync();
-            DocumentPath = path;
             StatusMessage = "Reading the document…";
 
             string hash = CacheKey.Sha256HexOfFile(path);
@@ -257,30 +302,26 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
             _services.Extraction.AttachDocument(path);
             var request = _services.CreateExtractionRequest(path);
-            _snapshot = await _services.Extraction.ExtractAsync(request,
+            var snapshot = await _services.Extraction.ExtractAsync(request,
                 new Progress<ExtractionProgress>(p => Dispatcher.UIThread.Post(
                     () => StatusMessage = $"{p.Stage}: page {p.PagesDone} of {p.PagesTotal}")));
 
-            foreach (string warning in _snapshot.AllWarnings().Take(8))
+            foreach (string warning in snapshot.AllWarnings().Take(8))
                 if (!Notes.Contains(warning)) Notes.Add(warning);
 
-            if (_snapshot.Pages.All(p => p.Coverage.CharCount == 0))
+            if (snapshot.Pages.All(p => p.Coverage.CharCount == 0))
             {
                 StatusMessage = "This document has no readable text. Enable OCR in settings and try again.";
-                Plan = null;
-                Transcript.Clear();
                 return;
             }
 
             StatusMessage = "Finding the reading order…";
-            var units = _services.CreateUnitBuilder(_overrides).Build(_snapshot, out var diagnostics);
+            var units = _services.CreateUnitBuilder(_overrides).Build(snapshot, out var diagnostics);
             foreach (string d in diagnostics) if (!Notes.Contains(d)) Notes.Add(d);
 
             if (units.Count == 0)
             {
                 StatusMessage = "Nothing narratable was found. Check the content filters in settings.";
-                Plan = null;
-                Transcript.Clear();
                 return;
             }
 
@@ -289,24 +330,36 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
                 : "Preparing narration…";
 
             var planner = _services.CreatePlanner();
-            Plan = cachedPlan is { } cached && cached.Matches(_snapshot.Identity)
-                ? cached
-                : await planner.BuildPlanAsync(_snapshot, units, _services.CurrentSettings.Filters);
+            // A cached plan is reusable only if it was built from the inputs in force now, not
+            // merely from the same file: changed filters, maths mode or region overrides rebuild.
+            string fingerprint = NarrationPlanner.ComputeInputFingerprint(
+                planner.Options, _services.CurrentSettings.Filters, units);
+            bool reuseCached = cachedPlan is { } c && c.Matches(snapshot.Identity, fingerprint);
+            var plan = reuseCached
+                ? cachedPlan!
+                : await planner.BuildPlanAsync(snapshot, units, _services.CurrentSettings.Filters);
 
-            if (cachedPlan is null || !cachedPlan.Matches(_snapshot.Identity))
-                await _services.PlanStore.StorePlanAsync(Plan);
+            if (!reuseCached)
+                await _services.PlanStore.StorePlanAsync(plan);
+
+            // ---- commit point: everything below describes the new document ----
+            _snapshot = snapshot;
+            Plan = plan;
+            DocumentPath = path;
+            committed = true;
 
             RebuildTranscript();
             await LoadVoicesAsync();
 
             var position = await _services.PlanStore.TryGetPositionAsync(hash);
-            await Coordinator.LoadPlanAsync(Plan, position);
+            await Coordinator.LoadPlanAsync(plan, position);
 
             StatusMessage = position is { SegmentId: not null }
-                ? $"Ready. Restored your position ({Plan.SegmentCount} passages)."
-                : $"Ready. {Plan.SegmentCount} passages to read.";
+                ? $"Ready. Restored your position ({plan.SegmentCount} passages)."
+                : $"Ready. {plan.SegmentCount} passages to read.";
             OnPropertyChanged(nameof(MathEndpointSummary));
             OnPropertyChanged(nameof(CacheBytes));
+            DocumentLoaded?.Invoke(path);
         }
         catch (Exception ex)
         {
@@ -315,6 +368,13 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         }
         finally
         {
+            if (!committed && previousPath is not null)
+            {
+                // Undo the AttachDocument side effect so crop rendering still targets the
+                // document that is actually loaded.
+                try { _services.Extraction.AttachDocument(previousPath); }
+                catch (Exception ex) { Notes.Add($"Could not restore the previous document for display: {ex.Message}"); }
+            }
             Busy = false;
             InvalidateSurface?.Invoke();
         }
@@ -441,6 +501,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             var units = _services.CreateUnitBuilder(_overrides).Build(_snapshot);
             var planner = _services.CreatePlanner();
             Plan = await planner.BuildPlanAsync(_snapshot, units, _services.CurrentSettings.Filters);
+            // Persist before reporting success: without this the next open resurrects the cached
+            // pre-regeneration plan and the new reading silently vanishes.
+            await _services.PlanStore.StorePlanAsync(Plan);
             RebuildTranscript();
             await Coordinator.LoadPlanAsync(Plan);
             StatusMessage = "Regenerated.";
@@ -451,10 +514,29 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     private async Task ApplyMathsEditAsync()
     {
         if (MathsReview is null || string.IsNullOrEmpty(EditedSpokenText)) return;
+        string segmentId = MathsReview.SegmentId;
         // An edit invalidates this segment's speech and timings; the coordinator handles that.
-        await Coordinator.ApplyScriptEditAsync(MathsReview.SegmentId, EditedSpokenText);
+        // It edits its own plan copy, so adopt that plan here and persist it — otherwise the
+        // transcript keeps showing the old text and the next open resurrects the cached plan.
+        await Coordinator.ApplyScriptEditAsync(segmentId, EditedSpokenText);
+        if (Coordinator.Plan is { } edited)
+        {
+            Plan = edited;
+            try
+            {
+                await _services.PlanStore.StorePlanAsync(edited);
+            }
+            catch (Exception ex)
+            {
+                StatusMessage = $"Your correction is in use for this session but could not be saved: {ex.Message}";
+                Notes.Add($"Saving the corrected plan failed: {ex.GetType().Name}: {ex.Message}");
+                RebuildTranscript();
+                return;
+            }
+        }
         RebuildTranscript();
-        StatusMessage = "Your correction will be used, and the previous audio for it discarded.";
+        UpdateMathsReview(segmentId);
+        StatusMessage = "Your correction is saved and will be used; this passage will be re-read in the new wording.";
         EditedSpokenText = null;
         OnPropertyChanged(nameof(EditedSpokenText));
     }
@@ -538,6 +620,11 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     private void RefreshCommands()
     {
         Play.RaiseCanExecuteChanged();
+        Pause.RaiseCanExecuteChanged();
+        Stop.RaiseCanExecuteChanged();
+        Next.RaiseCanExecuteChanged();
+        Previous.RaiseCanExecuteChanged();
+        Replay.RaiseCanExecuteChanged();
         OpenDocument.RaiseCanExecuteChanged();
         ResumeFollow.RaiseCanExecuteChanged();
         RegenerateMaths.RaiseCanExecuteChanged();

@@ -170,6 +170,9 @@ public sealed class CueScheduler
 {
     private readonly SourceMap _sourceMap;
     private readonly Dictionary<string, ClipTiming> _clips = new();
+    // Clips are attached from the preparation loop and the playback path concurrently, and
+    // resolved from the host's frame loop, so every access is serialised.
+    private readonly object _gate = new();
 
     public CueScheduler(NarrationPlan plan)
     {
@@ -194,15 +197,17 @@ public sealed class CueScheduler
     {
         ArgumentNullException.ThrowIfNull(asset);
         validated ??= [];
-        _clips[asset.SegmentId] = new ClipTiming(asset, validated, diagnostics ?? []);
+        lock (_gate) _clips[asset.SegmentId] = new ClipTiming(asset, validated, diagnostics ?? []);
     }
 
     /// <summary>Forgets a clip, e.g. after its script was edited.</summary>
-    public void DetachClip(string segmentId) => _clips.Remove(segmentId);
+    public void DetachClip(string segmentId) { lock (_gate) _clips.Remove(segmentId); }
 
     /// <summary>True when timings finer than the whole clip are available for a segment.</summary>
     public bool HasSubClipTiming(string segmentId)
-        => _clips.TryGetValue(segmentId, out var c) && c.Cues.Count > 0;
+    {
+        lock (_gate) return _clips.TryGetValue(segmentId, out var c) && c.Cues.Count > 0;
+    }
 
     /// <summary>The finest granularity this scheduler can honestly offer for a segment.</summary>
     public CueGranularity BestGranularity(string segmentId)
@@ -223,7 +228,9 @@ public sealed class CueScheduler
         var fallbackAnchors = _sourceMap.AnchorsForSegment(segmentId);
         var fallbackGranularity = segment is { IsMaths: true } ? CueGranularity.Equation : CueGranularity.Sentence;
 
-        if (!_clips.TryGetValue(segmentId, out var clip))
+        ClipTiming? clip;
+        lock (_gate) _clips.TryGetValue(segmentId, out clip);
+        if (clip is null)
         {
             return new ActiveCue(segmentId, sampleInClip, null, fallbackAnchors, fallbackGranularity,
                 SpokenRange: null, TimingProvenance.None,

@@ -683,20 +683,39 @@ public sealed class ReadingUnitBuilder
             }
         }
 
-        int cursor = 0;
-        foreach (var m in inline.OrderBy(r => r.Start))
+        // One sorted pass over the union of detected and forced ranges. Forced ranges arrive one
+        // per glyph and may sit left of (or inside) a detected range; emitting them in a second
+        // pass after the detected ones duplicated their text as out-of-order 1-char units.
+        // Merging overlapping/adjacent ranges coalesces the per-glyph forced ranges, and the
+        // cursor clip guarantees every character is emitted exactly once, in reading order.
+        var mathsRanges = new List<TextRange>();
+        foreach (var m in inline)
         {
             if (forcedProse.Any(p => p.Overlaps(m))) continue;
-            if (m.Start > cursor) yield return (new TextRange(from + cursor, m.Start - cursor), ReadingUnitKind.Prose);
-            yield return (new TextRange(from + m.Start, m.Length), ReadingUnitKind.InlineMath);
-            cursor = m.End;
+            mathsRanges.Add(m);
         }
-        foreach (var f in forcedMaths)
+        mathsRanges.AddRange(forcedMaths);
+        mathsRanges.Sort((a, b) => a.Start != b.Start ? a.Start.CompareTo(b.Start) : a.End.CompareTo(b.End));
+        var merged = new List<TextRange>();
+        foreach (var r in mathsRanges)
         {
-            if (inline.Any(m => m.Overlaps(f))) continue;
-            if (f.Start > cursor) yield return (new TextRange(from + cursor, f.Start - cursor), ReadingUnitKind.Prose);
-            yield return (new TextRange(from + f.Start, f.Length), ReadingUnitKind.InlineMath);
-            cursor = Math.Max(cursor, f.End);
+            if (r.IsEmpty) continue;
+            if (merged.Count > 0 && r.Start <= merged[^1].End)
+            {
+                var last = merged[^1];
+                merged[^1] = TextRange.FromBounds(last.Start, Math.Max(last.End, r.End));
+            }
+            else merged.Add(r);
+        }
+
+        int cursor = 0;
+        foreach (var m in merged)
+        {
+            int start = Math.Max(m.Start, cursor);
+            if (m.End <= start) continue;
+            if (start > cursor) yield return (new TextRange(from + cursor, start - cursor), ReadingUnitKind.Prose);
+            yield return (new TextRange(from + start, m.End - start), ReadingUnitKind.InlineMath);
+            cursor = m.End;
         }
         if (cursor < to - from) yield return (new TextRange(from + cursor, to - from - cursor), ReadingUnitKind.Prose);
     }
@@ -785,12 +804,15 @@ public sealed class ReadingUnitBuilder
 
         int fragmentStart = 0;
         string? currentAnchor = null;
-        int? lastLine = null;
+        // LineOrdinal is per-page, so on its own it collides across pages (every 1-line page is
+        // line 0) and a cross-page sentence lost its line-break space. Key on the same
+        // (page, ordinal, line id) triple BuildAnchors groups by.
+        (int PageIndex, int LineOrdinal, string? LineId)? lastLine = null;
 
         foreach (var (g, _) in glyphs)
         {
             string anchor = anchorByPage.GetValueOrDefault(g.PageIndex) ?? "";
-            bool lineChanged = lastLine is { } ll && ll != g.LineOrdinal;
+            bool lineChanged = lastLine is { } ll && ll != (g.PageIndex, g.LineOrdinal, g.LineId);
             if (lineChanged)
             {
                 breaks.Add(sb.Length);
@@ -814,7 +836,7 @@ public sealed class ReadingUnitBuilder
 
             sb.Append(g.Character);
             currentAnchor = anchor;
-            lastLine = g.LineOrdinal;
+            lastLine = (g.PageIndex, g.LineOrdinal, g.LineId);
         }
 
         if (currentAnchor is { } last && sb.Length > fragmentStart)

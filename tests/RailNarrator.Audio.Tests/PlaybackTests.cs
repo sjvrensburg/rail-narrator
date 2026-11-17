@@ -327,6 +327,32 @@ public sealed class PlaybackEngineTests
     }
 
     [Fact]
+    public async Task RateChangeAfterSeek_PreservesThePosition()
+    {
+        // Regression: SetPlaybackRate recomputed the position from presented frames alone,
+        // discarding the seek base, so changing speed at 1.6 s jumped back to ~0.1 s.
+        var (engine, device, _) = Load(frames: 48000);
+        await using (engine)
+        {
+            await engine.PlayAsync();
+            await WaitForQueuedAsync(engine, device, 22050);
+            device.AdvanceBySeconds(0.5);
+
+            await engine.SeekAsync(1.5);
+            await WaitForQueuedAsync(engine, device, 4410);
+            device.AdvanceBySeconds(0.1);
+            Assert.Equal(1.6, engine.PositionSeconds, 1);
+
+            engine.SetPlaybackRate(2.0);
+            Assert.Equal(1.6, engine.PositionSeconds, 1);
+
+            // A second change must also hold: the first change re-seats the base it must read.
+            engine.SetPlaybackRate(0.75);
+            Assert.Equal(1.6, engine.PositionSeconds, 1);
+        }
+    }
+
+    [Fact]
     public async Task ClipCompletion_FiresOnlyAfterTheDeviceDrains()
     {
         var (engine, device, asset) = Load(frames: 24000);
