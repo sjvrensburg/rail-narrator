@@ -124,6 +124,13 @@ public enum MathMode
     /// context. The interpretation is marked separately as generated and can be disabled.
     /// </summary>
     Explain,
+
+    /// <summary>
+    /// Say what the mathematics means, in words, without voicing notation: the listener has only
+    /// their ears. A language model interprets each equation and each sentence with maths in it,
+    /// from the page image and the surrounding text, a little ahead of the reading position.
+    /// </summary>
+    Interpret,
 }
 
 /// <summary>Where a narration segment's spoken text came from.</summary>
@@ -149,6 +156,12 @@ public enum ScriptProvenance
     /// algorithm listing. Contains no document text.
     /// </summary>
     StructureAnnouncement,
+
+    /// <summary>
+    /// Words decided just before synthesis by a maths interpreter. Until then the segment holds
+    /// its fallback: the verbatim sentence, or the "could not be read" announcement for an equation.
+    /// </summary>
+    PendingInterpretation,
 }
 
 /// <summary>

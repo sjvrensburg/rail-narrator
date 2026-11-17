@@ -74,6 +74,11 @@ public interface IAudioTransport
 /// <param name="PlaybackRate">Initial pitch-preserving rate.</param>
 /// <param name="FollowMode">Initial camera policy.</param>
 /// <param name="RequestTimings">Ask providers for timing evidence. Ignored when they have none.</param>
+/// <param name="InterpretAheadSegments">
+/// How far ahead of the reading position pending maths passages are interpreted. Further than the
+/// synthesis lookahead, because a local model takes several seconds per passage and a run of
+/// equations would otherwise stall playback.
+/// </param>
 public sealed record NarrationCoordinatorOptions(
     int LookaheadSegments = 4,
     int MaxConcurrentSynthesis = 1,
@@ -81,7 +86,8 @@ public sealed record NarrationCoordinatorOptions(
     AudioFormat? Format = null,
     double PlaybackRate = 1.0,
     FollowMode FollowMode = FollowMode.KeepVisible,
-    bool RequestTimings = true)
+    bool RequestTimings = true,
+    int InterpretAheadSegments = 40)
 {
     public static NarrationCoordinatorOptions Default { get; } = new();
 }
@@ -116,6 +122,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     private readonly IAudioTransport _audio;
     private readonly ISpeechAssetStore? _assetStore;
     private readonly IForcedAligner? _aligner;
+    private readonly ISegmentResolver? _resolver;
     private readonly IMonotonicClock _clock;
     private readonly object _gate = new();
 
@@ -139,6 +146,14 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     // generation advances, so a voice switch or script edit never waits on a stale preparation.
     private readonly ConcurrentDictionary<string, Lazy<Task>> _inflight = new();
     private readonly object _prepareGate = new();
+    // Interpretations in flight, keyed by generation + segment id + revision, shared by the
+    // interpret-ahead loop and the synthesis path so a passage is never sent to the model twice.
+    private readonly ConcurrentDictionary<string, Lazy<Task<NarrationSegment>>> _resolving = new();
+    private CancellationTokenSource? _interpretCts;
+    private readonly CancellationTokenSource _lifetime = new();
+    private Task? _interpretLoop;
+    private long _interpretGeneration = -1;
+    private int _interpretFrom = -1;
 
     public NarrationCoordinator(
         ITtsProvider tts,
@@ -146,12 +161,14 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         ISpeechAssetStore? assetStore = null,
         IMonotonicClock? clock = null,
         NarrationCoordinatorOptions? options = null,
-        IForcedAligner? aligner = null)
+        IForcedAligner? aligner = null,
+        ISegmentResolver? resolver = null)
     {
         _tts = tts ?? throw new ArgumentNullException(nameof(tts));
         _audio = audio ?? throw new ArgumentNullException(nameof(audio));
         _assetStore = assetStore;
         _aligner = aligner;
+        _resolver = resolver;
         _clock = clock ?? new SystemMonotonicClock();
         _options = options ?? NarrationCoordinatorOptions.Default;
 
@@ -174,6 +191,12 @@ public sealed class NarrationCoordinator : IAsyncDisposable
 
     /// <summary>Raised whenever the published snapshot changes.</summary>
     public event Action<PlaybackSnapshot>? SnapshotChanged;
+
+    /// <summary>
+    /// A pending segment received its final words (a maths interpretation, or its fallback). Raised
+    /// outside the coordinator lock, from a background thread.
+    /// </summary>
+    public event Action<NarrationSegment>? SegmentResolved;
 
     /// <summary>Raised when the cue to highlight changes. Carries the cue and the anchors to draw.</summary>
     public event Action<ActiveCue>? ActiveCueChanged;
@@ -440,6 +463,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             var ct = _prepareCts.Token;
             _prepareLoop = Task.Run(() => PrepareLoopAsync(generation, ct), ct);
         }
+        InterpretAhead(generation);
     }
 
     /// <summary>
@@ -474,6 +498,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
                 await PrepareLoopAsync(generation, ct).ConfigureAwait(false);
             });
         }
+        InterpretAhead(generation);
     }
 
     /// <summary>
@@ -542,9 +567,105 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Gives a pending segment its final words and puts them in the plan.
+    /// </summary>
+    /// <remarks>
+    /// Keyed by plan, segment and revision rather than by generation: an interpretation does not
+    /// depend on where playback is, so a seek must neither cancel a model call that is nearly done
+    /// nor start a second one for the same passage. It runs on the coordinator's lifetime token and
+    /// is accepted whenever the same plan is still loaded.
+    /// </remarks>
+    private async Task<NarrationSegment> ResolveSegmentAsync(NarrationSegment segment, CancellationToken ct)
+    {
+        var plan = _plan;
+        if (plan is null || _resolver is null) return segment;
+        string key = $"{plan.Header.PlanId}:{plan.Header.InputFingerprint}:{segment.Id}:{segment.ScriptRevision}";
+        var lazy = _resolving.GetOrAdd(key, _ => new Lazy<Task<NarrationSegment>>(
+            () => _resolver.ResolveAsync(plan, segment, _lifetime.Token)));
+        NarrationSegment resolved;
+        try { resolved = await lazy.Value.WaitAsync(ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested && !_lifetime.IsCancellationRequested)
+        {
+            throw;   // this caller stopped waiting; the interpretation carries on for the next one
+        }
+        catch (Exception) when (!_lifetime.IsCancellationRequested)
+        {
+            _resolving.TryRemove(key, out _);
+            // The resolver promises a fallback rather than a throw; if one escapes anyway the
+            // placeholder is still an honest reading.
+            resolved = segment with { Provenance = ScriptProvenance.SourceVerbatim };
+        }
+
+        bool replaced = false;
+        lock (_gate)
+        {
+            if (_plan is { } current && current.Header == plan.Header)
+            {
+                var segments = current.Segments.ToList();
+                int index = segments.FindIndex(s => s.Id == resolved.Id);
+                if (index >= 0 && segments[index].Provenance == ScriptProvenance.PendingInterpretation
+                    && segments[index].ScriptRevision == segment.ScriptRevision)
+                {
+                    segments[index] = resolved;
+                    _plan = current with { Segments = segments };
+                    replaced = true;
+                }
+            }
+        }
+        _resolving.TryRemove(key, out _);
+        if (replaced) SegmentResolved?.Invoke(resolved);
+        return resolved;
+    }
+
+    /// <summary>
+    /// Interprets pending passages ahead of the reading position, one at a time, so they are ready
+    /// before synthesis reaches them. Restarted when the generation or the position moves on.
+    /// </summary>
+    private void InterpretAhead(long generation)
+    {
+        if (_resolver is null) return;
+        int from;
+        lock (_gate) from = Math.Max(0, _segmentIndex);
+        lock (_prepareGate)
+        {
+            bool running = _interpretLoop is { IsCompleted: false } && _interpretGeneration == generation;
+            // Still working on this generation from an earlier position: let it carry on unless the
+            // reader has jumped outside the window it is covering.
+            if (running && from >= _interpretFrom && from < _interpretFrom + _options.InterpretAheadSegments / 2) return;
+            _interpretCts?.Cancel();
+            _interpretCts = new CancellationTokenSource();
+            var ct = _interpretCts.Token;
+            _interpretGeneration = generation;
+            _interpretFrom = from;
+            _interpretLoop = Task.Run(async () =>
+            {
+                try
+                {
+                    var plan = _plan;
+                    if (plan is null) return;
+                    int end = Math.Min(plan.SegmentCount, from + Math.Max(1, _options.InterpretAheadSegments));
+                    for (int i = from; i < end && !ct.IsCancellationRequested && ReferenceEquals(_plan?.Header, plan.Header); i++)
+                    {
+                        var segment = _plan?.Segments[i];
+                        if (segment is { Provenance: ScriptProvenance.PendingInterpretation })
+                            await ResolveSegmentAsync(segment, ct).ConfigureAwait(false);
+                    }
+                }
+                catch (OperationCanceledException) { }
+                catch (Exception) { /* each passage falls back on its own; nothing to publish here */ }
+            });
+        }
+    }
+
     private async Task PrepareSegmentAsync(
         NarrationSegment segment, TtsCapabilities caps, AudioFormat format, string voice, long generation, CancellationToken ct)
     {
+        if (segment.Provenance == ScriptProvenance.PendingInterpretation && _resolver is not null)
+        {
+            segment = await ResolveSegmentAsync(segment, ct).ConfigureAwait(false);
+            if (generation != Generation) return;
+        }
         // Dedupe concurrent preparations of the same asset (lookahead loop vs. playback path):
         // both callers await the one synthesis instead of each synthesising and storing it.
         string assetId = CacheKey.ForSpeechAsset(
@@ -709,7 +830,10 @@ public sealed class NarrationCoordinator : IAsyncDisposable
 
     private async Task<SpeechAsset> AlignAssetAsync(NarrationSegment segment, SpeechAsset asset, ReadOnlyMemory<byte> pcm, CancellationToken ct)
     {
-        if (!_options.RequestTimings || segment.IsMaths || _aligner is null) return asset;
+        // A paraphrase or an announcement has no word-for-word link to the page: highlight the whole
+        // passage rather than align words that would point nowhere.
+        if (!_options.RequestTimings || segment.IsMaths || _aligner is null
+            || segment.Provenance is not (ScriptProvenance.SourceVerbatim or ScriptProvenance.UserEdited)) return asset;
         // The initial bundled dictionary/acoustic model is English. Never apply it to other languages.
         if (!segment.Language.StartsWith("en", StringComparison.OrdinalIgnoreCase)) return asset;
         string hash = CacheKey.Sha256Hex(pcm.Span);
@@ -1021,6 +1145,8 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         if (_disposed) return;
         _disposed = true;
         _prepareCts?.Cancel();
+        _interpretCts?.Cancel();
+        _lifetime.Cancel();
         try { if (_prepareLoop is not null) await _prepareLoop.ConfigureAwait(false); }
         catch (OperationCanceledException) { }
         catch (Exception) { /* a failing preparation must not mask disposal */ }

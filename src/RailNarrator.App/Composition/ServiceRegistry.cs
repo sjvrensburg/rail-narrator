@@ -42,6 +42,7 @@ public sealed class ServiceRegistry : IAsyncDisposable
     public required SidecarManager? Sidecar { get; init; }
     public required IMathVerbaliser? MathVerbaliser { get; init; }
     public required IMathTranscriber? MathTranscriber { get; init; }
+    public required IMathInterpreter? MathInterpreter { get; init; }
     public required IReadOnlyList<string> StartupNotes { get; init; }
 
     /// <summary>Builds the object graph from persisted settings.</summary>
@@ -109,15 +110,26 @@ public sealed class ServiceRegistry : IAsyncDisposable
         // ---- maths ---------------------------------------------------------------------
         IMathVerbaliser? verbaliser = null;
         IMathTranscriber? transcriber = null;
+        IMathInterpreter? interpreter = null;
+        ISegmentResolver? segmentResolver = null;
         if (!string.IsNullOrWhiteSpace(settings.MathLlmBaseUrl) && !string.IsNullOrWhiteSpace(settings.MathLlmModel))
         {
             verbaliser = new OpenAiCompatibleMathVerbaliser(new MathEndpointSettings(
                 settings.MathLlmBaseUrl, settings.MathLlmModel, settings.ResolveMathApiKey()));
+            // Interpretation: the same endpoint, sent the page image of each passage when it accepts
+            // images. A reasoning model spends tokens thinking before it answers, hence the budget.
+            interpreter = new OpenAiCompatibleMathInterpreter(new MathEndpointSettings(
+                settings.MathLlmBaseUrl, settings.MathLlmModel, settings.ResolveMathApiKey(),
+                Temperature: 0.2, MaxTokens: 4000, MaxRetries: 1, RequestTimeout: TimeSpan.FromMinutes(3),
+                DisableThinking: settings.MathLlmDisableThinking));
+            segmentResolver = new MathInterpretationResolver(interpreter, extraction, new DiskTextCache(),
+                PlannerOptionsFor(settings, interpret: true));
         }
         else
         {
-            notes.Add("No text LLM is configured for maths narration. Equations will be announced as unreadable " +
-                      "unless the local rule-based fallback is enabled in settings.");
+            notes.Add("No LLM is configured for maths. Sentences with maths are read as printed and equations are " +
+                      "announced as unreadable; set MathLlmBaseUrl and MathLlmModel (any OpenAI-compatible endpoint, " +
+                      "ideally one that accepts images) to have them interpreted.");
         }
 
         if (!string.IsNullOrWhiteSpace(settings.VlmBaseUrl) && !string.IsNullOrWhiteSpace(settings.VlmModel))
@@ -150,7 +162,8 @@ public sealed class ServiceRegistry : IAsyncDisposable
                 PlaybackRate: settings.PlaybackRate,
                 FollowMode: settings.FollowMode,
                 RequestTimings: settings.WordHighlighting),
-            aligner: aligner);
+            aligner: aligner,
+            resolver: segmentResolver);
 
         return new ServiceRegistry
         {
@@ -171,6 +184,7 @@ public sealed class ServiceRegistry : IAsyncDisposable
             Sidecar = sidecar,
             MathVerbaliser = verbaliser,
             MathTranscriber = transcriber,
+            MathInterpreter = interpreter,
             StartupNotes = notes,
         };
     }
@@ -206,13 +220,17 @@ public sealed class ServiceRegistry : IAsyncDisposable
         return new NarrationPlanner(
             MathVerbaliser,
             resolver,
-            new NarrationPlannerOptions(
-                Language: "en-GB",
-                MathMode: settings.MathMode,
-                MathFallback: settings.MathFallback,
-                PronunciationDictionary: settings.PronunciationDictionary),
+            PlannerOptionsFor(settings, interpret: MathInterpreter is not null),
             localMathReader: LocalMathReader.Reader);
     }
+
+    private static NarrationPlannerOptions PlannerOptionsFor(RailNarratorSettings settings, bool interpret)
+        => new(
+            Language: "en-GB",
+            MathMode: settings.MathMode,
+            MathFallback: settings.MathFallback,
+            PronunciationDictionary: settings.PronunciationDictionary,
+            InterpretMaths: interpret);
 
     /// <summary>Builds a reading-unit builder from the current settings.</summary>
     public ReadingUnitBuilder CreateUnitBuilder(IReadOnlyList<MathsRegionOverride>? overrides = null)

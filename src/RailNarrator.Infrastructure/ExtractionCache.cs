@@ -128,3 +128,45 @@ public sealed class CachingExtractionSource : IExtractionSource
         }
     }
 }
+
+/// <summary>
+/// Small text values on disk, one file per key: maths interpretations, so a passage the model has
+/// interpreted is not sent to it again on the next open.
+/// </summary>
+public sealed class DiskTextCache : ITextCache
+{
+    private readonly string _root;
+
+    public DiskTextCache(string? root = null)
+    {
+        _root = root ?? Path.Combine(XdgPaths.Cache, "interpretations");
+        Directory.CreateDirectory(_root);
+    }
+
+    private string PathFor(string key) => Path.Combine(_root, CacheKey.Sha256Hex(key) + ".txt");
+
+    public async Task<string?> TryGetAsync(string key, CancellationToken ct = default)
+    {
+        try
+        {
+            string path = PathFor(key);
+            return File.Exists(path) ? await File.ReadAllTextAsync(path, ct).ConfigureAwait(false) : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return null; }
+    }
+
+    public async Task PutAsync(string key, string value, CancellationToken ct = default)
+    {
+        string path = PathFor(key);
+        string temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            await File.WriteAllTextAsync(temp, value, ct).ConfigureAwait(false);
+            File.Move(temp, path, overwrite: true);
+        }
+        finally
+        {
+            try { File.Delete(temp); } catch { }
+        }
+    }
+}

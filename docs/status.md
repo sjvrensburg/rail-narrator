@@ -7,16 +7,16 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 277 passing, 3 opt-in skips, 0 warnings
+## Verified by automated tests — 300 passing, 3 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
-| `RailNarrator.Domain.Tests` | 140 | Layout roles (model formulas trusted over geometry, display lines merged, headings kept apart, inline maths kept in its sentence, tables announced, publisher cover sheets skipped), years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
+| `RailNarrator.Domain.Tests` | 146 | Maths left pending with an honest fallback, interpreted once with surrounding definitions and cached, spoken by the coordinator; Layout roles (model formulas trusted over geometry, display lines merged, headings kept apart, inline maths kept in its sentence, tables announced, publisher cover sheets skipped), years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
 | `RailNarrator.Pdf.Tests` | 15 (+1 opt-in) | **Real PDFs** through the real RailReaderCore pipeline, including a cached snapshot building the same plan as a fresh one; opt-in, the real PP-DocLayoutV3 model through the adapter |
 | `RailNarrator.Speech.Tests` | 36 | PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
 | `RailNarrator.Audio.Tests` | 39 | Resampler (polyphase path equal to the direct sinc filter on four rate pairs), time-stretcher (fast grain search equal to the direct search at three rates), playback engine against a controllable fake device, engine lock ordering, coordinator-plus-engine transition stress |
 | `RailNarrator.Infrastructure.Tests` | 9 | Cache round-trips and waveform integrity, including same-length replacement; extraction-cache keying, degraded and encrypted documents never stored, corrupt entries treated as misses |
-| `RailNarrator.Inference.Tests` | 38 | Golden maths semantics, response validator, endpoint client |
+| `RailNarrator.Inference.Tests` | 55 | Maths interpretation: notation validator, image and thinking-switch fallbacks, one repair turn, cut-off responses refused; golden maths semantics, response validator, endpoint client |
 
 Run them with:
 
@@ -201,10 +201,9 @@ the two items marked as measured before.
 |---|---|---|
 | **Audible playback by a human ear** | The signal reaching the output device was recorded and matches the synthesised clips, but nobody has listened, and the Bluetooth leg after the sink was not captured | Play a document through speakers and confirm speech is intelligible and correctly paced |
 | **Audible-to-visible delay** | Highlights agree with the device's own DAC timestamps; whether those timestamps are right for a given device is unmeasured | Loopback microphone plus display capture, at several speeds and on wired and Bluetooth outputs |
-| **LLM maths narration** | No text LLM endpoint was configured on this machine | Point `MathLlmBaseUrl`/`MathLlmModel` at a local server and run the golden examples in `GoldenMathSemanticsTests` against it — the assertion helpers already check semantics, not wording |
+| **Maths interpretation across documents** | Measured on one statistics paper with one model (Ornith-1.5-35B-A3B, see item 32) | Run other fields' papers (physics, pure maths, ML) and a text-only endpoint; review a sample of interpretations against the originals for meaning errors |
 | **VLM equation transcription** | No vision endpoint configured | Configure one and check a real equation crop round-trips |
 | **Scanned-document OCR at 300 dpi** | A 131 ppi scan with handwriting was run and reads as sentences; the handwriting is recognised as stray words | Check a clean 300 dpi scan for coverage, warnings and reading order |
-| **Semantic layout roles** | The default is the model-free analyzer, so every block arrives as `Text` | Download PP-DocLayoutV3 and set `LayoutModelPath`; role-keyed suppression and display-maths detection then use roles instead of geometry |
 | **Clean-machine install** | The archive was built and run here, not on a fresh system | Install on a stock Fedora/Debian with only `libportaudio2` added |
 | **Long-document endurance** | Runs of three to seven minutes of a 27-page paper, 1.5–1.7 GB resident; played clips are now released, but a whole document has not been played through | Play a 40-page paper to the end: peak RSS, preparation lag versus playback, cache growth |
 | **File > Open dialog** | The GUI run loaded documents from the command line only | Open a document through the picker under a desktop portal |
@@ -230,6 +229,9 @@ Not fixed yet. Each was observed in the run described above.
 - **A sideways page with no Rotate attribute loses a line under the layout model.** The
   synthetic landscape scan comes out as three captions and drops "Final line of the sideways
   body."; the model-free analyzer read all four lines. The model sees the page unrotated.
+- **"Regenerate" does not re-ask the model for an interpreted passage.** It rebuilds the plan,
+  and the passage comes back from the interpretation cache with the same words. "Use my text"
+  works.
 - **A restored position is a passage id.** When a document's units change (a new layout model, a
   new pipeline version), the saved id can name a different passage than the one the reader left.
 - **About 0.4 s of silence is still inserted between passages** (on top of the ~0.5 s each Kokoro
@@ -406,3 +408,20 @@ threads meeting.
     "where", "ε ∗", "t". Tables and algorithm listings are announced ("Table not read aloud.") with
     the whole region highlighted, instead of their cells being read as sentences of numbers. On
     the annotated thesis scan, OCR'd handwriting ("lact plact", "rewoucd") is no longer read.
+32. **Maths is interpreted, not read.** With `MathMode` Interpret (now the default) and an LLM
+    endpoint configured, each display equation and each sentence with maths in it is sent to the
+    model — page image, garbled text layer, 1,500 characters before it (where notation is
+    defined) and 400 after — and the narrator says what it means. The rules are the author's
+    narrate skill: never voice notation, use the paper's names for quantities, keep a sentence's
+    own wording; output with symbols, Greek letters or variable residue ("h t") gets one repair
+    turn and is then refused. Interpretation runs during playback, up to 40 passages ahead of the
+    reading position, and is cached on disk; the plan holds an honest fallback until then.
+    Measured on the GARCH paper with Ornith-1.5-35B-A3B on `:8088` (multimodal, local): 14 of 14
+    passages interpreted correctly with thinking on (median 10.1 s, max 21.5 s) — e.g. equation
+    (3) became "the short-run component of the variance equals a constant plus the sum of the
+    previous squared standardized innovations, each multiplied by a weight, plus … an additional
+    weight that is added only when the corresponding innovation was negative…"; with thinking
+    off 13 of 14 (median 1.3 s, one refused and read verbatim, one detail wrong). In the GUI,
+    playing from just before equation (1) with nothing cached: 90 s of continuous narration,
+    the only silences over 1.2 s being 2.2 s at the start and 1.8 s before the first maths
+    passage; the transcript and the maths review panel show the interpreted words.
