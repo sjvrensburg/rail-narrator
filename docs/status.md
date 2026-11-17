@@ -7,15 +7,15 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 234 passing, 2 opt-in skips, 0 warnings
+## Verified by automated tests — 240 passing, 2 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
 | `RailNarrator.Domain.Tests` | 110 | Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
-| `RailNarrator.Pdf.Tests` | 14 | **Real PDFs** through the real RailReaderCore pipeline |
+| `RailNarrator.Pdf.Tests` | 15 | **Real PDFs** through the real RailReaderCore pipeline, including a cached snapshot building the same plan as a fresh one |
 | `RailNarrator.Speech.Tests` | 36 | PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
 | `RailNarrator.Audio.Tests` | 32 | Resampler, time-stretcher, playback engine against a controllable fake device, engine lock ordering, coordinator-plus-engine transition stress |
-| `RailNarrator.Infrastructure.Tests` | 4 | Cache round-trips and waveform integrity, including same-length replacement |
+| `RailNarrator.Infrastructure.Tests` | 9 | Cache round-trips and waveform integrity, including same-length replacement; extraction-cache keying, degraded and encrypted documents never stored, corrupt entries treated as misses |
 | `RailNarrator.Inference.Tests` | 38 | Golden maths semantics, response validator, endpoint client |
 
 Run them with:
@@ -226,7 +226,6 @@ Not fixed yet. Each was observed in the run described above.
   for neither unless one clearly dominates.
 - **One display equation becomes several passages**, each announcing that it could not be read,
   and two of three display equations tried did not respond to a click.
-- **Extraction is not cached.** The scan was OCRed again, about 25 s, on every open.
 - **Closing by signal saves no reading position.** Only File > Exit (and, untested, the window's
   close button) disposes the view model, which is where the position is written; a `SIGTERM`
   ends the process without it.
@@ -342,3 +341,13 @@ threads meeting.
     saved with `af_bella` / 1.5 / Off showed those values and left the global settings untouched;
     the speech cache held `af_bella` clips only after that voice was chosen. The ZONOS3 speaker id
     is not saved this way, because it also decides whether that provider is registered.
+26. **Extraction was not cached**, so a scan was OCRed again on every open. Snapshots are now kept
+    gzipped under `$XDG_CACHE_HOME/rail-narrator/extraction`, keyed on the document bytes,
+    extraction options, filters, page selection, view rotation, revision, the extractor and
+    RailReaderCore assembly versions and the layout model file. A run where OCR was requested but
+    unavailable, and any password-protected document, are never stored. Measured on the 10-page
+    annotated thesis scan, launch to "Ready": 34.5 s on first open, 3.5 s and 5.7 s on the next
+    two (entry 0.9 MB). The plan file was written once and matched on every cached open, so the
+    cached snapshot produced identical reading units. Fixing this exposed a race: a progress
+    report posted just before extraction returned overwrote "Ready" with "Loaded from cache:
+    page 10 of 10"; late reports are now ignored.

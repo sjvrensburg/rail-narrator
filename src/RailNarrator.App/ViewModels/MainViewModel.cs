@@ -252,7 +252,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public string SpeechProviderSummary
         => string.Join(", ", _services.SpeechProviders.RegisteredIds);
 
-    public long CacheBytes => _services.AssetStore.TotalBytes();
+    public long CacheBytes => _services.AssetStore.TotalBytes() + _services.CachedExtraction.TotalBytes();
     private string _timingSummary = "Sentence highlighting until word alignment is available.";
     public string TimingSummary { get => _timingSummary; private set => Set(ref _timingSummary, value); }
 
@@ -323,9 +323,15 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
             _services.Extraction.AttachDocument(path);
             var request = _services.CreateExtractionRequest(path);
-            var snapshot = await _services.Extraction.ExtractAsync(request,
-                new Progress<ExtractionProgress>(p => Dispatcher.UIThread.Post(
-                    () => StatusMessage = $"{p.Stage}: page {p.PagesDone} of {p.PagesTotal}")));
+            // Progress is posted, so a report can land after extraction has returned — with a cache
+            // hit, after "Ready" — and overwrite the status. Reports are ignored once it is done.
+            bool extracting = true;
+            var snapshot = await _services.CachedExtraction.ExtractAsync(request,
+                new Progress<ExtractionProgress>(p => Dispatcher.UIThread.Post(() =>
+                {
+                    if (extracting) StatusMessage = $"{p.Stage}: page {p.PagesDone} of {p.PagesTotal}";
+                })));
+            extracting = false;
 
             foreach (string warning in snapshot.AllWarnings().Take(8))
                 if (!Notes.Contains(warning)) Notes.Add(warning);
