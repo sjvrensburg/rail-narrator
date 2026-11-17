@@ -39,7 +39,8 @@ public sealed record ReadingUnitBuilderOptions(
     IReadOnlyList<MathsRegionOverride>? Overrides = null,
     bool DetectRunningElements = true,
     int RunningElementMinPages = 3,
-    bool SkipPublisherCoverPages = true)
+    bool SkipPublisherCoverPages = true,
+    bool SkipArticleMetadata = true)
 {
     public static ReadingUnitBuilderOptions Default { get; } = new(NarrationFilterSettings.Default);
 
@@ -79,6 +80,57 @@ public static class PublisherCoverPages
         }
         return pages;
     }
+}
+
+/// <summary>
+/// Front-matter lines a reader passes over on a first reading: keywords, JEL/MSC classification
+/// codes, article history, the corresponding author's contact. Recognised by their standard
+/// label, only near the start of the article and only when short, so a sentence in the body that
+/// happens to begin "Received wisdom…" is still read.
+/// </summary>
+public static class ArticleMetadata
+{
+    // Labels that cannot open a body sentence.
+    private static readonly string[] Unambiguous =
+    [
+        "JEL classification", "JEL codes", "JEL:", "Keywords", "Key words", "Key-words", "Index terms",
+        "Article history", "Mathematics Subject Classification", "AMS subject classification",
+        "AMS classification", "MSC", "Corresponding author",
+    ];
+
+    // Ordinary words too ("Received wisdom holds…"): metadata only in capitals, before a colon or
+    // a date, or — for contact lines — beside an e-mail address.
+    private static readonly string[] Ambiguous =
+        ["Received", "Accepted", "Revised", "Published online", "Available online", "Contact", "E-mail", "Email"];
+
+    private static readonly string[] Months =
+        ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+
+    public static bool IsMetadata(ReadingUnit unit, int firstArticlePage)
+    {
+        ArgumentNullException.ThrowIfNull(unit);
+        if (unit.PageIndex > firstArticlePage + 1 || unit.OriginalText.Length > 300) return false;
+        if (unit.Kind is not (ReadingUnitKind.Prose or ReadingUnitKind.Heading)) return false;
+        string text = unit.OriginalText.TrimStart();
+        foreach (string label in Unambiguous)
+            if (StartsWithWord(text, label)) return true;
+        foreach (string label in Ambiguous)
+        {
+            if (!StartsWithWord(text, label)) continue;
+            string written = text[..label.Length];
+            string rest = text[label.Length..].TrimStart();
+            if (written.Any(char.IsLetter) && written.Where(char.IsLetter).All(char.IsUpper)) return true;
+            if (rest.StartsWith(':') || (rest.Length > 0 && char.IsDigit(rest[0]))) return true;
+            if (Months.Any(m => rest.StartsWith(m, StringComparison.OrdinalIgnoreCase))) return true;
+            if (text.Contains('@')) return true;
+        }
+        return false;
+    }
+
+    /// <summary>The label is the whole first word(s): "Received 3 May" yes, "Receivers" no.</summary>
+    private static bool StartsWithWord(string text, string label)
+        => text.StartsWith(label, StringComparison.OrdinalIgnoreCase)
+           && (text.Length == label.Length || !char.IsLetter(text[label.Length]));
 }
 
 /// <summary>One line or block identified as a running header, footer or page number.</summary>
@@ -361,6 +413,14 @@ public sealed class ReadingUnitBuilder
         }
 
         var units = CutUnits(run, snapshot);
+        if (_options.SkipArticleMetadata)
+        {
+            int before = units.Count;
+            int firstPage = units.Count > 0 ? units[0].PageIndex : 0;
+            units = units.Where(u => !ArticleMetadata.IsMetadata(u, firstPage)).ToList();
+            if (units.Count < before)
+                diag.Add($"Skipped {before - units.Count} article metadata line(s) (keywords, classification codes, article history, contact).");
+        }
         diag.Add($"Built {units.Count} reading unit(s) from {run.Glyphs.Count} source character(s) " +
                  $"({units.Count(u => u.IsMaths)} mathematical).");
         diagnostics = diag;
@@ -857,7 +917,7 @@ public sealed class ReadingUnitBuilder
             // when no full stop separates them: "2. The model In this article…" read as one sentence
             // and gave the paragraph the heading's kind. A change of block kind is a hard boundary;
             // a paragraph that merely continues into another block (next column, next page) is not.
-            foreach (var part in SplitAtKindChanges(run, region.Range))
+            foreach (var part in SplitAtKindChanges(run, text, region.Range))
             {
                 // A table or algorithm is shown, not read: one unit over the whole block, which the
                 // planner turns into an announcement. Sentence-splitting a table made its cells
@@ -904,21 +964,48 @@ public sealed class ReadingUnitBuilder
         return false;
     }
 
-    private static IEnumerable<TextRange> SplitAtKindChanges(ReadingRun run, TextRange range)
+    private static IEnumerable<TextRange> SplitAtKindChanges(ReadingRun run, string text, TextRange range)
     {
         int start = range.Start;
         BlockKind? previous = null;
+        string? previousBlock = null;
+        var linesPerBlock = run.LineSpans.GroupBy(s => s.BlockId).ToDictionary(g => g.Key, g => g.Count());
         foreach (var span in run.LineSpans)
         {
             if (span.Start >= range.End) break;
-            if (span.Start > range.Start && previous is { } kind && kind != span.Kind && span.Start > start)
+            bool kindChanged = previous is { } kind && kind != span.Kind;
+            // Two blocks of the same kind: a paragraph flowing into the next column ends mid-sentence
+            // (a lowercase word, a comma). A keywords line, a classification code or a finished
+            // sentence does not, and the next block starting with a capital is a new start.
+            // A one-line block (a keywords line, a label) is an item of its own as well.
+            bool blockEnded = previousBlock is not null && previousBlock != span.BlockId
+                && (EndsFinished(text, span.Start) || linesPerBlock.GetValueOrDefault(previousBlock) == 1)
+                && StartsWithCapital(text, span.Start);
+            if (span.Start > range.Start && span.Start > start && (kindChanged || blockEnded))
             {
                 yield return TextRange.FromBounds(start, span.Start);
                 start = span.Start;
             }
-            if (span.Start <= range.End) previous = span.Kind;
+            previous = span.Kind;
+            previousBlock = span.BlockId;
         }
         if (range.End > start) yield return TextRange.FromBounds(start, range.End);
+    }
+
+    private static bool EndsFinished(string text, int before)
+    {
+        int i = before - 1;
+        while (i >= 0 && char.IsWhiteSpace(text[i])) i--;
+        if (i < 0) return false;
+        char c = text[i];
+        return !(char.IsLower(c) || c is ',' or ';' or ':' or '-' or '–' or '(' or '“' or '"');
+    }
+
+    private static bool StartsWithCapital(string text, int at)
+    {
+        int i = at;
+        while (i < text.Length && char.IsWhiteSpace(text[i])) i++;
+        return i < text.Length && char.IsUpper(text[i]);
     }
 
     private IReadOnlyList<TextRange> SplitProse(string prose, int offsetInRun, string runText)
@@ -991,6 +1078,7 @@ public sealed class ReadingUnitBuilder
         // Display maths blocks are whole regions: never sentence-split an equation.
         var displayRanges = new List<TextRange>();
         var displayBlocks = new List<string>();
+        bool modelRoles = snapshot.HasSemanticRoles;   // scans every block: once, not per line
         foreach (var span in run.LineSpans)
         {
             int end = NextSpanStart(run, span.Start);
@@ -998,7 +1086,7 @@ public sealed class ReadingUnitBuilder
             // With a layout model the model's formula class decides. The geometric fallback exists
             // for the model-free analyzer, which labels everything Text; run on a model's Text
             // blocks it turned prose lines carrying a symbol or two into "equations".
-            if (!isDisplay && !snapshot.HasSemanticRoles && span.Kind is BlockKind.Unknown or BlockKind.Text)
+            if (!isDisplay && !modelRoles && span.Kind is BlockKind.Unknown or BlockKind.Text)
             {
                 // A model-free extraction gives every block the same role, so geometry decides: a
                 // short block carrying operators and sub/superscripts is a display equation.
