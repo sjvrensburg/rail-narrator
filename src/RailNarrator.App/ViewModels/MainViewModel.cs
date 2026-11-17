@@ -620,13 +620,30 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             SpokenVersion: segment.SpokenText,
             Warnings: segment.Warnings,
             Provenance: segment.Provenance,
-            CanRegenerate: _services.MathVerbaliser is not null && unit is not null);
+            CanRegenerate: (_services.MathVerbaliser is not null || _services.MathInterpreter is not null) && unit is not null);
         OnPropertyChanged(nameof(MathsReview));
     }
 
     private async Task RegenerateMathsAsync()
     {
         if (MathsReview is null || Plan is null || _snapshot is null) return;
+        var unit = Plan.Segment(MathsReview.SegmentId)?.ReadingUnitIds.Select(id => Plan.Unit(id)).FirstOrDefault(u => u is not null);
+        if (_services.MathInterpreter is not null && unit is { Kind: ReadingUnitKind.DisplayMath } or { ContainsMaths: true })
+        {
+            // An interpreted passage: ask the model again for this one passage, bypassing its cache.
+            Busy = true;
+            try
+            {
+                StatusMessage = "Asking the maths interpreter again…";
+                var fresh = await Coordinator.RegenerateSegmentAsync(MathsReview.SegmentId);
+                StatusMessage = fresh is null ? "Nothing to regenerate."
+                    : fresh.Warnings.Any(w => w.StartsWith("Regenerating did not", StringComparison.Ordinal))
+                        ? "The interpreter gave no usable answer; the previous wording is kept."
+                        : "Regenerated.";
+            }
+            finally { Busy = false; }
+            return;
+        }
         Busy = true;
         try
         {

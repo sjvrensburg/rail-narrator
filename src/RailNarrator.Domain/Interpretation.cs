@@ -73,6 +73,12 @@ public interface ITextCache
 public interface ISegmentResolver
 {
     Task<NarrationSegment> ResolveAsync(NarrationPlan plan, NarrationSegment segment, CancellationToken ct = default);
+
+    /// <summary>
+    /// Asks again for a segment that already has words, ignoring any cached answer — the reader's
+    /// "Regenerate". If no better answer comes back, the current words are kept.
+    /// </summary>
+    Task<NarrationSegment> RefreshAsync(NarrationPlan plan, NarrationSegment segment, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -121,11 +127,29 @@ public sealed class MathInterpretationResolver : ISegmentResolver
         _cropPixelWidth = cropPixelWidth;
     }
 
-    public async Task<NarrationSegment> ResolveAsync(NarrationPlan plan, NarrationSegment segment, CancellationToken ct = default)
+    public Task<NarrationSegment> ResolveAsync(NarrationPlan plan, NarrationSegment segment, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(segment);
+        return segment.Provenance == ScriptProvenance.PendingInterpretation
+            ? InterpretAsync(plan, segment, refresh: false, ct)
+            : Task.FromResult(segment);
+    }
+
+    public async Task<NarrationSegment> RefreshAsync(NarrationPlan plan, NarrationSegment segment, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(segment);
+        var result = await InterpretAsync(plan, segment, refresh: true, ct).ConfigureAwait(false);
+        // A failed regeneration keeps what the reader already had rather than degrading it to a
+        // fallback: the earlier interpretation passed the same checks.
+        return result.Provenance == ScriptProvenance.ModelGenerated
+            ? result
+            : segment with { Warnings = [.. segment.Warnings, .. result.Warnings.Where(w => !segment.Warnings.Contains(w)),
+                "Regenerating did not produce a usable answer; the previous wording is kept."] };
+    }
+
+    private async Task<NarrationSegment> InterpretAsync(NarrationPlan plan, NarrationSegment segment, bool refresh, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(plan);
-        ArgumentNullException.ThrowIfNull(segment);
-        if (segment.Provenance != ScriptProvenance.PendingInterpretation) return segment;
 
         int unitIndex = IndexOfUnit(plan, segment);
         if (unitIndex < 0) return Fallback(segment, null, "The passage's source unit is not in the plan.");
@@ -143,7 +167,7 @@ public sealed class MathInterpretationResolver : ISegmentResolver
             request.TextLayer, request.ContextBefore, request.ContextAfter, request.Language,
             string.Join(",", images.Select(i => CacheKey.Sha256Hex(i.Span)))));
 
-        string? spoken = _cache is null ? null : await _cache.TryGetAsync(key, ct).ConfigureAwait(false);
+        string? spoken = _cache is null || refresh ? null : await _cache.TryGetAsync(key, ct).ConfigureAwait(false);
         var warnings = new List<string>();
         if (spoken is null)
         {
@@ -172,7 +196,8 @@ public sealed class MathInterpretationResolver : ISegmentResolver
             Provenance = ScriptProvenance.ModelGenerated,
             ScriptRevision = segment.ScriptRevision + 1,
             SourceLinks = segment.AnchorIds.Count > 0 ? [new SourceLink(new TextRange(0, spoken.Length), segment.AnchorIds)] : [],
-            Warnings = [.. segment.Warnings, .. warnings],
+            // Distinct: a regenerated passage already carries the provenance note.
+            Warnings = segment.Warnings.Concat(warnings).Distinct().ToArray(),
         };
     }
 

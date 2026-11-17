@@ -7,11 +7,11 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 300 passing, 3 opt-in skips, 0 warnings
+## Verified by automated tests — 314 passing, 3 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
-| `RailNarrator.Domain.Tests` | 146 | Maths left pending with an honest fallback, interpreted once with surrounding definitions and cached, spoken by the coordinator; Layout roles (model formulas trusted over geometry, display lines merged, headings kept apart, inline maths kept in its sentence, tables announced, publisher cover sheets skipped), years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
+| `RailNarrator.Domain.Tests` | 160 | Citation markers left out (and brackets that are content kept), regenerate re-asks the model, Maths left pending with an honest fallback, interpreted once with surrounding definitions and cached, spoken by the coordinator; Layout roles (model formulas trusted over geometry, display lines merged, headings kept apart, inline maths kept in its sentence, tables announced, publisher cover sheets skipped), years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
 | `RailNarrator.Pdf.Tests` | 15 (+1 opt-in) | **Real PDFs** through the real RailReaderCore pipeline, including a cached snapshot building the same plan as a fresh one; opt-in, the real PP-DocLayoutV3 model through the adapter |
 | `RailNarrator.Speech.Tests` | 36 | PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
 | `RailNarrator.Audio.Tests` | 39 | Resampler (polyphase path equal to the direct sinc filter on four rate pairs), time-stretcher (fast grain search equal to the direct search at three rates), playback engine against a controllable fake device, engine lock ordering, coordinator-plus-engine transition stress |
@@ -229,9 +229,6 @@ Not fixed yet. Each was observed in the run described above.
 - **A sideways page with no Rotate attribute loses a line under the layout model.** The
   synthetic landscape scan comes out as three captions and drops "Final line of the sideways
   body."; the model-free analyzer read all four lines. The model sees the page unrotated.
-- **"Regenerate" does not re-ask the model for an interpreted passage.** It rebuilds the plan,
-  and the passage comes back from the interpretation cache with the same words. "Use my text"
-  works.
 - **A restored position is a passage id.** When a document's units change (a new layout model, a
   new pipeline version), the saved id can name a different passage than the one the reader left.
 - **About 0.4 s of silence is still inserted between passages** (on top of the ~0.5 s each Kokoro
@@ -425,3 +422,18 @@ threads meeting.
     playing from just before equation (1) with nothing cached: 90 s of continuous narration,
     the only silences over 1.2 s being 2.2 s at the start and 1.8 s before the first maths
     passage; the transcript and the maths review panel show the interpreted words.
+33. **Citation markers were read although the setting said they were not.** `IncludeCitations`
+    is off by default and documented as leaving out "(Smith, 2019)", but nothing implemented it:
+    the GARCH paper was read as "Amado and Teräsvirta (two thousand eight, two thousand
+    thirteen) in which…". Narrative ("Engle (1982)"), parenthetical ("(Hamilton, 1989; Ang &
+    Timmermann, 2012)") and numeric (" [12]") markers are now left out of the spoken text, with
+    the dropped characters still mapped so highlights are unaffected; a bracket not tied to an
+    author ("(1990–1995)", "(2)", "v[2]") is kept. On the paper: 48 changes, 200 words, every one
+    a citation. "et al." is now read "and others" without an invented comma. The interpreter's
+    prompt (version 2) also leaves citations and equation numbers out.
+34. **"Regenerate" on an interpreted passage returned the cached answer.** It now asks the model
+    again for that passage only, bypassing the cache, and keeps the previous wording if the new
+    answer is unusable. Verified in the GUI: equation (1) was re-read as "The current return is
+    decomposed into its best forecast based on all previously available information, plus a
+    shock term capturing the unexpected component." It waits behind the interpret-ahead loop on
+    a single-slot server (over 30 s here).

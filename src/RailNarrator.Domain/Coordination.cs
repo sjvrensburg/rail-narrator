@@ -417,6 +417,41 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Asks the maths interpreter again for one passage, ignoring its cached answer, and puts the
+    /// new words in place the way an edit is: that segment's speech is invalidated and prepared
+    /// again. Returns the segment as it now stands, or null when there is nothing to regenerate.
+    /// </summary>
+    public async Task<NarrationSegment?> RegenerateSegmentAsync(string segmentId, CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        var plan = _plan;
+        if (plan is null || _resolver is null) return null;
+        var segment = plan.Segments.FirstOrDefault(s => s.Id == segmentId);
+        if (segment is null) return null;
+        var fresh = segment.Provenance == ScriptProvenance.PendingInterpretation
+            ? await _resolver.ResolveAsync(plan, segment, ct).ConfigureAwait(false)
+            : await _resolver.RefreshAsync(plan, segment, ct).ConfigureAwait(false);
+        if (ReferenceEquals(fresh, segment)) return segment;
+
+        lock (_gate)
+        {
+            if (_plan is not { } current || current.Header != plan.Header) return null;
+            _plan = current with { Segments = current.Segments.Select(s => s.Id == segmentId ? fresh : s).ToList() };
+        }
+        long gen = AdvanceGeneration();
+        lock (_gate)
+        {
+            _scheduler = new CueScheduler(_plan!);
+            _prepared.Clear();
+        }
+        if (_audio.State == PlaybackState.Paused) await _audio.StopAsync(ct).ConfigureAwait(false);
+        StartPreparation(gen);
+        PublishSnapshotOnly();
+        SegmentResolved?.Invoke(fresh);
+        return fresh;
+    }
+
+    /// <summary>
     /// Applies a user edit to a segment's spoken text. Invalidates that segment's speech and
     /// timings, and everything after it on the timeline, because their positions shift.
     /// </summary>
