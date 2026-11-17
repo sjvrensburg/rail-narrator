@@ -2,8 +2,11 @@
 
 A Linux desktop application that reads a PDF aloud, highlights the passage being
 spoken in the original document, and follows the reading position — including
-mathematics, which is rendered as faithful spoken English rather than handed to a
-speech engine as raw LaTeX.
+mathematics: a language model you point it at (any OpenAI-compatible endpoint, local
+by default) looks at each equation and each sentence with maths in it, and the
+narrator says what it *means* in the paper's own terms instead of reading notation.
+With a layout model installed it also skips what a first reading skips: page
+furniture, footnotes, references, figures and table cells.
 
 Built on [RailReaderCore](https://github.com/sjvrensburg/RailReaderCore) for PDF
 rendering, layout, reading order and OCR. Nothing in Core's PDF stack is replaced.
@@ -89,7 +92,7 @@ $S all --kokoro-model <path>         # whole chain, printed pass/fail summary
 | `RailNarrator.Pdf` | RailReaderCore adapter: extraction snapshots, coordinate transforms, hit-testing, overlays | Core, SkiaSharp |
 | `RailNarrator.Speech` | Kokoro and ZONOS3 adapters, local MFA word alignment, PCM/WAV codecs | Domain, KokoroSharp |
 | `RailNarrator.Audio` | Output device, resampling, pitch-preserving speed, media clock | Domain |
-| `RailNarrator.Inference` | Maths transcription, verbalisation, closed-schema validation, local rule reader | Domain, Core.Vlm |
+| `RailNarrator.Inference` | Maths interpretation (page image + context → words), transcription, verbalisation, validation, local rule reader | Domain, Core.Vlm |
 | `RailNarrator.Infrastructure` | XDG settings, caches, model manifest and downloads, sidecar lifecycle | Domain |
 | `RailNarrator.App` | Avalonia views, commands, Skia-backed PDF surface | all of the above |
 
@@ -108,9 +111,10 @@ Recorded in `docs/decisions/`, each with the measurement that drove it:
 
 ## Guarantees worth stating plainly
 
-- **No LaTeX reaches a speech engine.** With no verbaliser configured, or one whose
-  output fails validation, the segment becomes an explicit "this equation could not
-  be read reliably" announcement. Tested.
+- **No notation reaches a speech engine.** A model's interpretation is rejected if it
+  still carries symbols, Greek letters or variable names ("h t"), gets one repair
+  turn, and is then refused: a sentence is read as printed, an equation becomes an
+  explicit "this equation could not be read reliably" announcement. Tested.
 - **No invented word timings.** Without timing evidence the highlight covers the
   whole sentence or equation and the diagnostics say so. Interpolating by character
   count would look measured and be wrong.

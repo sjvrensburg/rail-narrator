@@ -10,7 +10,22 @@ using RailNarrator.Speech;
 namespace RailNarrator.App.ViewModels;
 
 /// <summary>One row in the narration transcript list.</summary>
-public sealed record TranscriptEntry(string SegmentId, int Index, string Text, bool IsMaths, bool HasWarning);
+/// <summary>
+/// One transcript line. Its text and warning flag change in place when a maths passage is
+/// interpreted during playback: replacing the item instead would clear the list's selection, and the
+/// selection is what seeks.
+/// </summary>
+public sealed class TranscriptEntry(string segmentId, int index, string text, bool isMaths, bool hasWarning) : ViewModelBase
+{
+    private string _text = text;
+    private bool _hasWarning = hasWarning;
+
+    public string SegmentId { get; } = segmentId;
+    public int Index { get; } = index;
+    public bool IsMaths { get; } = isMaths;
+    public string Text { get => _text; set => Set(ref _text, value); }
+    public bool HasWarning { get => _hasWarning; set => Set(ref _hasWarning, value); }
+}
 
 /// <summary>Content of the maths review panel.</summary>
 public sealed record MathsReview(
@@ -63,6 +78,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         foreach (string note in services.StartupNotes) Notes.Add(note);
 
         _services.Coordinator.SnapshotChanged += OnSnapshotChanged;
+        _services.Coordinator.SegmentResolved += OnSegmentResolved;
         _services.Coordinator.ActiveCueChanged += OnActiveCueChanged;
         _services.Coordinator.FollowRequested += OnFollowRequested;
 
@@ -544,6 +560,22 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         if (Dispatcher.UIThread.CheckAccess()) Apply(); else Dispatcher.UIThread.Post(Apply);
     }
 
+    /// <summary>A maths passage got its interpreted words (or its fallback): show what will be said.</summary>
+    private void OnSegmentResolved(NarrationSegment segment)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            // Keep this copy of the plan current too: the maths review panel and the saved plan read it.
+            if (Plan is { } plan && plan.Segments.Any(s => s.Id == segment.Id))
+                Plan = plan with { Segments = plan.Segments.Select(s => s.Id == segment.Id ? segment : s).ToList() };
+            if (MathsReview?.SegmentId == segment.Id) UpdateMathsReview(segment.Id);
+            var entry = Transcript.FirstOrDefault(e => e.SegmentId == segment.Id);
+            if (entry is null) return;
+            entry.Text = segment.SpokenText;
+            entry.HasWarning = segment.HasWarnings;
+        });
+    }
+
     private int SelectedTranscriptIndexCore
     {
         get => _selectedTranscriptIndex;
@@ -575,12 +607,16 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     private void UpdateMathsReview(string segmentId)
     {
         var segment = Plan?.Segment(segmentId);
-        if (segment is not { IsMaths: true }) { MathsReview = null; return; }
+        // Interpreted sentences are reviewable too: their words came from a model.
+        bool reviewable = segment is { IsMaths: true }
+            || segment?.Provenance is ScriptProvenance.ModelGenerated or ScriptProvenance.PendingInterpretation;
+        if (segment is null || !reviewable) { MathsReview = null; return; }
         var unit = segment.ReadingUnitIds.Select(id => Plan?.Unit(id)).FirstOrDefault(u => u is not null);
         MathsReview = new MathsReview(
             segment.Id,
             CropImagePath: null,
-            RecognisedExpression: unit?.Latex ?? "(not recognised)",
+            // No LaTeX when the model read the page image: show the text layer it was given.
+            RecognisedExpression: unit?.Latex ?? unit?.OriginalText ?? "(not recognised)",
             SpokenVersion: segment.SpokenText,
             Warnings: segment.Warnings,
             Provenance: segment.Provenance,
@@ -744,6 +780,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _services.Coordinator.SnapshotChanged -= OnSnapshotChanged;
+        _services.Coordinator.SegmentResolved -= OnSegmentResolved;
         _services.Coordinator.ActiveCueChanged -= OnActiveCueChanged;
         _services.Coordinator.FollowRequested -= OnFollowRequested;
         await SavePositionAsync();

@@ -57,8 +57,15 @@ public sealed record NarrationPlannerOptions(
     MathMode MathMode = MathMode.NaturalFaithful,
     MathFallbackPolicy MathFallback = MathFallbackPolicy.AnnounceUnreadable,
     IReadOnlyDictionary<string, string>? PronunciationDictionary = null,
-    string AnnouncementTemplate = "This equation could not be read reliably.")
+    string AnnouncementTemplate = "This equation could not be read reliably.",
+    bool InterpretMaths = false)
 {
+    /// <summary>
+    /// True when maths passages are left for an <see cref="ISegmentResolver"/> to interpret during
+    /// playback: <see cref="MathMode.Interpret"/> with an interpreter configured.
+    /// </summary>
+    public bool DefersMaths => InterpretMaths && MathMode == MathMode.Interpret;
+
     public static NarrationPlannerOptions Default { get; } = new();
 }
 
@@ -128,6 +135,7 @@ public sealed class NarrationPlanner
           .Append(";mode=").Append((int)options.MathMode)
           .Append(";fallback=").Append((int)options.MathFallback)
           .Append(";announce=").Append(options.AnnouncementTemplate)
+          .Append(";interpret=").Append(options.DefersMaths ? 'y' : 'n')
           .Append(";prompt=").Append(NarrationVersions.MathPrompt)
           .Append(";prose=").Append(NarrationVersions.ProsePipeline)
           .Append(";local=").Append(NarrationVersions.LocalMathReader)
@@ -174,9 +182,11 @@ public sealed class NarrationPlanner
 
             NarrationSegment segment = unit.Kind is ReadingUnitKind.Table or ReadingUnitKind.Algorithm
                 ? StructureAnnouncement(unit, seq++)
-                : unit.IsMaths
-                    ? await BuildMathsSegmentAsync(unit, seq++, ct).ConfigureAwait(false)
-                    : BuildProseSegment(unit, seq++);
+                : _options.DefersMaths && (unit.Kind == ReadingUnitKind.DisplayMath || unit.ContainsMaths)
+                    ? PendingInterpretation(unit, seq++)
+                    : unit.IsMaths
+                        ? await BuildMathsSegmentAsync(unit, seq++, ct).ConfigureAwait(false)
+                        : BuildProseSegment(unit, seq++);
 
             // A unit with nothing to say produces no segment; the text was empty or whitespace-only.
             if (segment.SpokenText.Trim().Length > 0) segments.Add(segment);
@@ -360,6 +370,20 @@ public sealed class NarrationPlanner
     /// </summary>
     private static IReadOnlyList<SourceLink> WholeUnitLinks(IReadOnlyList<string> anchors, int spokenLength)
         => anchors.Count > 0 ? [new SourceLink(new TextRange(0, spokenLength), anchors)] : [];
+
+    /// <summary>
+    /// A maths passage left for interpretation during playback. It carries its fallback until
+    /// then — the verbatim reading of a sentence, the announcement for an equation — so a failed
+    /// or unavailable interpreter still leaves something honest to say.
+    /// </summary>
+    public NarrationSegment PendingInterpretation(ReadingUnit unit, int seq)
+    {
+        ArgumentNullException.ThrowIfNull(unit);
+        if (unit.Kind != ReadingUnitKind.DisplayMath && unit.Kind != ReadingUnitKind.InlineMath)
+            return BuildProseSegment(unit, seq) with { Provenance = ScriptProvenance.PendingInterpretation };
+        var warnings = new List<string>(unit.ExtractionWarnings);
+        return Announcement(seq, unit, unit.AnchorIds, warnings, ScriptProvenance.PendingInterpretation);
+    }
 
     /// <summary>
     /// A table or algorithm: announced, with the whole region linked so it is highlighted and

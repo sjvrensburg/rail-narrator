@@ -97,7 +97,7 @@ public sealed record RailNarratorSettings
     public string? MfaAcousticModelPath { get; init; }
     public string MfaRuntimeRevision { get; init; } = "3.3.9";
 
-    public MathMode MathMode { get; init; } = MathMode.NaturalFaithful;
+    public MathMode MathMode { get; init; } = MathMode.Interpret;
     public MathFallbackPolicy MathFallback { get; init; } = MathFallbackPolicy.AnnounceUnreadable;
 
     /// <summary>Text LLM endpoint for verbalisation. Local by default; remote is opt-in.</summary>
@@ -105,6 +105,12 @@ public sealed record RailNarratorSettings
     public string? MathLlmModel { get; init; }
     /// <summary>Name of an environment variable holding the key. The key itself is never persisted.</summary>
     public string? MathLlmApiKeyEnvVar { get; init; }
+
+    /// <summary>
+    /// Ask a reasoning model to answer without thinking first: about eight times faster per maths
+    /// passage on Ornith-35B (median 1.3 s instead of 10 s), at some cost in fidelity. Off by default.
+    /// </summary>
+    public bool MathLlmDisableThinking { get; init; }
 
     /// <summary>Vision endpoint for equation transcription, configured separately from the text LLM.</summary>
     public string? VlmBaseUrl { get; init; }

@@ -19,6 +19,11 @@ namespace RailNarrator.Inference;
 /// <param name="RequestTimeout">Per-request timeout.</param>
 /// <param name="ContextCharLimit">Bound on how much surrounding document text is sent. Context is a hint, not the document.</param>
 /// <param name="UseStructuredOutput">Request <c>response_format</c> json_schema when the endpoint supports it.</param>
+/// <param name="DisableThinking">
+/// Ask a reasoning model not to think first (<c>chat_template_kwargs.enable_thinking = false</c>, understood
+/// by llama.cpp and vLLM). Measured on Ornith-35B: 1.3 s instead of 5.4 s per equation for a comparable
+/// reading. An endpoint that rejects the field is asked again without it.
+/// </param>
 public sealed record MathEndpointSettings(
     string BaseUrl,
     string Model,
@@ -28,7 +33,8 @@ public sealed record MathEndpointSettings(
     int MaxRetries = 2,
     TimeSpan? RequestTimeout = null,
     int ContextCharLimit = 400,
-    bool UseStructuredOutput = true)
+    bool UseStructuredOutput = true,
+    bool DisableThinking = false)
 {
     public TimeSpan Timeout => RequestTimeout ?? TimeSpan.FromSeconds(120);
 }
