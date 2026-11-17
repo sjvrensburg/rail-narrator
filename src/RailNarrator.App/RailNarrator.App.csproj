@@ -6,6 +6,8 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <BuiltInComInteropSupport>false</BuiltInComInteropSupport>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <!-- The PDF raster is copied row by row into a WriteableBitmap; unsafe spans avoid a full extra copy. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <!-- The Avalonia XAML compiler emits advisories outside this repository's control. -->
     <RailNarratorTreatWarningsAsErrors>false</RailNarratorTreatWarningsAsErrors>
   </PropertyGroup>

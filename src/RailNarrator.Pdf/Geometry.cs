@@ -60,10 +60,13 @@ public readonly record struct PageTransform(
         return new SKRect((float)x0, (float)y0, (float)x1, (float)y1);
     }
 
-    public PageRect ToPageRect(SKRect rect)
+    public PageRect ToPageRect(SKRect rect) => ToPageRect(rect.Left, rect.Top, rect.Right, rect.Bottom);
+
+    /// <summary>Screen rectangle → page-point rectangle, from raw edges.</summary>
+    public PageRect ToPageRect(double left, double top, double right, double bottom)
     {
-        var (x0, y0) = ToPage(rect.Left, rect.Top);
-        var (x1, y1) = ToPage(rect.Right, rect.Bottom);
+        var (x0, y0) = ToPage(left, top);
+        var (x1, y1) = ToPage(right, bottom);
         return new PageRect((float)x0, (float)y0, (float)x1, (float)y1);
     }
 

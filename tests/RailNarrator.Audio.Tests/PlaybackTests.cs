@@ -270,9 +270,16 @@ public sealed class PlaybackEngineTests
             // Half a device-second at 2x is one source-second of the clip.
             Assert.Equal(1.0, engine.PositionSeconds, 1);
 
-            device.DrainAll();
-            await Task.Delay(150);
-            Assert.InRange(engine.PositionSeconds, 1.7, 2.3);
+            // Drain until the writer has finished and the engine reports completion. Draining once and
+            // waiting a fixed time is racy: the writer may still have frames to queue.
+            string? completed = null;
+            engine.ClipCompleted += _ => completed = "done";
+            await WaitUntil(() => { device.DrainAll(); return completed is not null; }, "clip completion");
+
+            // At completion the clock must equal the clip's own duration - not approximately 2.0,
+            // because WSOLA's output length is not exact to the sample.
+            Assert.Equal(engine.ClipDurationSeconds, engine.PositionSeconds, 3);
+            Assert.InRange(engine.ClipDurationSeconds, 1.8, 2.2);
         }
     }
 

@@ -335,6 +335,35 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     }
 
     /// <summary>
+    /// Switches voice. Every prepared clip was synthesised by the previous voice, so all of them are
+    /// discarded and the generation token advances: a synthesis that completes after the switch must
+    /// not be played over the new voice.
+    /// </summary>
+    public async Task SetVoiceAsync(string voiceId, CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        if (string.IsNullOrWhiteSpace(voiceId)) return;
+        if (string.Equals(_options.VoiceId, voiceId, StringComparison.Ordinal)) return;
+
+        _options = _options with { VoiceId = voiceId };
+        long generation = AdvanceGeneration();
+        bool wasPlaying = _audio.State == PlaybackState.Playing;
+        await _audio.StopAsync(ct).ConfigureAwait(false);
+
+        lock (_gate) _prepared.Clear();
+        _lastCue = null;
+
+        StartPreparation(generation);
+        if (_plan is not null && wasPlaying)
+        {
+            if (await EnsureSegmentReadyAsync(Math.Max(0, _segmentIndex), generation, ct).ConfigureAwait(false)
+                && generation == Generation)
+                await StartCurrentSegmentAsync(generation, ct).ConfigureAwait(false);
+        }
+        PublishSnapshotOnly();
+    }
+
+    /// <summary>
     /// Applies a user edit to a segment's spoken text. Invalidates that segment's speech and
     /// timings, and everything after it on the timeline, because their positions shift.
     /// </summary>
