@@ -12,9 +12,9 @@
 
   <Window.KeyBindings>
     <KeyBinding Gesture="Ctrl+O" Command="{Binding OpenDocument}" />
-    <KeyBinding Gesture="Space" Command="{Binding Play}" />
+    <!-- Space and Escape are handled in MainWindow.OnPreviewKeyDown, not here: a window-level
+         binding also fires while a text box is being typed in or a menu is being dismissed. -->
     <KeyBinding Gesture="Ctrl+P" Command="{Binding Play}" />
-    <KeyBinding Gesture="Escape" Command="{Binding Stop}" />
     <KeyBinding Gesture="Ctrl+Right" Command="{Binding Next}" />
     <KeyBinding Gesture="Ctrl+Left" Command="{Binding Previous}" />
     <KeyBinding Gesture="Ctrl+R" Command="{Binding Replay}" />
@@ -27,7 +27,7 @@
   <DockPanel>
 
     <!-- Menu: every command reachable without a pointer -->
-    <Menu DockPanel.Dock="Top">
+    <Menu Name="MainMenu" DockPanel.Dock="Top">
       <MenuItem Header="_File">
         <MenuItem Header="_Open PDF…" Click="OnOpenClicked" InputGesture="Ctrl+O" />
         <Separator />
@@ -132,7 +132,6 @@
           <TextBlock DockPanel.Dock="Top" Text="Narration transcript" FontWeight="SemiBold" Margin="0,0,0,4" />
           <ListBox Name="TranscriptList" ItemsSource="{Binding Transcript}"
                    SelectedIndex="{Binding SelectedTranscriptIndex}"
-                   SelectionChanged="OnTranscriptSelectionChanged"
                    ScrollViewer.HorizontalScrollBarVisibility="Disabled">
             <ListBox.ItemTemplate>
               <DataTemplate x:DataType="vm:TranscriptEntry">

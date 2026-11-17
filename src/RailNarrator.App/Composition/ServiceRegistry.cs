@@ -243,14 +243,16 @@ public sealed class ServiceRegistry : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        await Coordinator.DisposeAsync();
-        await AudioEngine.DisposeAsync();
+        // ConfigureAwait(false) throughout: this is awaited at exit from the UI thread, and a
+        // continuation that needs that thread back would wait on the very call that is blocking it.
+        await Coordinator.DisposeAsync().ConfigureAwait(false);
+        await AudioEngine.DisposeAsync().ConfigureAwait(false);
         AudioDevice.Dispose();
-        if (Sidecar is not null) await Sidecar.DisposeAsync();
+        if (Sidecar is not null) await Sidecar.DisposeAsync().ConfigureAwait(false);
         if (MathVerbaliser is IDisposable disposableVerbaliser) disposableVerbaliser.Dispose();
         Extraction.Dispose();
         Models.Dispose();
         foreach (string id in SpeechProviders.RegisteredIds)
-            if (SpeechProviders.Get(id) is { } provider) await provider.DisposeAsync();
+            if (SpeechProviders.Get(id) is { } provider) await provider.DisposeAsync().ConfigureAwait(false);
     }
 }
