@@ -30,6 +30,17 @@ public partial class MainWindow : Window
 
         Surface.Attach(_viewModel);
         Surface.SetHighlightStyle(BuildHighlightStyle());
+        _viewModel.TopLevelProvider = () => this;
+        // The surface only opens a document the view model reports as successfully loaded; a
+        // display failure must not take narration down with it, so it is reported, not thrown.
+        _viewModel.DocumentLoaded += path => Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+        {
+            try { Surface.OpenDocument(path); }
+            catch (Exception ex)
+            {
+                _viewModel.Status($"Narration is ready, but the page could not be displayed: {ex.Message}");
+            }
+        });
         _viewModel.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName is nameof(MainViewModel.HighlightAlpha) or nameof(MainViewModel.HighlightHighContrast))
@@ -44,7 +55,24 @@ public partial class MainWindow : Window
                 Surface.SetHighlightMultiPage(pages);
             });
         };
-        Closed += async (_, _) => await _viewModel.DisposeAsync();
+        Closing += OnClosing;
+    }
+
+    private bool _closeReady;
+
+    /// <summary>
+    /// Saves the reading position before the window actually closes. The first close is held,
+    /// disposal is awaited (with failures contained, never an unhandled async-void crash and
+    /// never a blocking .Result on the UI thread), then the close is allowed through.
+    /// </summary>
+    private async void OnClosing(object? sender, WindowClosingEventArgs e)
+    {
+        if (_closeReady) return;
+        e.Cancel = true;
+        try { await _viewModel.DisposeAsync(); }
+        catch (Exception) { /* the position may be lost, but closing must not crash */ }
+        _closeReady = true;
+        Close();
     }
 
     private NarrationHighlightStyle BuildHighlightStyle()
@@ -52,29 +80,16 @@ public partial class MainWindow : Window
             ? NarrationHighlightStyle.HighContrast.WithAlpha(_viewModel.HighlightAlpha)
             : NarrationHighlightStyle.Default.WithAlpha(_viewModel.HighlightAlpha);
 
-    private async void OnOpenClicked(object? sender, RoutedEventArgs e)
-        => await _viewModel.OpenDocumentAsync(this);
+    private void OnOpenClicked(object? sender, RoutedEventArgs e)
+        => _viewModel.RunObserved(_viewModel.OpenDocumentAsync(this), "Could not open a document");
 
-    private void OnPlayClicked(object? sender, RoutedEventArgs e) => _viewModel.Play.Execute(null);
-    private void OnPauseClicked(object? sender, RoutedEventArgs e) => _viewModel.Pause.Execute(null);
-    private void OnStopClicked(object? sender, RoutedEventArgs e) => _viewModel.Stop.Execute(null);
-    private void OnPreviousClicked(object? sender, RoutedEventArgs e) => _viewModel.Previous.Execute(null);
-    private void OnNextClicked(object? sender, RoutedEventArgs e) => _viewModel.Next.Execute(null);
-    private void OnReplayClicked(object? sender, RoutedEventArgs e) => _viewModel.Replay.Execute(null);
-    private void OnFollowClicked(object? sender, RoutedEventArgs e) => _viewModel.ToggleFollow.Execute(null);
-    private void OnResumeFollowClicked(object? sender, RoutedEventArgs e) => _viewModel.ResumeFollow.Execute(null);
-    private void OnZoomInClicked(object? sender, RoutedEventArgs e) => _viewModel.ZoomIn.Execute(null);
-    private void OnZoomOutClicked(object? sender, RoutedEventArgs e) => _viewModel.ZoomOut.Execute(null);
     private void OnFitClicked(object? sender, RoutedEventArgs e) => Surface.FitToWidth();
-    private void OnZoom200Clicked(object? sender, RoutedEventArgs e) => _viewModel.ApplyZoom(2.0);
-    private void OnZoom400Clicked(object? sender, RoutedEventArgs e) => _viewModel.ApplyZoom(4.0);
-    private void OnZoom800Clicked(object? sender, RoutedEventArgs e) => _viewModel.ApplyZoom(8.0);
     private void OnCloseClicked(object? sender, RoutedEventArgs e) => Close();
 
     private void OnTranscriptSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (TranscriptList.SelectedItem is TranscriptEntry entry)
-            _ = _viewModel.Coordinator.GoToSegmentAsync(entry.SegmentId);
+            _viewModel.RunObserved(_viewModel.Coordinator.GoToSegmentAsync(entry.SegmentId), "Could not move to that passage");
     }
 
     private void OnMathsEditClicked(object? sender, RoutedEventArgs e)
@@ -85,10 +100,6 @@ public partial class MainWindow : Window
     }
 
     private void OnMathsRegenerateClicked(object? sender, RoutedEventArgs e) => _viewModel.RegenerateMaths.Execute(null);
-
-    private void OnDownloadModelClicked(object? sender, RoutedEventArgs e) => _viewModel.DownloadKokoroModel.Execute(null);
-    private void OnTestMathEndpointClicked(object? sender, RoutedEventArgs e) => _viewModel.TestMathEndpoint.Execute(null);
-    private void OnTestVisionEndpointClicked(object? sender, RoutedEventArgs e) => _viewModel.TestVisionEndpoint.Execute(null);
 
     /// <summary>
     /// Marks the currently highlighted region as maths, or restores it to prose. Inline detection is
@@ -130,6 +141,6 @@ public partial class MainWindow : Window
         // A document passed on the command line is opened; it is never auto-played.
         string[] args = Environment.GetCommandLineArgs();
         string? pdf = args.Skip(1).FirstOrDefault(a => a.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase));
-        if (pdf is not null) _ = _viewModel.LoadDocumentAsync(pdf);
+        if (pdf is not null) _viewModel.RunObserved(_viewModel.LoadDocumentAsync(pdf), "Could not open the document");
     }
 }

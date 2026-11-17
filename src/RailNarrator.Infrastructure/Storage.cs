@@ -254,8 +254,23 @@ public sealed class DiskSpeechAssetStore : ISpeechAssetStore
         {
             string dir = AssetDirectory(asset.Id);
             Directory.CreateDirectory(dir);
-            File.WriteAllBytes(PcmPath(asset.Id), pcm.ToArray());
-            File.WriteAllText(MetaPath(asset.Id), JsonSerializer.Serialize(asset, JsonOptions));
+            // PCM first via a unique temp + rename, metadata last: the meta file is the commit
+            // point, and TryGet's length check rejects anything torn. Unique temps keep concurrent
+            // stores of the same asset from colliding mid-write.
+            string pcmTemp = Path.Combine(dir, $"audio.{Guid.NewGuid():N}.tmp");
+            string metaTemp = Path.Combine(dir, $"asset.{Guid.NewGuid():N}.tmp");
+            try
+            {
+                File.WriteAllBytes(pcmTemp, pcm.ToArray());
+                File.Move(pcmTemp, PcmPath(asset.Id), overwrite: true);
+                File.WriteAllText(metaTemp, JsonSerializer.Serialize(asset, JsonOptions));
+                File.Move(metaTemp, MetaPath(asset.Id), overwrite: true);
+            }
+            finally
+            {
+                try { File.Delete(pcmTemp); } catch { }
+                try { File.Delete(metaTemp); } catch { }
+            }
         }, ct);
 
     public Task<ReadOnlyMemory<byte>?> TryLoadPcmAsync(string assetId, CancellationToken ct = default)
@@ -263,37 +278,35 @@ public sealed class DiskSpeechAssetStore : ISpeechAssetStore
         {
             try
             {
+                // Validate against the metadata, as TryGet does: raw PCM whose length no longer
+                // matches the asset must not be paired with that asset's timings.
+                string meta = MetaPath(assetId);
                 string path = PcmPath(assetId);
-                return File.Exists(path) ? File.ReadAllBytes(path) : null;
+                if (!File.Exists(meta) || !File.Exists(path)) return null;
+                var asset = JsonSerializer.Deserialize<SpeechAsset>(File.ReadAllText(meta), JsonOptions);
+                if (asset is null) return null;
+                var bytes = File.ReadAllBytes(path);
+                long frames = bytes.Length / Math.Max(1, asset.Format.BytesPerFrame);
+                // Not a ternary: byte[] converts implicitly to ReadOnlyMemory<byte>, which would
+                // turn the null arm into a default (empty) memory instead of a null result.
+                if (frames != asset.FrameCount) return null;
+                return bytes;
             }
             catch { return null; }
         }, ct);
 
     public Task InvalidateAsync(string documentContentHash, CancellationToken ct = default)
-        => Task.Run(() =>
-        {
-            // Assets are not indexed by document, so invalidation scans metadata. That is acceptable
-            // because it runs on an edit or a re-extraction, not on a playback path.
-            try
-            {
-                if (!Directory.Exists(_root)) return;
-                foreach (string metaFile in Directory.EnumerateFiles(_root, "asset.json", SearchOption.AllDirectories))
-                {
-                    try
-                    {
-                        var asset = JsonSerializer.Deserialize<SpeechAsset>(File.ReadAllText(metaFile), JsonOptions);
-                        if (asset is null) continue;
-                        // The key folds in the segment and script revision, but not the document hash,
-                        // so the containing directory is removed when the caller asks for a document's
-                        // assets to go. Callers pass the hash they want cleared.
-                        if (!string.IsNullOrEmpty(documentContentHash))
-                            Directory.Delete(Path.GetDirectoryName(metaFile)!, recursive: true);
-                    }
-                    catch { /* one corrupt entry must not stop the sweep */ }
-                }
-            }
-            catch { }
-        }, ct);
+    {
+        // Deliberately a no-op. Cache keys are content-addressed and fold in the segment's script
+        // revision and spoken text, so an edited segment simply addresses a new asset and the old
+        // one is orphaned, never reused. Assets carry no document hash to scope a deletion by, and
+        // the previous behaviour — deleting every cached asset of every document on any edit —
+        // forced a full re-synthesis for unrelated books. Orphan reclamation is a cache-GC concern,
+        // not correctness. The coordinator still calls this (its contract test asserts the call).
+        _ = documentContentHash;
+        ct.ThrowIfCancellationRequested();
+        return Task.CompletedTask;
+    }
 
     /// <summary>Total bytes held, for the settings panel's cache indicator.</summary>
     public long TotalBytes()
@@ -352,8 +365,16 @@ public sealed class DiskPlanStore : IPlanStore
     private void Write<T>(string path, T value)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        string temp = path + ".tmp";
-        File.WriteAllText(temp, JsonSerializer.Serialize(value, JsonOptions));
-        File.Move(temp, path, overwrite: true);
+        // Unique temp: concurrent plan/position writes must not collide on a shared temp name.
+        string temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            File.WriteAllText(temp, JsonSerializer.Serialize(value, JsonOptions));
+            File.Move(temp, path, overwrite: true);
+        }
+        finally
+        {
+            try { File.Delete(temp); } catch { }
+        }
     }
 }

@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+
 namespace RailNarrator.Domain;
 
 /// <summary>
@@ -128,6 +130,11 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     private PlaybackSnapshot _snapshot = PlaybackSnapshot.Idle;
     private ActiveCue? _lastCue;
     private readonly Dictionary<string, PreparedClip> _prepared = [];
+    // In-flight preparations, keyed by generation + content-addressed asset id. The lookahead loop
+    // and the playback path both prepare the current segment; without this they synthesise and store
+    // it twice concurrently. Entries are removed on completion and the map is cleared whenever the
+    // generation advances, so a voice switch or script edit never waits on a stale preparation.
+    private readonly ConcurrentDictionary<string, Lazy<Task>> _inflight = new();
 
     public NarrationCoordinator(
         ITtsProvider tts,
@@ -284,9 +291,13 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     public Task PreviousSegmentAsync(CancellationToken ct = default)
     {
         var plan = _plan;
-        if (plan is null) return Task.CompletedTask;
+        if (plan is null || plan.SegmentCount == 0) return Task.CompletedTask;
         int prev;
-        lock (_gate) prev = Math.Max(_segmentIndex - 1, 0);
+        lock (_gate)
+        {
+            if (_segmentIndex < 0) return Task.CompletedTask;
+            prev = Math.Max(_segmentIndex - 1, 0);
+        }
         return GoToSegmentAsync(plan.Segments[prev].Id, 0, ct);
     }
 
@@ -412,6 +423,23 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     /// </summary>
     private async Task PrepareLoopAsync(long generation, CancellationToken ct)
     {
+        // This task is fire-and-forget, so a fault outside the per-segment synthesis try (a
+        // capabilities probe, a voice list, a cache write) must be published as an error here —
+        // otherwise the snapshot stays at Preparing forever with no explanation.
+        try
+        {
+            await PrepareLoopCoreAsync(generation, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            if (generation == Generation && !_disposed)
+                Publish(PlaybackState.Error, null, NarrationError.SpeechSynthesisFailed(ex.Message));
+        }
+    }
+
+    private async Task PrepareLoopCoreAsync(long generation, CancellationToken ct)
+    {
         var plan = _plan;
         if (plan is null || plan.SegmentCount == 0) return;
         var caps = await _tts.GetCapabilitiesAsync(ct).ConfigureAwait(false);
@@ -456,6 +484,28 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     }
 
     private async Task PrepareSegmentAsync(
+        NarrationSegment segment, TtsCapabilities caps, AudioFormat format, string voice, long generation, CancellationToken ct)
+    {
+        // Dedupe concurrent preparations of the same asset (lookahead loop vs. playback path):
+        // both callers await the one synthesis instead of each synthesising and storing it.
+        string assetId = CacheKey.ForSpeechAsset(
+            segment.Id, segment.ScriptRevision, segment.SpokenText, segment.Language,
+            caps.ProviderId, caps.ModelRevision, voice, SynthesisOptionsToken(format), format);
+        string key = $"{generation}:{assetId}";
+        var lazy = _inflight.GetOrAdd(key, _ => new Lazy<Task>(
+            () => PrepareSegmentCoreAsync(segment, caps, format, voice, generation, ct)));
+        try
+        {
+            await lazy.Value.ConfigureAwait(false);
+        }
+        finally
+        {
+            ((ICollection<KeyValuePair<string, Lazy<Task>>>)_inflight)
+                .Remove(new KeyValuePair<string, Lazy<Task>>(key, lazy));
+        }
+    }
+
+    private async Task PrepareSegmentCoreAsync(
         NarrationSegment segment, TtsCapabilities caps, AudioFormat format, string voice, long generation, CancellationToken ct)
     {
         string assetId = CacheKey.ForSpeechAsset(
@@ -655,8 +705,13 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         {
             try
             {
-                lock (_gate) _segmentIndex = index + 1;
-                if (gen != Generation) return;
+                // Check the generation and that the index has not moved *before* mutating, in the
+                // same lock: a completion queued before a seek must not clobber the seek's index.
+                lock (_gate)
+                {
+                    if (gen != Generation || _segmentIndex != index) return;
+                    _segmentIndex = index + 1;
+                }
                 if (!await EnsureSegmentReadyAsync(index + 1, gen, CancellationToken.None).ConfigureAwait(false)) return;
                 if (gen != Generation) return;
                 await StartCurrentSegmentAsync(gen, CancellationToken.None).ConfigureAwait(false);
@@ -700,12 +755,13 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         if (scheduler is null || plan is null) return;
 
         string segmentId;
+        PreparedClip? prepared;
         lock (_gate)
         {
             if (_segmentIndex < 0 || _segmentIndex >= plan.SegmentCount) return;
             segmentId = plan.Segments[_segmentIndex].Id;
+            prepared = _prepared.GetValueOrDefault(segmentId);
         }
-        var prepared = _prepared.GetValueOrDefault(segmentId);
         if (prepared is null) return;
         var asset = prepared.Asset;
 
@@ -783,7 +839,11 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         SnapshotChanged?.Invoke(snap);
     }
 
-    private long AdvanceGeneration() => Interlocked.Increment(ref _generation);
+    private long AdvanceGeneration()
+    {
+        _inflight.Clear();
+        return Interlocked.Increment(ref _generation);
+    }
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
 

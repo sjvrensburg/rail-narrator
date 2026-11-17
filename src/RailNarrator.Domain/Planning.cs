@@ -110,6 +110,42 @@ public sealed class NarrationPlanner
     public NarrationPlannerOptions Options => _options;
 
     /// <summary>
+    /// Fingerprints everything a plan is built from beyond the extraction identity: the planner
+    /// options, the filter settings, the prompt version, and the reading units themselves (kind +
+    /// original text + representation), which is where maths-region overrides and unit-builder
+    /// options take effect. The planner stamps it into the header; a caller deciding whether a
+    /// cached plan may be reused recomputes it over the units it just built and compares via
+    /// <see cref="NarrationPlan.Matches(ExtractionIdentity, string?)"/>.
+    /// </summary>
+    public static string ComputeInputFingerprint(
+        NarrationPlannerOptions options, NarrationFilterSettings filters, IReadOnlyList<ReadingUnit> units)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(filters);
+        ArgumentNullException.ThrowIfNull(units);
+        var sb = new System.Text.StringBuilder();
+        sb.Append("lang=").Append(options.Language)
+          .Append(";mode=").Append((int)options.MathMode)
+          .Append(";fallback=").Append((int)options.MathFallback)
+          .Append(";announce=").Append(options.AnnouncementTemplate)
+          .Append(";prompt=").Append(NarrationVersions.MathPrompt)
+          .Append(";prose=").Append(NarrationVersions.ProsePipeline)
+          .Append(";local=").Append(NarrationVersions.LocalMathReader)
+          .Append(";filters=")
+          .Append(filters.ExcludeRunningHeaders ? 'H' : '-').Append(filters.ExcludeFooters ? 'F' : '-')
+          .Append(filters.ExcludePageNumbers ? 'N' : '-').Append(filters.IncludeCitations ? 'c' : '-')
+          .Append(filters.IncludeFootnotes ? 'f' : '-').Append(filters.IncludeCaptions ? 'p' : '-')
+          .Append(filters.IncludeReferences ? 'r' : '-').Append(filters.IncludeEquations ? 'e' : '-')
+          .Append(filters.IncludeTables ? 't' : '-');
+        if (options.PronunciationDictionary is { Count: > 0 } dict)
+            foreach (var (k, v) in dict.OrderBy(kv => kv.Key, StringComparer.Ordinal))
+                sb.Append(";pron=").Append(k).Append('=').Append(v);
+        foreach (var u in units)
+            sb.Append('\n').Append((int)u.Kind).Append(':').Append(u.OriginalText).Append(':').Append(u.Latex);
+        return CacheKey.Sha256Hex(sb.ToString());
+    }
+
+    /// <summary>
     /// Builds a plan over <paramref name="units"/>.
     /// </summary>
     /// <param name="snapshot">The extraction the units came from. Its identity is stamped into the plan header.</param>
@@ -154,7 +190,8 @@ public sealed class NarrationPlanner
             MathMode: _options.MathMode,
             PromptVersion: NarrationVersions.MathPrompt,
             ModelRevision: modelRevision,
-            FilterSettings: filters);
+            FilterSettings: filters,
+            InputFingerprint: ComputeInputFingerprint(_options, filters, units));
 
         return new NarrationPlan(header, units, segments);
     }

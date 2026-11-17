@@ -81,6 +81,69 @@ public sealed class NarrationCoordinatorTests
     }
 
     [Fact]
+    public async Task PreviousAndNext_OnAnEmptyPlan_AreNoOpsNotThrows()
+    {
+        var tts = new FakeTtsProvider();
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(tts, transport);
+
+        await coordinator.LoadPlanAsync(PlanWith(0));
+
+        // Previously indexed Segments[0] on an empty plan and threw ArgumentOutOfRangeException.
+        await coordinator.PreviousSegmentAsync();
+        await coordinator.NextSegmentAsync();
+        await coordinator.ReplaySegmentAsync();
+        Assert.Equal(0, transport.PlayCount);
+    }
+
+    [Fact]
+    public async Task Play_PreparesTheCurrentSegmentOnlyOnce()
+    {
+        // Play both starts the lookahead loop and ensures the current segment; with a slow
+        // provider the two used to synthesise (and store) the same segment concurrently.
+        var tts = new FakeTtsProvider(new FakeTtsOptions(Latency: TimeSpan.FromMilliseconds(100)));
+        var transport = new FakeAudioTransport();
+        var store = new CountingStore();
+        await using var coordinator = new NarrationCoordinator(tts, transport, store,
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 1));
+
+        await coordinator.LoadPlanAsync(PlanWith(1));
+        await coordinator.PlayAsync();
+
+        await WaitUntil(() => transport.PlayCount > 0, what: "playback to start");
+        Assert.Equal(1, tts.SynthesizeCount);
+        Assert.Equal(1, Volatile.Read(ref store.StoreCount));
+    }
+
+    /// <summary>Delegates to the fake provider except <see cref="ListVoicesAsync"/>, which throws.</summary>
+    private sealed class ThrowingVoicesProvider : ITtsProvider
+    {
+        private readonly FakeTtsProvider _inner = new();
+        public string ProviderId => _inner.ProviderId;
+        public Task<TtsCapabilities> GetCapabilitiesAsync(CancellationToken ct = default) => _inner.GetCapabilitiesAsync(ct);
+        public Task<IReadOnlyList<TtsVoice>> ListVoicesAsync(CancellationToken ct = default)
+            => throw new InvalidOperationException("voice list exploded");
+        public Task<TtsSynthesisResult> SynthesizeAsync(TtsSynthesisRequest request, CancellationToken ct = default)
+            => _inner.SynthesizeAsync(request, ct);
+        public Task<ProviderSelfTestResult> SelfTestAsync(string voiceId, CancellationToken ct = default)
+            => _inner.SelfTestAsync(voiceId, ct);
+        public ValueTask DisposeAsync() => _inner.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task PreparationFault_PublishesAnErrorInsteadOfStickingAtPreparing()
+    {
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(new ThrowingVoicesProvider(), transport);
+
+        await coordinator.LoadPlanAsync(PlanWith(2));
+
+        await WaitUntil(() => coordinator.Snapshot.State == PlaybackState.Error,
+            what: "the preparation fault to be published as an error");
+        Assert.NotNull(coordinator.Snapshot.Error);
+    }
+
+    [Fact]
     public async Task Lookahead_IsBoundedSoABookIsNotSynthesisedBeforePlayback()
     {
         var tts = new FakeTtsProvider();

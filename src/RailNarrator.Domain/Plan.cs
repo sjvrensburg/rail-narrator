@@ -202,6 +202,14 @@ public sealed record NarrationSegment(
 /// <param name="PromptVersion">Version of the verbalisation prompt. A prompt change invalidates model-generated segments.</param>
 /// <param name="ModelRevision">Model that produced the generated segments, or null when none did.</param>
 /// <param name="FilterSettings">The inclusion/exclusion choices in force. Changing them rebuilds the plan rather than editing it.</param>
+/// <param name="InputFingerprint">
+/// Hash of every input that shaped this plan beyond the extraction identity — planner options,
+/// filter settings and the exact reading units (which is where region overrides and unit-builder
+/// options land). Computed by <see cref="NarrationPlanner.ComputeInputFingerprint"/>. Empty in
+/// plans persisted before it existed; such plans never match and are rebuilt once. Note
+/// <see cref="NarrationPlanHeader.ModelRevision"/> is deliberately not an input: it records which
+/// model produced the segments, it does not choose one.
+/// </param>
 public sealed record NarrationPlanHeader(
     string PlanId,
     ExtractionIdentity Extraction,
@@ -209,7 +217,8 @@ public sealed record NarrationPlanHeader(
     MathMode MathMode,
     string PromptVersion,
     string? ModelRevision,
-    NarrationFilterSettings FilterSettings);
+    NarrationFilterSettings FilterSettings,
+    string InputFingerprint = "");
 
 /// <summary>
 /// Which content classes are narrated. Every exclusion is an inspectable rule, never a silent
@@ -284,7 +293,16 @@ public sealed record NarrationPlan(
     /// document was re-extracted (re-OCR, different analyser, changed options) and every anchor,
     /// speech asset and timing built from it must be invalidated rather than remapped blindly.
     /// </summary>
-    public bool Matches(ExtractionIdentity extraction) => Header.Extraction == extraction;
+    /// <param name="inputFingerprint">
+    /// The fingerprint of the inputs a rebuild would use today (see
+    /// <see cref="NarrationPlanHeader.InputFingerprint"/>). When supplied, the plan matches only if
+    /// it was built from those same inputs — changing the maths mode, filters, pronunciation
+    /// dictionary or a region override must rebuild, not silently reuse the cached plan. When
+    /// null, only the extraction identity is compared (the original contract).
+    /// </param>
+    public bool Matches(ExtractionIdentity extraction, string? inputFingerprint = null)
+        => Header.Extraction == extraction
+           && (inputFingerprint is null || string.Equals(Header.InputFingerprint, inputFingerprint, StringComparison.Ordinal));
 
     /// <summary>Total spoken characters — a cheap progress denominator for the UI.</summary>
     public int TotalSpokenChars => Segments.Sum(s => s.SpokenText.Length);

@@ -171,10 +171,12 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
         {
             if (Math.Abs(clamped - _rate) < 1e-9) return;
 
-            // Where we are, in source seconds, before the change.
+            // Where we are, in source seconds, before the change. The base holds everything
+            // presented before the last flush (e.g. a seek target); omitting it restarted playback
+            // near the clip start on any rate change after a seek.
             double sourceSeconds = _outputFormat.SampleRate > 0
-                ? _device.PresentedFrames / (double)_outputFormat.SampleRate * _rate
-                : 0;
+                ? _positionBaseSeconds + _device.PresentedFrames / (double)_outputFormat.SampleRate * _rate
+                : _positionBaseSeconds;
 
             _rate = clamped;
             _positionBaseSeconds = sourceSeconds;
@@ -369,19 +371,25 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
     private async Task WriterLoopAsync(CancellationToken ct)
     {
         var buffer = new byte[_options.WriteChunkFrames * 4];
+        try
+        {
         while (!ct.IsCancellationRequested)
         {
             PlaybackState state;
             long cursor;
-            int length;
+            float[] output;
             string? segmentId;
+            // Snapshot the buffer and its cursor together: a rate change swaps _output and
+            // re-seats _writeCursor under this same lock, so indexing the field outside the lock
+            // could run past a shorter new buffer and then advance the new cursor by a stale chunk.
             lock (_gate)
             {
                 state = _state;
                 cursor = _writeCursor;
-                length = _output.Length;
+                output = _output;
                 segmentId = _segmentId;
             }
+            int length = output.Length;
 
             if (state is not PlaybackState.Playing)
             {
@@ -412,7 +420,7 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
             int bytes = frames * 4;
             for (int i = 0; i < frames; i++)
             {
-                float s = Math.Clamp(_output[cursor + i], -1f, 1f);
+                float s = Math.Clamp(output[cursor + i], -1f, 1f);
                 BitConverter.TryWriteBytes(buffer.AsSpan(i * 4, 4), s);
             }
 
@@ -438,7 +446,26 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
                 continue;
             }
 
-            lock (_gate) _writeCursor += written;
+            // Advance only if this buffer is still current and no one re-seated the cursor:
+            // otherwise the chunk just written was stale (flushed by the rate change) and the new
+            // cursor must not be moved by it.
+            lock (_gate)
+            {
+                if (ReferenceEquals(_output, output) && _writeCursor == cursor)
+                    _writeCursor += written;
+            }
+        }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            // A writer fault that is not a device Write failure must still reach the user;
+            // swallowing it in StopWriterAsync left the state stuck at Playing with no audio.
+            if (!ct.IsCancellationRequested && !_disposed)
+            {
+                SetState(PlaybackState.Error);
+                DeviceFailed?.Invoke(ex.Message);
+            }
         }
     }
 

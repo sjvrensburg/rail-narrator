@@ -34,43 +34,43 @@
         <MenuItem Header="E_xit" Click="OnCloseClicked" />
       </MenuItem>
       <MenuItem Header="_Playback">
-        <MenuItem Header="_Play" Click="OnPlayClicked" InputGesture="Space" />
-        <MenuItem Header="Pa_use" Click="OnPauseClicked" />
-        <MenuItem Header="_Stop" Click="OnStopClicked" InputGesture="Escape" />
+        <MenuItem Header="_Play" Command="{Binding Play}" InputGesture="Space" />
+        <MenuItem Header="Pa_use" Command="{Binding Pause}" />
+        <MenuItem Header="_Stop" Command="{Binding Stop}" InputGesture="Escape" />
         <Separator />
-        <MenuItem Header="_Previous passage" Click="OnPreviousClicked" InputGesture="Ctrl+Left" />
-        <MenuItem Header="_Next passage" Click="OnNextClicked" InputGesture="Ctrl+Right" />
-        <MenuItem Header="_Replay passage" Click="OnReplayClicked" InputGesture="Ctrl+R" />
+        <MenuItem Header="_Previous passage" Command="{Binding Previous}" InputGesture="Ctrl+Left" />
+        <MenuItem Header="_Next passage" Command="{Binding Next}" InputGesture="Ctrl+Right" />
+        <MenuItem Header="_Replay passage" Command="{Binding Replay}" InputGesture="Ctrl+R" />
       </MenuItem>
       <MenuItem Header="_View">
-        <MenuItem Header="Zoom _in" Click="OnZoomInClicked" InputGesture="Ctrl+OemPlus" />
-        <MenuItem Header="Zoom _out" Click="OnZoomOutClicked" InputGesture="Ctrl+OemMinus" />
+        <MenuItem Header="Zoom _in" Command="{Binding ZoomIn}" InputGesture="Ctrl+OemPlus" />
+        <MenuItem Header="Zoom _out" Command="{Binding ZoomOut}" InputGesture="Ctrl+OemMinus" />
         <MenuItem Header="_Fit width" Click="OnFitClicked" />
         <Separator />
-        <MenuItem Header="_Cycle follow mode" Click="OnFollowClicked" InputGesture="Ctrl+F" />
-        <MenuItem Header="_Resume following" Click="OnResumeFollowClicked" InputGesture="F9" />
+        <MenuItem Header="_Cycle follow mode" Command="{Binding ToggleFollow}" InputGesture="Ctrl+F" />
+        <MenuItem Header="_Resume following" Command="{Binding ResumeFollow}" InputGesture="F9" />
       </MenuItem>
       <MenuItem Header="_Maths">
         <MenuItem Header="Mark region as _maths" Click="OnMarkAsMathsClicked" />
         <MenuItem Header="Restore region as _prose" Click="OnRestoreAsProseClicked" />
-        <MenuItem Header="_Regenerate narration" Click="OnMathsRegenerateClicked" />
+        <MenuItem Header="_Regenerate narration" Command="{Binding RegenerateMaths}" />
       </MenuItem>
       <MenuItem Header="_Models and endpoints">
-        <MenuItem Header="Download _Kokoro model…" Click="OnDownloadModelClicked" />
-        <MenuItem Header="_Test text LLM endpoint" Click="OnTestMathEndpointClicked" />
-        <MenuItem Header="Test _vision endpoint" Click="OnTestVisionEndpointClicked" />
+        <MenuItem Header="Download _Kokoro model…" Command="{Binding DownloadKokoroModel}" />
+        <MenuItem Header="_Test text LLM endpoint" Command="{Binding TestMathEndpoint}" />
+        <MenuItem Header="Test _vision endpoint" Command="{Binding TestVisionEndpoint}" />
       </MenuItem>
     </Menu>
 
     <!-- Transport bar -->
     <Border DockPanel.Dock="Top" Padding="8" Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
       <StackPanel Orientation="Horizontal" Spacing="6">
-        <Button Name="PlayButton" Content="▶ Play" Click="OnPlayClicked" ToolTip.Tip="Play (Space)" />
-        <Button Content="⏸ Pause" Click="OnPauseClicked" ToolTip.Tip="Pause" />
-        <Button Content="⏹ Stop" Click="OnStopClicked" ToolTip.Tip="Stop (Escape)" />
-        <Button Content="⏮ Previous" Click="OnPreviousClicked" ToolTip.Tip="Previous passage (Ctrl+Left)" />
-        <Button Content="⏭ Next" Click="OnNextClicked" ToolTip.Tip="Next passage (Ctrl+Right)" />
-        <Button Content="↻ Replay" Click="OnReplayClicked" ToolTip.Tip="Replay this passage (Ctrl+R)" />
+        <Button Name="PlayButton" Content="▶ Play" Command="{Binding Play}" ToolTip.Tip="Play (Space)" />
+        <Button Content="⏸ Pause" Command="{Binding Pause}" ToolTip.Tip="Pause" />
+        <Button Content="⏹ Stop" Command="{Binding Stop}" ToolTip.Tip="Stop (Escape)" />
+        <Button Content="⏮ Previous" Command="{Binding Previous}" ToolTip.Tip="Previous passage (Ctrl+Left)" />
+        <Button Content="⏭ Next" Command="{Binding Next}" ToolTip.Tip="Next passage (Ctrl+Right)" />
+        <Button Content="↻ Replay" Command="{Binding Replay}" ToolTip.Tip="Replay this passage (Ctrl+R)" />
 
         <Separator Width="1" Margin="6,2" />
 
@@ -91,20 +91,20 @@
 
         <Separator Width="1" Margin="6,2" />
 
-        <Button Content="−" Click="OnZoomOutClicked" ToolTip.Tip="Zoom out (Ctrl+-)" />
+        <Button Content="−" Command="{Binding ZoomOut}" ToolTip.Tip="Zoom out (Ctrl+-)" />
         <TextBlock Text="{Binding ZoomPercent, StringFormat={}{0}%}" VerticalAlignment="Center" MinWidth="48"
                    TextAlignment="Center" />
-        <Button Content="+" Click="OnZoomInClicked" ToolTip.Tip="Zoom in (Ctrl++)" />
+        <Button Content="+" Command="{Binding ZoomIn}" ToolTip.Tip="Zoom in (Ctrl++)" />
         <Button Content="Fit" Click="OnFitClicked" ToolTip.Tip="Fit page width" />
-        <Button Content="200%" Click="OnZoom200Clicked" />
-        <Button Content="400%" Click="OnZoom400Clicked" />
-        <Button Content="800%" Click="OnZoom800Clicked" />
+        <Button Content="200%" Command="{Binding Zoom200}" />
+        <Button Content="400%" Command="{Binding Zoom400}" />
+        <Button Content="800%" Command="{Binding Zoom800}" />
 
         <Separator Width="1" Margin="6,2" />
 
-        <Button Content="{Binding FollowMode, StringFormat=Follow: {0}}" Click="OnFollowClicked"
+        <Button Content="{Binding FollowMode, StringFormat=Follow: {0}}" Command="{Binding ToggleFollow}"
                 ToolTip.Tip="Cycle follow mode (Ctrl+F)" />
-        <Button Content="Resume following (F9)" Click="OnResumeFollowClicked"
+        <Button Content="Resume following (F9)" Command="{Binding ResumeFollow}"
                 IsVisible="{Binding FollowSuspended}"
                 ToolTip.Tip="Browsing paused the camera; this restores it. Audio was never stopped." />
       </StackPanel>

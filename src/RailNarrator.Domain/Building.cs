@@ -93,14 +93,11 @@ public static class SentenceSplitter
         if (c is '!' or '?') return true;
 
         // A period followed by a digit is a decimal point or a numbered list marker, not an end.
+        // That digit-period-digit guard is the whole decimal rule: "was 5. Next" and "in 2019.
+        // Then" are real sentence ends, and the lowercase-continuation check below still keeps
+        // "0.5 ml" together. (Previously any digit before the period suppressed the split, so
+        // number-final sentences never split at all.)
         if (punctIndex + 1 < s.Length && char.IsDigit(s[punctIndex + 1])) return false;
-        // A period preceded by a digit and followed by whitespace then a digit is a number ("3.14 15").
-        if (punctIndex > 0 && char.IsDigit(s[punctIndex - 1]))
-        {
-            if (punctIndex + 1 < s.Length && char.IsDigit(s[punctIndex + 1])) return false;
-            // "5. Next" — a decimal at the end of a fragment is not a sentence end.
-            return false;
-        }
 
         // Abbreviation check: walk back over the token containing this period.
         int start = punctIndex;

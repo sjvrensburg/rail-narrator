@@ -189,6 +189,38 @@ public sealed class NarrationPlannerTests
         Assert.False(plan.Matches(snapshot.Identity with { ExtractionRevision = 2 }));
         Assert.False(plan.Matches(new ExtractionIdentity("other", 1)));
     }
+
+    [Fact]
+    public async Task BuildPlan_FingerprintChangesWhenTheInputsChange()
+    {
+        var snapshot = SyntheticNarration.Snapshot([new SyntheticNarration.LineSpec("Hello world.", 100f)]);
+        var units = new ReadingUnitBuilder().Build(snapshot);
+        var planner = new NarrationPlanner();
+        var plan = await planner.BuildPlanAsync(snapshot, units, NarrationFilterSettings.Default);
+
+        Assert.NotEqual("", plan.Header.InputFingerprint);
+        string current = NarrationPlanner.ComputeInputFingerprint(
+            planner.Options, NarrationFilterSettings.Default, units);
+        Assert.True(plan.Matches(snapshot.Identity, current));
+
+        // Same file, different inputs in force: the cached plan must not be reused.
+        var otherFilters = NarrationFilterSettings.Default with { IncludeReferences = true };
+        Assert.False(plan.Matches(snapshot.Identity,
+            NarrationPlanner.ComputeInputFingerprint(planner.Options, otherFilters, units)));
+        Assert.False(plan.Matches(snapshot.Identity,
+            NarrationPlanner.ComputeInputFingerprint(
+                planner.Options with { MathMode = MathMode.DetailedSymbolic }, NarrationFilterSettings.Default, units)));
+
+        // A region override changes the units themselves, and the fingerprint follows the units.
+        var changedUnits = units.Select(u => u with { Kind = ReadingUnitKind.InlineMath }).ToList();
+        Assert.False(plan.Matches(snapshot.Identity,
+            NarrationPlanner.ComputeInputFingerprint(planner.Options, NarrationFilterSettings.Default, changedUnits)));
+
+        // Plans persisted before the fingerprint existed never match a fingerprinted comparison.
+        var legacy = plan with { Header = plan.Header with { InputFingerprint = "" } };
+        Assert.False(legacy.Matches(snapshot.Identity, current));
+        Assert.True(legacy.Matches(snapshot.Identity));
+    }
 }
 
 /// <summary>
