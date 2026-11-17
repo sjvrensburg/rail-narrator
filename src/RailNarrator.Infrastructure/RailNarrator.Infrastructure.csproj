@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>RailNarrator.Infrastructure</RootNamespace>
+    <Description>XDG settings, caches, model manifest and downloads, sidecar lifecycle, diagnostics.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../RailNarrator.Domain/RailNarrator.Domain.csproj" />
+  </ItemGroup>
+</Project>

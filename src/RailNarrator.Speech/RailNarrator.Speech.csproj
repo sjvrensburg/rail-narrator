@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>RailNarrator.Speech</RootNamespace>
+    <Description>TTS provider adapters (in-process Kokoro, ZONOS3 sidecar) plus PCM/WAV codecs.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../RailNarrator.Domain/RailNarrator.Domain.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="KokoroSharp.CPU" />
+  </ItemGroup>
+</Project>

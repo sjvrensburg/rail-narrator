@@ -1,0 +1,33 @@
+## Build output
+bin/
+obj/
+dist/
+artifacts/
+[Tt]est[Rr]esults/
+*.user
+*.suo
+
+## Models and caches: never committed. Downloaded into XDG data/cache dirs at runtime,
+## or into ./models for a local probe (see docs/model-manifest.json).
+models/
+*.onnx
+*.gguf
+*.bin
+*.npy
+
+## Synthesised audio and generated fixtures that are not redistributable test data.
+*.wav
+*.pcm
+*.mp3
+!tests/fixtures/**/*.wav
+
+## Local secrets: endpoint keys live here, never in committed files.
+*.env
+secrets.json
+appsettings.Local.json
+
+## Editors / OS
+.vs/
+.vscode/
+.idea/
+.DS_Store

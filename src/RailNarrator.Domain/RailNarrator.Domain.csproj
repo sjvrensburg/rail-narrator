@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>RailNarrator.Domain</RootNamespace>
+    <Description>Narration domain: source anchors, reading units, narration plans, source maps, playback state and follow policy. No hardware, no network, no PDF stack.</Description>
+  </PropertyGroup>
+</Project>

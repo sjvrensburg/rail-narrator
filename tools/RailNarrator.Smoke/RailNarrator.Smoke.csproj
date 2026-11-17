@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>RailNarrator.Smoke</RootNamespace>
+    <AssemblyName>rail-narrator-smoke</AssemblyName>
+    <Description>Headless end-to-end harness: open a real PDF, extract, plan, synthesise with a real provider, and report measured timings. No display or audio device required.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/RailNarrator.Domain/RailNarrator.Domain.csproj" />
+    <ProjectReference Include="../../src/RailNarrator.Pdf/RailNarrator.Pdf.csproj" />
+    <ProjectReference Include="../../src/RailNarrator.Speech/RailNarrator.Speech.csproj" />
+    <ProjectReference Include="../../src/RailNarrator.Audio/RailNarrator.Audio.csproj" />
+    <ProjectReference Include="../../src/RailNarrator.Inference/RailNarrator.Inference.csproj" />
+    <ProjectReference Include="../../src/RailNarrator.Infrastructure/RailNarrator.Infrastructure.csproj" />
+    <ProjectReference Include="../../tests/RailNarrator.TestFixtures/RailNarrator.TestFixtures.csproj" />
+  </ItemGroup>
+</Project>
