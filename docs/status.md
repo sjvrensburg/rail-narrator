@@ -227,8 +227,9 @@ Not fixed yet. Each was observed in the run described above.
 - **One display equation becomes several passages**, each announcing that it could not be read,
   and two of three display equations tried did not respond to a click.
 - **Extraction is not cached.** The scan was OCRed again, about 25 s, on every open.
-- **Speed, voice and follow mode** are saved with the reading position but not to settings, so a
-  new document starts from the defaults.
+- **Closing by signal saves no reading position.** Only File > Exit (and, untested, the window's
+  close button) disposes the view model, which is where the position is written; a `SIGTERM`
+  ends the process without it.
 - **About half a second of silence separates passages.** Each clip is resampled and rendered, and
   the device stream reopened, when it is due rather than ahead of time.
 
@@ -331,3 +332,13 @@ threads meeting.
 24. **Prepared audio was kept for the whole document** — by arithmetic about 650 MB for the
     27-page paper. Clips more than two passages behind the reading position are released, and
     come back from the asset store, or by synthesis, if the reader goes back.
+25. **Speed, voice and follow mode were never saved as preferences**, and a saved Kokoro voice was
+    replaced by the provider's default on every document load. A restored position also changed
+    the voice, speed and follow mode actually used while the toolbar kept showing the old ones.
+    Choices made in the toolbar are now written to settings and apply to the next document; a
+    document's saved position still takes precedence, and the toolbar shows it. Verified in the
+    GUI: `am_echo` / 1.25 / ReadingRail chosen on one PDF were shown on a different PDF after a
+    restart; with the global settings reset to `af_heart` / 1 / KeepVisible, reopening a document
+    saved with `af_bella` / 1.5 / Off showed those values and left the global settings untouched;
+    the speech cache held `af_bella` clips only after that voice was chosen. The ZONOS3 speaker id
+    is not saved this way, because it also decides whether that provider is registered.

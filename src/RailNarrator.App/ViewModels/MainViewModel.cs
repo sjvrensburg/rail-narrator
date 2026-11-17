@@ -173,12 +173,26 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     public int ZoomPercent => (int)Math.Round(_zoom * 100);
 
-    public double PlaybackRate { get => _playbackRate; set { if (Set(ref _playbackRate, value)) Coordinator.SetPlaybackRate(value); } }
+    public double PlaybackRate
+    {
+        get => _playbackRate;
+        set
+        {
+            if (!Set(ref _playbackRate, value)) return;
+            Coordinator.SetPlaybackRate(value);
+            PersistPreference(s => s with { PlaybackRate = value });
+        }
+    }
 
     public FollowMode FollowMode
     {
         get => _followMode;
-        set { if (Set(ref _followMode, value)) Coordinator.SetFollowMode(value); }
+        set
+        {
+            if (!Set(ref _followMode, value)) return;
+            Coordinator.SetFollowMode(value);
+            PersistPreference(s => s with { FollowMode = value });
+        }
     }
 
     public bool FollowSuspended { get => _followSuspended; private set => Set(ref _followSuspended, value); }
@@ -197,10 +211,15 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             // The coordinator advances its generation token so a synthesis still in flight for the old
             // voice is discarded rather than played over the new one.
             RunObserved(Coordinator.SetVoiceAsync(id), "Could not change voice");
+            // Only the Kokoro voice is a free preference: the ZONOS3 speaker id also decides whether
+            // that provider is registered at all, so it stays a deliberate settings-file choice.
+            if (_voiceProviderId == "kokoro" && !_choosingVoiceForReader)
+                PersistPreference(s => s with { KokoroVoiceId = id });
         }
     }
 
     private TtsVoice? _selectedVoice;
+    private string? _voiceProviderId;
 
     public string? SelectedVoiceId
     {
@@ -355,6 +374,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
             var position = await _services.PlanStore.TryGetPositionAsync(hash);
             await Coordinator.LoadPlanAsync(plan, position);
+            if (position is not null) ShowRestoredPreferences(position);
 
             StatusMessage = position is { SegmentId: not null }
                 ? $"Ready. Restored your position ({plan.SegmentCount} passages)."
@@ -398,12 +418,50 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         var provider = _services.SpeechProviders.Get(_services.CurrentSettings.SpeechProviderId)
                        ?? await _services.SpeechProviders.FirstAvailableAsync();
         if (provider is null) return;
+        _voiceProviderId = provider.ProviderId;
 
         foreach (var voice in await provider.ListVoicesAsync()) Voices.Add(voice);
         foreach (var device in _services.AudioDevice.Enumerate())
             AudioDevices.Add($"{device.Id}: {device.Name}{(device.IsDefault ? " (default)" : "")}");
 
-        SelectedVoice = Voices.FirstOrDefault(v => v.IsDefault) ?? Voices.FirstOrDefault();
+        // Keep the voice already in use (from settings, or the reader's last choice); the provider's
+        // default is only for a first run. Selecting the default unconditionally switched every
+        // saved voice back to it on each document load.
+        // The pick made here is not the reader's choice, so it is not saved as a preference.
+        _choosingVoiceForReader = true;
+        try
+        {
+            SelectedVoice = Voices.FirstOrDefault(v => v.Id == _selectedVoiceId)
+                            ?? Voices.FirstOrDefault(v => v.IsDefault) ?? Voices.FirstOrDefault();
+        }
+        finally { _choosingVoiceForReader = false; }
+    }
+
+    private bool _choosingVoiceForReader;
+
+    /// <summary>
+    /// Shows the voice, speed and follow mode a restored position applied to the coordinator, without
+    /// writing them back as global preferences: they belong to that document.
+    /// </summary>
+    private void ShowRestoredPreferences(ReaderPosition position)
+    {
+        if (position.PlaybackRate > 0) Set(ref _playbackRate, position.PlaybackRate, nameof(PlaybackRate));
+        Set(ref _followMode, position.FollowMode, nameof(FollowMode));
+        if (position.VoiceId is { } id && Voices.FirstOrDefault(v => v.Id == id) is { } voice)
+        {
+            Set(ref _selectedVoiceId, id, nameof(SelectedVoiceId));
+            Set(ref _selectedVoice, voice, nameof(SelectedVoice));
+        }
+    }
+
+    /// <summary>Saves a preference; a settings file that cannot be written must not break playback.</summary>
+    private void PersistPreference(Func<RailNarratorSettings, RailNarratorSettings> update)
+    {
+        try { PersistSettings(update); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Notes.Add($"Could not save the preference: {ex.Message}");
+        }
     }
 
     /// <summary>Applies a zoom, remembering it as the reader's preference.</summary>
