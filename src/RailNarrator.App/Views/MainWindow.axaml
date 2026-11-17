@@ -1,0 +1,199 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:RailNarrator.App.ViewModels"
+        xmlns:domain="using:RailNarrator.Domain"
+        xmlns:views="using:RailNarrator.App.Views"
+        x:Class="RailNarrator.App.Views.MainWindow"
+        x:DataType="vm:MainViewModel"
+        Title="Rail Narrator"
+        Width="1440" Height="900"
+        MinWidth="900" MinHeight="600"
+        WindowStartupLocation="CenterScreen">
+
+  <Window.KeyBindings>
+    <KeyBinding Gesture="Ctrl+O" Command="{Binding OpenDocument}" />
+    <KeyBinding Gesture="Space" Command="{Binding Play}" />
+    <KeyBinding Gesture="Ctrl+P" Command="{Binding Play}" />
+    <KeyBinding Gesture="Escape" Command="{Binding Stop}" />
+    <KeyBinding Gesture="Ctrl+Right" Command="{Binding Next}" />
+    <KeyBinding Gesture="Ctrl+Left" Command="{Binding Previous}" />
+    <KeyBinding Gesture="Ctrl+R" Command="{Binding Replay}" />
+    <KeyBinding Gesture="Ctrl+OemPlus" Command="{Binding ZoomIn}" />
+    <KeyBinding Gesture="Ctrl+OemMinus" Command="{Binding ZoomOut}" />
+    <KeyBinding Gesture="Ctrl+F" Command="{Binding ToggleFollow}" />
+    <KeyBinding Gesture="F9" Command="{Binding ResumeFollow}" />
+  </Window.KeyBindings>
+
+  <DockPanel>
+
+    <!-- Menu: every command reachable without a pointer -->
+    <Menu DockPanel.Dock="Top">
+      <MenuItem Header="_File">
+        <MenuItem Header="_Open PDF…" Click="OnOpenClicked" InputGesture="Ctrl+O" />
+        <Separator />
+        <MenuItem Header="E_xit" Click="OnCloseClicked" />
+      </MenuItem>
+      <MenuItem Header="_Playback">
+        <MenuItem Header="_Play" Click="OnPlayClicked" InputGesture="Space" />
+        <MenuItem Header="Pa_use" Click="OnPauseClicked" />
+        <MenuItem Header="_Stop" Click="OnStopClicked" InputGesture="Escape" />
+        <Separator />
+        <MenuItem Header="_Previous passage" Click="OnPreviousClicked" InputGesture="Ctrl+Left" />
+        <MenuItem Header="_Next passage" Click="OnNextClicked" InputGesture="Ctrl+Right" />
+        <MenuItem Header="_Replay passage" Click="OnReplayClicked" InputGesture="Ctrl+R" />
+      </MenuItem>
+      <MenuItem Header="_View">
+        <MenuItem Header="Zoom _in" Click="OnZoomInClicked" InputGesture="Ctrl+OemPlus" />
+        <MenuItem Header="Zoom _out" Click="OnZoomOutClicked" InputGesture="Ctrl+OemMinus" />
+        <MenuItem Header="_Fit width" Click="OnFitClicked" />
+        <Separator />
+        <MenuItem Header="_Cycle follow mode" Click="OnFollowClicked" InputGesture="Ctrl+F" />
+        <MenuItem Header="_Resume following" Click="OnResumeFollowClicked" InputGesture="F9" />
+      </MenuItem>
+      <MenuItem Header="_Maths">
+        <MenuItem Header="Mark region as _maths" Click="OnMarkAsMathsClicked" />
+        <MenuItem Header="Restore region as _prose" Click="OnRestoreAsProseClicked" />
+        <MenuItem Header="_Regenerate narration" Click="OnMathsRegenerateClicked" />
+      </MenuItem>
+      <MenuItem Header="_Models and endpoints">
+        <MenuItem Header="Download _Kokoro model…" Click="OnDownloadModelClicked" />
+        <MenuItem Header="_Test text LLM endpoint" Click="OnTestMathEndpointClicked" />
+        <MenuItem Header="Test _vision endpoint" Click="OnTestVisionEndpointClicked" />
+      </MenuItem>
+    </Menu>
+
+    <!-- Transport bar -->
+    <Border DockPanel.Dock="Top" Padding="8" Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
+      <StackPanel Orientation="Horizontal" Spacing="6">
+        <Button Name="PlayButton" Content="▶ Play" Click="OnPlayClicked" ToolTip.Tip="Play (Space)" />
+        <Button Content="⏸ Pause" Click="OnPauseClicked" ToolTip.Tip="Pause" />
+        <Button Content="⏹ Stop" Click="OnStopClicked" ToolTip.Tip="Stop (Escape)" />
+        <Button Content="⏮ Previous" Click="OnPreviousClicked" ToolTip.Tip="Previous passage (Ctrl+Left)" />
+        <Button Content="⏭ Next" Click="OnNextClicked" ToolTip.Tip="Next passage (Ctrl+Right)" />
+        <Button Content="↻ Replay" Click="OnReplayClicked" ToolTip.Tip="Replay this passage (Ctrl+R)" />
+
+        <Separator Width="1" Margin="6,2" />
+
+        <TextBlock Text="Voice:" VerticalAlignment="Center" />
+        <ComboBox ItemsSource="{Binding Voices}" SelectedItem="{Binding SelectedVoice}"
+                  MinWidth="200" HorizontalAlignment="Left"
+                  ToolTip.Tip="Changing voice discards prepared audio and re-synthesises from here.">
+          <ComboBox.ItemTemplate>
+            <DataTemplate x:DataType="domain:TtsVoice">
+              <TextBlock Text="{Binding DisplayName}" />
+            </DataTemplate>
+          </ComboBox.ItemTemplate>
+        </ComboBox>
+
+        <TextBlock Text="Speed:" VerticalAlignment="Center" Margin="8,0,0,0" />
+        <ComboBox ItemsSource="{Binding PlaybackRates}" SelectedItem="{Binding PlaybackRate}" MinWidth="90"
+                  ToolTip.Tip="Pitch-preserving playback speed. This is not a synthesis-rate change." />
+
+        <Separator Width="1" Margin="6,2" />
+
+        <Button Content="−" Click="OnZoomOutClicked" ToolTip.Tip="Zoom out (Ctrl+-)" />
+        <TextBlock Text="{Binding ZoomPercent, StringFormat={}{0}%}" VerticalAlignment="Center" MinWidth="48"
+                   TextAlignment="Center" />
+        <Button Content="+" Click="OnZoomInClicked" ToolTip.Tip="Zoom in (Ctrl++)" />
+        <Button Content="Fit" Click="OnFitClicked" ToolTip.Tip="Fit page width" />
+        <Button Content="200%" Click="OnZoom200Clicked" />
+        <Button Content="400%" Click="OnZoom400Clicked" />
+        <Button Content="800%" Click="OnZoom800Clicked" />
+
+        <Separator Width="1" Margin="6,2" />
+
+        <Button Content="{Binding FollowMode, StringFormat=Follow: {0}}" Click="OnFollowClicked"
+                ToolTip.Tip="Cycle follow mode (Ctrl+F)" />
+        <Button Content="Resume following (F9)" Click="OnResumeFollowClicked"
+                IsVisible="{Binding FollowSuspended}"
+                ToolTip.Tip="Browsing paused the camera; this restores it. Audio was never stopped." />
+      </StackPanel>
+    </Border>
+
+    <!-- Status bar -->
+    <Border DockPanel.Dock="Bottom" Padding="8,4" Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
+      <Grid ColumnDefinitions="*,Auto,Auto">
+        <TextBlock Grid.Column="0" Text="{Binding StatusMessage}" TextTrimming="CharacterEllipsis"
+                   VerticalAlignment="Center" />
+        <TextBlock Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center"
+                   Text="{Binding Playback.State, StringFormat=State: {0}}" />
+        <TextBlock Grid.Column="2" Margin="12,0,0,0" VerticalAlignment="Center"
+                   Text="{Binding Playback.PlanProgress, StringFormat=Progress: {0:P0}}" />
+      </Grid>
+    </Border>
+
+    <!-- Right-hand panel: transcript, maths review and notes -->
+    <Border DockPanel.Dock="Right" Width="380" Padding="8"
+            IsVisible="{Binding TranscriptVisible}"
+            BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}" BorderThickness="1,0,0,0">
+      <Grid RowDefinitions="*,Auto,Auto">
+
+        <DockPanel Grid.Row="0">
+          <TextBlock DockPanel.Dock="Top" Text="Narration transcript" FontWeight="SemiBold" Margin="0,0,0,4" />
+          <ListBox Name="TranscriptList" ItemsSource="{Binding Transcript}"
+                   SelectedIndex="{Binding SelectedTranscriptIndex}"
+                   SelectionChanged="OnTranscriptSelectionChanged"
+                   ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+            <ListBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:TranscriptEntry">
+                <StackPanel Orientation="Horizontal" Spacing="4">
+                  <TextBlock Text="∑" Foreground="Orange" IsVisible="{Binding IsMaths}"
+                             ToolTip.Tip="Mathematical passage" />
+                  <TextBlock Text="!" Foreground="#FFB020" IsVisible="{Binding HasWarning}"
+                             ToolTip.Tip="This passage has a warning; see the maths review panel" />
+                  <TextBlock Text="{Binding Text}" TextWrapping="Wrap" MaxWidth="300" />
+                </StackPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </DockPanel>
+
+        <Border Grid.Row="1" Margin="0,8,0,0" Padding="8" CornerRadius="4"
+                Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}"
+                IsVisible="{Binding MathsReview, Converter={x:Static ObjectConverters.IsNotNull}}">
+          <StackPanel Spacing="4" DataContext="{Binding MathsReview}" x:DataType="vm:MathsReview">
+            <TextBlock Text="Maths review" FontWeight="SemiBold" />
+            <TextBlock Text="Recognised expression:" FontSize="11" Opacity="0.75" />
+            <TextBox Name="MathsExpressionBox" Text="{Binding RecognisedExpression}" IsReadOnly="True"
+                     FontFamily="monospace" TextWrapping="Wrap" MaxHeight="60" />
+            <TextBlock Text="Spoken version:" FontSize="11" Opacity="0.75" />
+            <TextBox Name="MathsEditBox" Text="{Binding SpokenVersion}" AcceptsReturn="True"
+                     TextWrapping="Wrap" MinHeight="60" MaxHeight="120"
+                     PlaceholderText="Correct the spoken text; the previous audio for it is discarded" />
+            <TextBlock Text="{Binding Provenance, StringFormat=Source: {0}}" FontSize="11" Opacity="0.75" />
+            <ItemsControl ItemsSource="{Binding Warnings}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="x:String">
+                  <TextBlock Text="{Binding}" FontSize="11" Foreground="#FFB020" TextWrapping="Wrap" />
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <Button Content="Use my text" Click="OnMathsEditClicked" />
+              <Button Content="Regenerate" Click="OnMathsRegenerateClicked" IsEnabled="{Binding CanRegenerate}" />
+            </StackPanel>
+          </StackPanel>
+        </Border>
+
+        <Expander Grid.Row="2" Header="Diagnostics and notes" Margin="0,8,0,0" IsExpanded="False">
+          <StackPanel Spacing="4">
+            <TextBlock Text="{Binding SpeechProviderSummary, StringFormat=Speech providers: {0}}" FontSize="11" />
+            <TextBlock Text="{Binding MathEndpointSummary, StringFormat=Text LLM: {0}}" FontSize="11" TextWrapping="Wrap" />
+            <TextBlock Text="{Binding VisionEndpointSummary, StringFormat=Vision: {0}}" FontSize="11" TextWrapping="Wrap" />
+            <TextBlock Text="{Binding CacheBytes, StringFormat=Speech cache: {0} bytes}" FontSize="11" />
+            <ItemsControl ItemsSource="{Binding Notes}" MaxHeight="160">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="x:String">
+                  <TextBlock Text="{Binding}" FontSize="11" TextWrapping="Wrap" Opacity="0.85" />
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+        </Expander>
+      </Grid>
+    </Border>
+
+    <!-- Reading area -->
+    <views:PdfSurface Name="Surface" Focusable="True" />
+  </DockPanel>
+</Window>

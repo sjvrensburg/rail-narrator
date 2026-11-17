@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json.schemastore.org/base.json",
+  "manifestVersion": 1,
+  "generatedFrom": "Measurements taken on the reference machine (Fedora 44, AMD Ryzen AI MAX+ 395, 17 Nov 2026). Sizes and digests are of files actually downloaded and used, not values copied from a web page.",
+  "policy": {
+    "bundledInPackage": false,
+    "fetchedImplicitly": false,
+    "requiresExplicitUserApproval": true,
+    "sizeAndLicenceShownBeforeDownload": true,
+    "verifiedAfterDownload": true
+  },
+  "assets": [
+    {
+      "id": "kokoro-fp16",
+      "component": "Default speech engine (in-process Kokoro)",
+      "file": "kokoro-fp16.onnx",
+      "source": "https://github.com/Lyrcaxis/KokoroSharpBinaries/releases/download/v2.0.0/kokoro-fp16.onnx",
+      "revision": "KokoroSharpBinaries v2.0.0",
+      "bytes": 163636560,
+      "sha256": "027a25b14aef7d3ae57fd09301ebefbec868e79d55213d07e4f3af442f5ba352",
+      "licence": "Apache-2.0 (Kokoro-82M weights)",
+      "required": true,
+      "optional": false,
+      "notes": "fp16 ONNX export of Kokoro-82M. Verified to have NO 'durations' output, so it cannot supply native phoneme timings; word-level highlighting is therefore unavailable with this file and narration uses clip-boundary (sentence/equation) cues.",
+      "measured": {
+        "synthesisRtf": 0.11,
+        "coldStartMs": 398,
+        "outputFormat": "24000 Hz mono float32",
+        "voicesDiscovered": 157
+      }
+    },
+    {
+      "id": "kokoro-voices",
+      "component": "Kokoro voice vectors",
+      "file": "voices/",
+      "source": "nuget://KokoroSharp/0.8.4/content/voices",
+      "revision": "KokoroSharp 0.8.4",
+      "bytes": 82837504,
+      "sha256": null,
+      "licence": "Apache-2.0",
+      "required": true,
+      "optional": false,
+      "notes": "61 .npy voice files shipped inside the KokoroSharp NuGet package. Not downloaded separately. PackageReference does not copy a package's 'content' folder to the output directory, so KokoroProviderSettings.LocatePackageVoices() resolves them from the global packages cache; override with KokoroVoicesDirectory."
+    },
+    {
+      "id": "zonos-backbone-ptq",
+      "component": "ZONOS3-Mini alternative speech engine",
+      "file": "backbone-ptq.gguf",
+      "source": "https://huggingface.co/Zyphra/ZONOS3-Mini",
+      "revision": "ZONOS3-Mini; converted with servers/ggml/tools/convert_gguf.py lm",
+      "bytes": 663150624,
+      "sha256": "66fceb6d73a8c30bde80249e4112bb308380ab7f3384fa11c8e4048115e4ceec",
+      "licence": "Apache-2.0 (weights); zonos3.cpp runtime MIT",
+      "required": false,
+      "optional": true,
+      "notes": "Only needed if the ZONOS3 provider is selected. Requires a zonos3-server or zonos3-cli built from source; no prebuilt binary is distributed here."
+    },
+    {
+      "id": "zonos-zac-full",
+      "component": "ZONOS3-Mini full-size waveform decoder",
+      "file": "zac.gguf",
+      "source": "https://huggingface.co/Zyphra/ZONOS3-Mini",
+      "revision": "ZONOS3-Mini; converted with servers/ggml/tools/convert_gguf.py codec-decoder",
+      "bytes": 2199903264,
+      "sha256": "9dc8e29cb681dae320bd77329c0f7a39806ad5de6c231ad111adab1a1f6774d8",
+      "licence": "Apache-2.0 (weights); zonos3.cpp runtime MIT",
+      "required": false,
+      "optional": true,
+      "notes": "Full-size decoder (head 'full_mr'). The smaller keep-2 variant was measured by halo-prep as noticeably worse (loudness range 8.1 LU vs 3.0 LU), so the full decoder is the one referenced here."
+    },
+    {
+      "id": "zonos-speaker-encoder",
+      "component": "ZONOS3 speaker-conditioning encoder",
+      "file": "spk-encoder.gguf",
+      "source": "https://huggingface.co/Zyphra/ZONOS3-Mini",
+      "revision": "ZONOS3-Mini",
+      "bytes": 45385728,
+      "sha256": "9539f340b70be246005403b9c254732e180e85e0b3c57fb1973f0d6bc6c59bdc",
+      "licence": "Apache-2.0 (weights); zonos3.cpp runtime MIT",
+      "required": false,
+      "optional": true,
+      "notes": "Needed for reference-clip voice conditioning. Speaker-embedding voices (the default) do not require it at generation time."
+    },
+    {
+      "id": "rapidocr-ppocrv5-latin",
+      "component": "OCR for scanned documents",
+      "file": "bundled by RailReader.Core.Ocr.RapidOcr",
+      "source": "nuget://RailReader.Core.Ocr.RapidOcr/0.89.0",
+      "revision": "RailReaderCore 0.89.0; PP-OCRv5 Latin models",
+      "bytes": null,
+      "sha256": null,
+      "licence": "Apache-2.0 (PP-OCRv5 models)",
+      "required": false,
+      "optional": true,
+      "notes": "Copied beside the application by the package's buildTransitive target, so recognition of Latin-script scans works with no extra download. Recognition quality depends on raster resolution; the extraction pipeline requests 1920px when OCR is on and reports sparse coverage rather than treating an empty transcript as success."
+    },
+    {
+      "id": "pp-doclayout-v3",
+      "component": "Semantic layout model (block roles incl. display maths)",
+      "file": "not bundled",
+      "source": "RailReader.Core.Analysis; model downloaded separately by the user",
+      "revision": "PP-DocLayoutV3",
+      "bytes": null,
+      "sha256": null,
+      "licence": "Apache-2.0 (model)",
+      "required": false,
+      "optional": true,
+      "notes": "Without it the model-free TextLayoutAnalyzer is used, which reports every block as plain text. Role-keyed features (header/footer suppression by role, display-maths detection by role) then fall back to geometry and glyph cues, which is less accurate but still functional. Set LayoutModelPath in settings to enable."
+    }
+  ],
+  "excluded": [
+    {
+      "id": "fusealign-hub",
+      "reason": "ZONOS3's /v2/edit/align belongs to the speech-editing feature set and needs an edit backbone, encoder companions and a Python worker with fusealign-hub. A synthesis-only installation does not have them, and their presence in documentation is not evidence this install can use them. Sentence and equation highlighting ships without any aligner."
+    }
+  ]
+}

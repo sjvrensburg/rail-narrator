@@ -1,0 +1,42 @@
+<Project>
+
+  <!--
+    Single source of truth for every dependency version. Pinning here rather than in each
+    csproj is what makes "the build is reproducible" a checkable claim: one file lists every
+    third-party version this product ships with.
+
+    RailReaderCore is pinned to 0.89.0, the version published on nuget.org from upstream commit
+    e7d41208454dcd4d25ab4a778309f6e483f1c953 - the same snapshot docs/Rail Narrator
+    implementation investigation.md inspected. See docs/decisions/ADR-0001.
+  -->
+  <ItemGroup>
+    <!-- PDF foundation: RailReaderCore. Never replaced by a second PDF stack. -->
+    <PackageVersion Include="RailReader.Core" Version="0.89.0" />
+    <PackageVersion Include="RailReader.Core.Pdfium" Version="0.89.0" />
+    <PackageVersion Include="RailReader.Renderer.Skia" Version="0.89.0" />
+    <PackageVersion Include="RailReader.Core.Analysis" Version="0.89.0" />
+    <PackageVersion Include="RailReader.Core.Ocr.RapidOcr" Version="0.89.0" />
+    <PackageVersion Include="RailReader.Core.Vlm.OpenAI" Version="0.89.0" />
+
+    <!-- Pinned to the same 3.119.* RailReader.Renderer.Skia uses, so one native binary serves both. -->
+    <PackageVersion Include="SkiaSharp" Version="3.119.4" />
+    <PackageVersion Include="SkiaSharp.NativeAssets.Linux" Version="3.119.4" />
+
+    <!-- Speech. KokoroSharp is the in-process Kokoro runtime; .CPU brings the ONNX native assets.
+         Its NAudio/OpenTK.Audio.OpenAL transitive dependencies are for KokoroSharp's own playback,
+         which Rail Narrator never calls - playback goes through RailNarrator.Audio. ADR-0002. -->
+    <PackageVersion Include="KokoroSharp.CPU" Version="0.8.4" />
+
+    <!-- Desktop. -->
+    <PackageVersion Include="Avalonia" Version="12.1.6" />
+    <PackageVersion Include="Avalonia.Desktop" Version="12.1.6" />
+    <PackageVersion Include="Avalonia.Themes.Fluent" Version="12.1.6" />
+    <PackageVersion Include="Avalonia.Fonts.Inter" Version="12.1.6" />
+
+    <!-- Tests. -->
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="2.8.2" />
+  </ItemGroup>
+
+</Project>

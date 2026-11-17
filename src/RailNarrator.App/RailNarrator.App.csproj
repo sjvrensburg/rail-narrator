@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>RailNarrator.App</RootNamespace>
+    <AssemblyName>rail-narrator</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <BuiltInComInteropSupport>false</BuiltInComInteropSupport>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <!-- The PDF raster is copied row by row into a WriteableBitmap; unsafe spans avoid a full extra copy. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- The Avalonia XAML compiler emits advisories outside this repository's control. -->
+    <RailNarratorTreatWarningsAsErrors>false</RailNarratorTreatWarningsAsErrors>
+    <!--
+      AVLN3001: MainWindow is constructed by the composition root with a
+      ServiceRegistry, so it has no parameterless constructor and the XAML previewer
+      cannot instantiate it. That is a deliberate consequence of constructor
+      injection, not a defect: the window is created in App.OnFrameworkInitializationCompleted
+      and never loaded reflectively. Suppressing the advisory rather than adding a
+      second constructor that exists only to satisfy a designer.
+    -->
+    <NoWarn>$(NoWarn);AVLN3001</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../RailNarrator.Domain/RailNarrator.Domain.csproj" />
+    <ProjectReference Include="../RailNarrator.Pdf/RailNarrator.Pdf.csproj" />
+    <ProjectReference Include="../RailNarrator.Speech/RailNarrator.Speech.csproj" />
+    <ProjectReference Include="../RailNarrator.Audio/RailNarrator.Audio.csproj" />
+    <ProjectReference Include="../RailNarrator.Inference/RailNarrator.Inference.csproj" />
+    <ProjectReference Include="../RailNarrator.Infrastructure/RailNarrator.Infrastructure.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" />
+    <PackageReference Include="Avalonia.Desktop" />
+    <PackageReference Include="Avalonia.Themes.Fluent" />
+    <PackageReference Include="Avalonia.Fonts.Inter" />
+  </ItemGroup>
+</Project>

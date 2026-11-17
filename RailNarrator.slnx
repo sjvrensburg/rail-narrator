@@ -1,0 +1,22 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/RailNarrator.Domain/RailNarrator.Domain.csproj" />
+    <Project Path="src/RailNarrator.Pdf/RailNarrator.Pdf.csproj" />
+    <Project Path="src/RailNarrator.Speech/RailNarrator.Speech.csproj" />
+    <Project Path="src/RailNarrator.Audio/RailNarrator.Audio.csproj" />
+    <Project Path="src/RailNarrator.Inference/RailNarrator.Inference.csproj" />
+    <Project Path="src/RailNarrator.Infrastructure/RailNarrator.Infrastructure.csproj" />
+    <Project Path="src/RailNarrator.App/RailNarrator.App.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/RailNarrator.TestFixtures/RailNarrator.TestFixtures.csproj" />
+    <Project Path="tests/RailNarrator.Domain.Tests/RailNarrator.Domain.Tests.csproj" />
+    <Project Path="tests/RailNarrator.Pdf.Tests/RailNarrator.Pdf.Tests.csproj" />
+    <Project Path="tests/RailNarrator.Speech.Tests/RailNarrator.Speech.Tests.csproj" />
+    <Project Path="tests/RailNarrator.Audio.Tests/RailNarrator.Audio.Tests.csproj" />
+    <Project Path="tests/RailNarrator.Inference.Tests/RailNarrator.Inference.Tests.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/RailNarrator.Smoke/RailNarrator.Smoke.csproj" />
+  </Folder>
+</Solution>

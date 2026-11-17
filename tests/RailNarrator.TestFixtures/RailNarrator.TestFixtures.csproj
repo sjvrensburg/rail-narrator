@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>RailNarrator.TestFixtures</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <Description>Redistributable synthetic fixtures with known text and geometry. Deterministic; needs no GPU, network or proprietary PDF.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/RailNarrator.Domain/RailNarrator.Domain.csproj" />
+    <ProjectReference Include="../../src/RailNarrator.Pdf/RailNarrator.Pdf.csproj" />
+    <ProjectReference Include="../../src/RailNarrator.Speech/RailNarrator.Speech.csproj" />
+    <ProjectReference Include="../../src/RailNarrator.Audio/RailNarrator.Audio.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="SkiaSharp" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" />
+  </ItemGroup>
+</Project>

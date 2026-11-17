@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>RailNarrator.Inference</RootNamespace>
+    <Description>Mathematical transcription and verbalisation over an OpenAI-compatible endpoint, with closed-schema validation.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../RailNarrator.Domain/RailNarrator.Domain.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Reused for crop-to-LaTeX transcription only. Verbalisation is a separate service here;
+         Core's IVlmService semantics are deliberately not changed. -->
+    <PackageReference Include="RailReader.Core" />
+    <PackageReference Include="RailReader.Core.Vlm.OpenAI" />
+  </ItemGroup>
+</Project>

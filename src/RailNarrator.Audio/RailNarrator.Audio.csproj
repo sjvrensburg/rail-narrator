@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>RailNarrator.Audio</RootNamespace>
+    <Description>Decoding, output device, buffering, playback media clock, seeking and pitch-preserving speed control.</Description>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../RailNarrator.Domain/RailNarrator.Domain.csproj" />
+  </ItemGroup>
+</Project>

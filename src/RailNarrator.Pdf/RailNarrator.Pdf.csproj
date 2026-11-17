@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>RailNarrator.Pdf</RootNamespace>
+    <Description>RailReaderCore adapter: extraction snapshots, coordinate transforms, source hit-testing and render overlays.</Description>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../RailNarrator.Domain/RailNarrator.Domain.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="RailReader.Core" />
+    <PackageReference Include="RailReader.Core.Pdfium" />
+    <PackageReference Include="RailReader.Renderer.Skia" />
+    <PackageReference Include="RailReader.Core.Analysis" />
+    <PackageReference Include="RailReader.Core.Ocr.RapidOcr" />
+    <PackageReference Include="SkiaSharp" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" />
+  </ItemGroup>
+</Project>

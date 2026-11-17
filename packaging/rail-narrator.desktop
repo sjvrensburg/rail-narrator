@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Rail Narrator
+GenericName=PDF Narrator
+Comment=Read PDF documents aloud with source-linked highlighting and natural maths narration
+Exec=rail-narrator %f
+TryExec=rail-narrator
+Icon=rail-narrator
+Terminal=false
+Categories=Office;Viewer;Accessibility;AudioVideo;Audio;
+Keywords=pdf;narration;speech;tts;accessibility;maths;latex;
+MimeType=application/pdf;
+StartupNotify=true
+StartupWMClass=rail-narrator
+# A PDF opened from a file manager is loaded but never auto-played: starting to
+# read aloud unprompted is the wrong default for a document viewer.
