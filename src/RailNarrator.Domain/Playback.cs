@@ -86,6 +86,7 @@ public sealed record PlaybackSnapshot(
     string? Message,
     NarrationError? Error)
 {
+    public long Generation { get; init; }
     public bool IsAudible => State is PlaybackState.Playing;
 
     public bool IsBusy => State is PlaybackState.Preparing or PlaybackState.Buffering or PlaybackState.Seeking;

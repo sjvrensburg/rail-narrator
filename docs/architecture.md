@@ -43,7 +43,7 @@ RailReaderCore. Every external capability is a **port** declared in the domain
 (`ITtsProvider`, `IAudioOutputDevice`, `IAudioTransport`, `IMathVerbaliser`,
 `IMathTranscriber`, `IForcedAligner`, `ISpeechAssetStore`, `IPlanStore`,
 `IExtractionSource`, `IMonotonicClock`) and implemented outward. That is what lets
-75 tests run with no GPU, no network, no model and no sound card.
+domain tests run with no GPU, no network, no model and no sound card.
 
 ## Data contracts
 
@@ -54,8 +54,8 @@ rather than convention:
 - **Offsets are UTF-16 and say so.** `TextOffsetUnit` distinguishes UTF-16, code
   points and UTF-8 bytes; `TextOffsets` converts and refuses to split a surrogate
   pair. An LLM returning code-point offsets cannot be handed to `Substring`.
-- **An anchor is single-page and holds disjoint rectangles.** A unit spanning a page
-  break carries one anchor per page. Nothing ever stores a union over unrelated
+- **An anchor is single-page and holds disjoint rectangles.** Prose has one anchor per visible word fragment; equations retain a region
+  per page. A dehyphenated word can reference anchors on both sides of a line break. Nothing ever stores a union over unrelated
   lines or columns — `PageRect.UnionAll` exists only for camera *framing* decisions
   and is named so it cannot be confused with highlight geometry.
 - **Geometry belongs to a versioned snapshot.** `ExtractionIdentity(contentHash,
@@ -85,24 +85,23 @@ Two mechanisms make concurrency safe:
 
 ## The media clock
 
-`AudioPlaybackEngine` reports position as
+`AudioPlaybackEngine` derives presented content frames from PortAudio callback
+DAC timestamps and the corrected `Pa_GetStreamTime` binding. Silence inserted by
+underruns consumes no content. `PaStreamInfo.outputLatency` is reported separately;
+it is already represented in the DAC timestamps and is not subtracted twice.
 
-```
-presentedFrames = framesWritten − (bufferCapacity − Pa_GetStreamWriteAvailable())
-positionSeconds = base + presentedFrames / deviceRate × playbackRate
-```
+The engine maps that output position through the WSOLA render's monotonic source
+correspondence and resampling to the source-audio timebase used by cues. Rate
+changes stop the writer before replacing buffers; seek starts a new device epoch
+while retaining the requested source position. Completion waits for final drain.
+See ADR-0003 for the corrected investigation and remaining measurement limits.
 
-Derived from what the device has *consumed*. Not wall-clock time, not bytes
-received from a provider, not samples merely queued. Measured error against wall
-clock: −0.5 ms, with 2555 queued frames correctly excluded. See ADR-0003 for the
-spike that established this, including why `Pa_GetStreamTime` cannot be used.
-
-`base` exists because a flush zeroes the device's counter; without it a seek read
-the position back as zero. That was a real bug, found by a test.
-
-Pitch-preserving speed uses WSOLA over the whole clip rather than a sample-rate
-change, which would raise the pitch *and* silently break the frame mapping. Rate
-1.0 short-circuits to a bit-exact copy.
+Alignment uses the final trimmed PCM and the exact spoken script. The resident
+MFA worker returns ordered word intervals; the coordinator requires complete
+lexical coverage and binds ranges to individual PDF word anchors. Invalid evidence
+falls back to whole-sentence highlighting. Equations remain coarse. The UI samples
+the media clock on animation frames and rejects queued cues from older generations.
+Camera following has an independent 120 ms throttle.
 
 ## Extraction
 
@@ -161,6 +160,7 @@ change that stage's output — so editing an equation rebuilds only the affected
 verbalisation, speech and timings; changing the voice rebuilds only speech;
 re-OCR rebuilds everything downstream. `CacheKey.ForSpeechAsset` includes both the
 script revision *and* a hash of the spoken text, because either alone would let a
-stale clip play against new words. Audio and timings share one key and are written
-and evicted together; splitting them is how a clip ends up wearing another clip's
-word boundaries.
+stale clip play against new words. Audio and timings are stored and evicted together. Alignment metadata carries a
+separate revision derived from the exact PCM and script hashes plus runtime, worker,
+dictionary and acoustic-model revisions. An aligner change retimes cached audio
+without resynthesis. PCM reads verify the stored hash before using its timings.

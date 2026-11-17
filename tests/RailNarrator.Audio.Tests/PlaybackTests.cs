@@ -176,7 +176,9 @@ public sealed class TimeStretchTests
         var input = Tone(220, 1.0);
         var output = new WsolaTimeStretcher(Rate).Process(input, 2.0);
 
-        var body = output.AsSpan(Rate / 4, output.Length - Rate / 2).ToArray();
+        // Trim 50 ms from each edge. Trimming 250 ms from each edge left no samples when
+        // the renderer correctly produced exactly half a second at 2x.
+        var body = output.AsSpan(Rate / 20, output.Length - Rate / 10).ToArray();
         double freq = ResamplerTests.DominantFrequency(body, Rate);
         // Tolerance is 10%. What this test is really separating is a time-stretcher from a
         // sample-rate hack: changing the rate would put the tone at 440 Hz, a 100% error, which no

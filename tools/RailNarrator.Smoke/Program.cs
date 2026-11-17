@@ -30,7 +30,7 @@ internal static class Program
                 "extract" => await ExtractAsync(args.Skip(1).ToArray()).ConfigureAwait(false),
                 "plan" => await PlanAsync(args.Skip(1).ToArray()).ConfigureAwait(false),
                 "speak" => await SpeakAsync(args.Skip(1).ToArray()).ConfigureAwait(false),
-                "audio" => Audio(),
+                "audio" => Audio(args.Skip(1).ToArray()),
                 "providers" => await ProvidersAsync(args.Skip(1).ToArray()).ConfigureAwait(false),
                 "all" => await AllAsync(args.Skip(1).ToArray()).ConfigureAwait(false),
                 _ => Unknown(args[0]),
@@ -55,7 +55,7 @@ internal static class Program
               speak   <pdf> [--provider kokoro|zonos3|fake] [--model PATH] [--voice V]
                                            synthesise the plan with a real provider and report
                                            measured latency, RTF, peak and format
-              audio   [--device N]         enumerate audio devices and report the measured clock
+              audio   [--device N] [--silent] enumerate devices and report the presentation clock
               providers [--kokoro-model PATH] [--zonos-url URL]
                                            probe each provider's capabilities and run a self-test
               all     [--kokoro-model PATH]
@@ -342,7 +342,7 @@ internal static class Program
 
     // ---- audio --------------------------------------------------------------------
 
-    private static int Audio()
+    private static int Audio(string[] args)
     {
         string? version;
         try { version = PortAudioOutputDevice.Version; }
@@ -364,8 +364,11 @@ internal static class Program
             return 0;
         }
 
-        // Measure the clock on a real tone. This is the number the highlight accuracy depends on.
-        var target = devices.FirstOrDefault(d => d.IsDefault) ?? devices[0];
+        // Sanity-check presentation progress. Wall time alone is not an acoustic latency measurement.
+        var requested = ArgValue(args, "--device");
+        var target = requested is null ? devices.FirstOrDefault(d => d.IsDefault) ?? devices[0]
+            : devices.FirstOrDefault(d => d.Id == requested);
+        if (target is null) return Fail($"Unknown output device '{requested}'.");
         var format = new AudioFormat(target.PreferredSampleRate, Math.Min(2, Math.Max(1, target.Channels)), SampleFormat.Float32LittleEndian);
         try
         {
@@ -377,28 +380,30 @@ internal static class Program
             var sw = Stopwatch.StartNew();
             int total = 0;
             const int chunk = 512;
-            var buffer = new byte[chunk * 4 * 2];
-            var samples = new float[chunk * 2];
+            var buffer = new byte[chunk * format.BytesPerFrame];
+            bool silent = args.Contains("--silent");
             while (sw.Elapsed.TotalSeconds < 0.75)
             {
-                for (int i = 0; i < samples.Length; i++)
-                    samples[i] = (float)(0.15 * Math.Sin(2 * Math.PI * 220 * i / format.SampleRate));
-                for (int i = 0; i < samples.Length; i++)
-                    BitConverter.TryWriteBytes(buffer.AsSpan(i * 4, 4), samples[i]);
-                device.Write(buffer, chunk);
-                total += chunk;
+                for (int i = 0; i < chunk; i++)
+                    for (int c = 0; c < format.Channels; c++)
+                    {
+                        float sample = silent ? 0 : (float)(0.15 * Math.Sin(2 * Math.PI * 220 * (total + i) / format.SampleRate));
+                        BitConverter.TryWriteBytes(buffer.AsSpan((i * format.Channels + c) * 4, 4), sample);
+                    }
+                total += device.Write(buffer, chunk);
             }
             double wall = sw.Elapsed.TotalSeconds;
             long presented = device.PresentedFrames;
             Console.WriteLine($"wrote {total} frames ({total / (double)format.SampleRate:F3}s) in {wall:F3}s wall");
             Console.WriteLine($"presented {presented} frames ({presented / (double)format.SampleRate:F3}s); queued {device.QueuedFrames}");
-            Console.WriteLine($"clock error vs wall: {(presented / (double)format.SampleRate - wall) * 1000:F1} ms (negative = clock behind wall, as expected by the queue depth)");
+            Console.WriteLine($"presentation minus wall: {(presented / (double)format.SampleRate - wall) * 1000:F1} ms (includes startup; not a loopback accuracy measurement)");
+            Console.WriteLine($"reported output latency: {device.ReportedLatencySeconds * 1000:F1} ms; host underflows: {device.UnderflowCount}");
             device.Pause();
             Console.WriteLine($"HasDrained after pause: {device.HasDrained}");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"playback measurement failed: {ex.Message}");
+            return Fail($"playback measurement failed: {ex.Message}");
         }
         return 0;
     }

@@ -19,15 +19,15 @@ public sealed record AudioEngineOptions(
 /// <remarks>
 /// <para>
 /// The clock is the point of this class. <see cref="PositionSeconds"/> is computed from the device's
-/// presented-frame count mapped back through the resample ratio and the playback rate — never from
+/// presented-frame count mapped back through the rendered WSOLA correspondence and resampling — never from
 /// elapsed wall time, bytes received from a provider, or samples handed to the device. Those three
 /// all run ahead of what the listener hears, and a highlight driven by any of them visibly leads the
 /// audio.
 /// </para>
 /// <para>
 /// Clips are decoded, resampled and time-stretched once at load, then streamed. That is the buffered
-/// sentence-clip design rather than a streaming one: it makes a seek a cursor reset, makes the frame
-/// mapping exact integer arithmetic, and means a playback-rate change re-renders audio instead of
+/// sentence-clip design rather than a streaming one: it makes a seek a cursor reset, retains the
+/// source position of each rendered frame, and means a playback-rate change re-renders audio instead of
 /// changing a pitch. Streaming can be added later without changing this contract.
 /// </para>
 /// <para>
@@ -50,7 +50,8 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
     // Source seconds already presented before the current device session. A flush resets the
     // device's presented counter to zero, so without this base a seek would read the position back
     // as zero and the highlight would jump to the start of the clip.
-    private double _positionBaseSeconds;
+    private long _sessionOutputStart;
+    private PlaybackRender _render = new([], 0);
     private string? _segmentId;
     private SpeechAsset? _asset;
     private double _rate = 1.0;
@@ -86,8 +87,7 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
                 if (_outputFormat.SampleRate <= 0) return 0;
                 // presented output frames -> output seconds -> source seconds (a rate of R consumes R
                 // source-seconds per output-second), plus whatever was presented before the last flush.
-                double outputSeconds = _device.PresentedFrames / (double)_outputFormat.SampleRate;
-                return _positionBaseSeconds + outputSeconds * _rate;
+                return _render.SourceFrameAt(_sessionOutputStart + _device.PresentedFrames) / _outputFormat.SampleRate;
             }
         }
     }
@@ -99,7 +99,7 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
             lock (_gate)
             {
                 if (_outputFormat.SampleRate <= 0) return 0;
-                return _output.Length / (double)_outputFormat.SampleRate * _rate;
+                return _sourceRate > 0 ? _sourceFloat.Length / (double)_sourceRate : 0;
             }
         }
     }
@@ -111,8 +111,8 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
             lock (_gate)
             {
                 if (_outputFormat.SampleRate <= 0) return 0;
-                long queued = Math.Max(0, _writeCursor - _device.PresentedFrames);
-                return queued / (double)_outputFormat.SampleRate * _rate;
+                double position = _sessionOutputStart + _device.PresentedFrames;
+                return Math.Max(0, _render.SourceFrameAt(_writeCursor) - _render.SourceFrameAt(position)) / _outputFormat.SampleRate;
             }
         }
     }
@@ -144,9 +144,10 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
             _sourceRate = asset.Format.SampleRate;
             _outputFormat = deviceFormat;
             _sourceFloat = source;
-            _output = ApplyRate(atDeviceRate, deviceRate, _rate);
+            _render = ApplyRate(atDeviceRate, deviceRate, _rate);
+            _output = _render.Samples;
             _writeCursor = 0;
-            _positionBaseSeconds = 0;
+            _sessionOutputStart = 0;
             _clipCompletedRaised = false;
         }
 
@@ -159,49 +160,41 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
     /// </summary>
     /// <remarks>
     /// The clip is re-rendered from the stored source samples rather than stretched twice: compounding
-    /// WSOLA passes add artifacts, and re-rendering keeps the source-to-output frame mapping a single
-    /// exact ratio that the media clock can still invert. The position is preserved in <i>source</i>
+    /// WSOLA passes add artifacts, and re-rendering keeps one monotonic source-to-output map
+    /// that the media clock can invert. The position is preserved in <i>source</i>
     /// seconds, which is the quantity a cue is expressed in, so the highlight stays on the same words
     /// across the change.
     /// </remarks>
     public void SetPlaybackRate(double rate)
     {
+        if (!double.IsFinite(rate)) throw new ArgumentOutOfRangeException(nameof(rate));
         double clamped = Math.Clamp(rate, WsolaTimeStretcher.MinRate, WsolaTimeStretcher.MaxRate);
+        if (Math.Abs(clamped - PlaybackRate) < 1e-9) return;
+        // Stop the producer before swapping buffers or flushing. A stale write after a flush would
+        // otherwise queue old-rate samples into the new session even when its cursor is discarded.
+        StopWriterAsync().GetAwaiter().GetResult();
+        bool playing = State == PlaybackState.Playing;
         lock (_gate)
         {
-            if (Math.Abs(clamped - _rate) < 1e-9) return;
-
-            // Where we are, in source seconds, before the change. The base holds everything
-            // presented before the last flush (e.g. a seek target); omitting it restarted playback
-            // near the clip start on any rate change after a seek.
-            double sourceSeconds = _outputFormat.SampleRate > 0
-                ? _positionBaseSeconds + _device.PresentedFrames / (double)_outputFormat.SampleRate * _rate
-                : _positionBaseSeconds;
-
+            double sourceSeconds = PositionSeconds;
+            _device.Pause();
+            _device.Flush();
             _rate = clamped;
-            _positionBaseSeconds = sourceSeconds;
-            if (_sourceFloat.Length == 0 || _outputFormat.SampleRate <= 0) return;
-
-            var atDeviceRate = Resampler.Resample(_sourceFloat, _sourceRate, _outputFormat.SampleRate);
-            _output = ApplyRate(atDeviceRate, _outputFormat.SampleRate, clamped);
-            _clipCompletedRaised = false;
-
-            // Re-seat the write cursor at the same source position under the new rendering.
-            long outputFrame = (long)Math.Round(sourceSeconds / clamped * _outputFormat.SampleRate, MidpointRounding.AwayFromZero);
-            _writeCursor = Math.Clamp(outputFrame, 0, _output.Length);
+            if (_sourceFloat.Length > 0 && _outputFormat.SampleRate > 0)
+            {
+                var source = Resampler.Resample(_sourceFloat, _sourceRate, _outputFormat.SampleRate);
+                _render = ApplyRate(source, _outputFormat.SampleRate, clamped);
+                _output = _render.Samples;
+                _writeCursor = _render.OutputFrameAt(sourceSeconds * _outputFormat.SampleRate);
+                _sessionOutputStart = _writeCursor;
+                _clipCompletedRaised = false;
+            }
         }
-
-        // Anything queued was rendered at the old rate, so it must not play after the change.
-        _device.Flush();
-        if (State == PlaybackState.Playing) _device.Start();
+        if (playing) { _device.Start(); StartWriter(); }
     }
 
-    private float[] ApplyRate(float[] atDeviceRate, int deviceRate, double rate)
-    {
-        if (Math.Abs(rate - 1.0) < 1e-6) return atDeviceRate;
-        var stretcher = new WsolaTimeStretcher(deviceRate);
-        return stretcher.Process(atDeviceRate, rate);
-    }
+    private static PlaybackRender ApplyRate(float[] atDeviceRate, int deviceRate, double rate)
+        => new WsolaTimeStretcher(deviceRate).Render(atDeviceRate, rate);
 
     private static float[] DecodeToMonoFloat(ReadOnlySpan<byte> pcm, AudioFormat format)
     {
@@ -279,13 +272,12 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
         return Task.CompletedTask;
     }
 
-    public Task PauseAsync(CancellationToken ct = default)
+    public async Task PauseAsync(CancellationToken ct = default)
     {
-        lock (_gate) if (_state != PlaybackState.Playing) return Task.CompletedTask;
+        if (State != PlaybackState.Playing) return;
+        await StopWriterAsync().ConfigureAwait(false);
         _device.Pause();
-        _writerGate.Reset();
         SetState(PlaybackState.Paused);
-        return Task.CompletedTask;
     }
 
     public Task ResumeAsync(CancellationToken ct = default)
@@ -293,7 +285,7 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
         lock (_gate) if (_state != PlaybackState.Paused) return Task.CompletedTask;
         _device.Start();
         SetState(PlaybackState.Playing);
-        _writerGate.Set();
+        StartWriter();
         return Task.CompletedTask;
     }
 
@@ -304,8 +296,9 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
         lock (_gate)
         {
             _writeCursor = 0;
-            _positionBaseSeconds = 0;
+            _sessionOutputStart = 0;
             _output = [];
+            _render = new([], 0);
             _sourceFloat = [];
             _asset = null;
             _segmentId = null;
@@ -327,18 +320,18 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
         lock (_gate)
         {
             double clamped = Math.Clamp(seconds, 0, Math.Max(0, ClipDurationSecondsCore()));
-            long outputFrame = (long)Math.Round(clamped / _rate * _outputFormat.SampleRate, MidpointRounding.AwayFromZero);
+            long outputFrame = _render.OutputFrameAt(clamped * _outputFormat.SampleRate);
             _writeCursor = Math.Clamp(outputFrame, 0, _output.Length);
             // The flush below zeroes the device's presented count, so the seek target becomes the new
             // base for the clock rather than being lost.
-            _positionBaseSeconds = _writeCursor / (double)Math.Max(1, _outputFormat.SampleRate) * _rate;
+            _sessionOutputStart = _writeCursor;
             _clipCompletedRaised = false;
         }
         if (State == PlaybackState.Playing) { _device.Start(); StartWriter(); }
     }
 
     private double ClipDurationSecondsCore()
-        => _outputFormat.SampleRate <= 0 ? 0 : _output.Length / (double)_outputFormat.SampleRate * _rate;
+        => _sourceRate <= 0 ? 0 : _sourceFloat.Length / (double)_sourceRate;
 
     // ---- writer ------------------------------------------------------------------------
 
@@ -485,7 +478,7 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
     /// <summary>
     /// Diagnostics for the measured clock, so scheduling error can be reported rather than assumed
     /// away. Residual uncertainty is one device period plus the hardware buffer, because this
-    /// PortAudio build exports neither <c>Pa_GetStreamTime</c> nor <c>Pa_GetStreamLatency</c>.
+    /// backend timestamps are estimates of DAC presentation; loopback measurement is still needed.
     /// </summary>
     public AudioClockDiagnostics GetClockDiagnostics()
     {
@@ -494,8 +487,9 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
             long presented = _device.PresentedFrames;
             return new AudioClockDiagnostics(
                 _segmentId, _sourceRate, _outputFormat.SampleRate, _rate,
-                _writeCursor, presented, Math.Max(0, _writeCursor - presented),
-                _device.ReportedLatencySeconds, _output.Length);
+                _writeCursor - _sessionOutputStart, presented, Math.Max(0, _writeCursor - _sessionOutputStart - presented),
+                _device.ReportedLatencySeconds, _output.Length - _sessionOutputStart)
+            { SourcePositionSeconds = PositionSeconds };
         }
     }
 
@@ -527,7 +521,8 @@ public sealed record AudioClockDiagnostics(
     long TotalOutputFrames)
 {
     public double PresentedOutputSeconds => OutputSampleRate <= 0 ? 0 : PresentedOutputFrames / (double)OutputSampleRate;
-    public double PositionInSourceSeconds => PresentedOutputSeconds * PlaybackRate;
+    public double? SourcePositionSeconds { get; init; }
+    public double PositionInSourceSeconds => SourcePositionSeconds ?? PresentedOutputSeconds * PlaybackRate;
     public double QueuedSeconds => OutputSampleRate <= 0 ? 0 : QueuedOutputFrames / (double)OutputSampleRate;
     public bool IsComplete => TotalOutputFrames > 0 && PresentedOutputFrames >= TotalOutputFrames;
 }

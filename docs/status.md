@@ -7,25 +7,25 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 174 passing, 0 warnings
+## Verified by automated tests — 214 passing, 2 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
-| `RailNarrator.Domain.Tests` | 75 | Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, planner behaviour, coordinator invariants, cache keys, camera policy |
+| `RailNarrator.Domain.Tests` | 93 | Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, planner behaviour, coordinator invariants, cache keys, camera policy |
 | `RailNarrator.Pdf.Tests` | 13 | **Real PDFs** through the real RailReaderCore pipeline |
-| `RailNarrator.Speech.Tests` | 28 | PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
-| `RailNarrator.Audio.Tests` | 20 | Resampler, time-stretcher, playback engine against a controllable fake device |
+| `RailNarrator.Speech.Tests` | 36 | PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
+| `RailNarrator.Audio.Tests` | 30 | Resampler, time-stretcher, playback engine against a controllable fake device |
+| `RailNarrator.Infrastructure.Tests` | 4 | Cache round-trips and waveform integrity, including same-length replacement |
 | `RailNarrator.Inference.Tests` | 38 | Golden maths semantics, response validator, endpoint client |
 
 Run them with:
 
 ```bash
-for p in Domain Pdf Speech Audio Inference; do
-  dotnet test tests/RailNarrator.$p.Tests -c Release
-done
+dotnet test RailNarrator.slnx -c Release
 ```
 
-None of these need a GPU, a network, a model file or a sound card. The Audio suite
+The default run needs no GPU, network, model file or sound card. Two opt-in
+integration tests are skipped unless their dependencies are explicitly enabled. The Audio suite
 runs stable across repeated invocations; an earlier flake (a test that drained the
 device before the writer thread had finished queuing) was fixed by waiting for the
 completion event instead of a fixed delay.
@@ -43,7 +43,8 @@ resolver and Core's line detection. Confirmed working:
 - a page with no text layer reported as unreadable with warnings, not as success
 - character boxes agreeing with the page text, line rectangles inside page bounds
 - reading order contiguous from zero
-- a sentence crossing a line break staying one unit with **two disjoint** rectangles
+- a sentence crossing a line break staying one unit with individual word rectangles
+  on both lines
 - content-hash stability across paths, and change under different content
 
 ### End-to-end narration with real synthesis
@@ -65,21 +66,22 @@ resolves ONNX Runtime 1.31.1 and `KokoroSharp` was built against 1.22.0, and the
 coexist in one process. The output WAVs were verified independently with `ffprobe`:
 `pcm_f32le`, 24000 Hz, mono, durations 4.498 / 4.250 / 3.740 s.
 
-### Audio device and media clock
-`rail-narrator-smoke audio` against real hardware:
+### Audio device, media clock and word alignment
+The corrected PortAudio binding and callback backend pass a real-device test with
+silent PCM: pause freezes position, seek retains its target, a 1.5x rate change
+preserves source position, and completion waits for final drain. Stream output
+latency is available through `Pa_GetStreamInfo`. The old blocking-backend
+wall-clock comparison did not measure acoustic synchronisation; ADR-0003 records
+that correction.
 
-```
-PortAudio V19.7.0-devel · initialise: ok · 6 output devices enumerated
-opened device 0 at 44100 Hz / 2 ch
-device buffer capacity: 3072 frames (69.7 ms)
-wrote 36352 frames (0.824s) in 0.767s wall
-presented 33797 frames (0.766s); queued 2555
-clock error vs wall: -0.5 ms
-```
+A separate real Kokoro/MFA test aligned all nine words in a 2.952-second sentence.
+The resident worker took 2.913 seconds for its first request and 0.017 seconds for
+a warm repeat. Unit tests additionally exercise worker cancellation/timeout and
+restart, missing-word fallback, repeated words, number expansion, dehyphenation,
+model revision changes and cache reuse. See [setup and reproducible checks](word-highlighting.md).
 
-The clock is accurate to half a millisecond against wall time **and** correctly
-excludes the 2555 still-queued frames. That separation is the whole point: a clock
-counting queued samples would run ~58 ms ahead of what the listener hears.
+These establish working integration and structural timing checks. Manually labelled
+word-boundary error and audible-to-visible delay are still unmeasured.
 
 ### ZONOS3 sidecar, through this application's adapter
 A real `zonos3-server` was started from the operator's existing build and driven
@@ -160,11 +162,6 @@ Built, packaged and launched under X11:
 These are choices, not omissions. Each is recorded so it does not look like an
 oversight.
 
-- **Word-level highlighting.** No timing source exists on this machine — the Kokoro
-  export has no `durations` output, the duration-enabled kokoro-onnx export is not
-  loadable by KokoroSharp at all (ADR-0004 has the measured detail), and ZONOS3's
-  aligner needs assets a synthesis-only install lacks. The seam (`IForcedAligner`,
-  `TimedCueValidator`, capability-gated `NativeTiming`) is in place.
 - **Streaming synthesis.** The buffered sentence-clip path is the verified one. HTTP
   chunk boundaries are not frame boundaries, and streaming before the baseline is
   correct is how you get confident, smooth, wrong highlights.

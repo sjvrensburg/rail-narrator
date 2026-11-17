@@ -63,8 +63,8 @@ public sealed record KokoroProviderSettings(
 /// Output is 24 kHz mono. Whether the model can supply per-phoneme durations depends on the export:
 /// the widely distributed <c>kokoro-fp16.onnx</c> has no <c>durations</c> output, so
 /// <see cref="TtsCapabilities.NativeTiming"/> starts as <see cref="TimingProvenance.None"/> and is
-/// upgraded the first time a model actually returns timings. Word-level highlighting is therefore
-/// capability-gated rather than assumed.
+/// upgraded when the graph or a result supplies durations. These phoneme timestamps do not include
+/// script-to-word correspondence; usable word cues come from the optional forced aligner.
 /// </para>
 /// </remarks>
 public sealed class KokoroTtsProvider : ITtsProvider
@@ -97,6 +97,7 @@ public sealed class KokoroTtsProvider : ITtsProvider
     private bool _voicesLoaded;
     private TimingProvenance _observedTiming = TimingProvenance.None;
     private bool _modelReportsDurations;
+    private string _modelFingerprint = "unavailable";
     private bool _disposed;
 
     public KokoroTtsProvider(KokoroProviderSettings settings)
@@ -140,7 +141,7 @@ public sealed class KokoroTtsProvider : ITtsProvider
     }
 
     private string ModelRevision =>
-        $"kokoro-sharp/{KokoroSharpVersion}:{Path.GetFileName(_settings.ModelPath)}";
+        $"kokoro-sharp/{KokoroSharpVersion}/trim-2:{_modelFingerprint}";
 
     private const string KokoroSharpVersion = "0.8.4";
 
@@ -199,10 +200,7 @@ public sealed class KokoroTtsProvider : ITtsProvider
 
         var warnings = new List<string>();
         if (text.Length > MaxRequestChars)
-        {
-            warnings.Add($"Text exceeded {MaxRequestChars} characters and was truncated for this request.");
-            text = text[..MaxRequestChars];
-        }
+            throw new ArgumentException($"Text exceeds the {MaxRequestChars}-character limit; split it before synthesis.", nameof(request));
 
         int[] tokens;
         List<int[]> segments;
@@ -239,13 +237,10 @@ public sealed class KokoroTtsProvider : ITtsProvider
                     if (step.Timestamps is { Length: > 0 } ts)
                     {
                         sawTimings = true;
-                        // Timestamps are per-step and relative to that step's raw audio, so they are
-                        // shifted by the samples already collected and by the silence trimmed off
-                        // this step's start.
-                        var (trimmed, leadFrames) = TrimStep(stepSamples);
-                        double leadSeconds = leadFrames / (double)OutputSampleRate;
+                        // Steps are concatenated without trimming. Offset in that raw timeline;
+                        // the single actual clip trim below is then applied exactly once.
                         foreach (var t in ts)
-                            timestamps.Add(PhonemeCue(t, offsetBefore - (trimmed ? leadFrames : 0), leadSeconds));
+                            timestamps.Add(PhonemeCue(t, offsetBefore));
                     }
                 }
             };
@@ -309,32 +304,15 @@ public sealed class KokoroTtsProvider : ITtsProvider
             request.Seed, "kokoro-onnx", warnings);
     }
 
-    private static (bool Trimmed, int LeadFrames) TrimStep(float[] stepSamples)
+    /// <summary>Raw phoneme evidence; a word mapper or forced aligner must attach script ranges.</summary>
+    public static TimedCue PhonemeCue(PhonemeTimestamp t, long sampleOffset)
     {
-        int first = 0;
-        while (first < stepSamples.Length && Math.Abs(stepSamples[first]) < 0.005f) first++;
-        return first > 0 && first < stepSamples.Length * 0.9 ? (true, first) : (false, 0);
+        long start = (long)Math.Round(t.StartSecond * OutputSampleRate) + sampleOffset;
+        long end = (long)Math.Round(t.EndSecond * OutputSampleRate) + sampleOffset;
+        return new TimedCue(start, end, null, [], CueGranularity.Phrase, null, [$"phoneme '{t.Phoneme}'"]);
     }
 
-    /// <summary>
-    /// Converts one Kokoro phoneme timestamp into a candidate cue.
-    /// </summary>
-    /// <remarks>
-    /// Phonemes are grouped into words on the spaces between them, which is the pairing Kokoro's own
-    /// documentation uses. It is emitted at <see cref="CueGranularity.Phrase"/> rather than
-    /// <see cref="CueGranularity.Word"/> because phoneme grouping does not establish which source
-    /// characters a word came from — that mapping is the plan's job, and it is only exact down to a
-    /// source line. Claiming word accuracy here would be a lie the highlight would repeat.
-    /// </remarks>
-    private static TimedCue PhonemeCue(PhonemeTimestamp t, long sampleOffset, double leadSeconds)
-    {
-        long start = (long)Math.Max(0, Math.Round((t.StartSecond - leadSeconds) * OutputSampleRate)) + sampleOffset;
-        long end = (long)Math.Max(0, Math.Round((t.EndSecond - leadSeconds) * OutputSampleRate)) + sampleOffset;
-        return new TimedCue(start, Math.Max(end, start), null, [], CueGranularity.Phrase, null,
-            [$"phoneme '{t.Phoneme}'"]);
-    }
-
-    private static IReadOnlyList<TimedCue> ShiftCues(List<TimedCue> cues, int trimmedFrames, long totalFrames)
+    public static IReadOnlyList<TimedCue> ShiftCues(List<TimedCue> cues, int trimmedFrames, long totalFrames)
     {
         var result = new List<TimedCue>(cues.Count);
         foreach (var c in cues)
@@ -376,6 +354,7 @@ public sealed class KokoroTtsProvider : ITtsProvider
     {
         try
         {
+            _modelFingerprint = CacheKey.Sha256HexOfFile(modelPath);
             using var probe = new InferenceSession(modelPath, options);
             var inputs = probe.InputMetadata.Keys.ToHashSet(StringComparer.Ordinal);
             var outputs = probe.OutputMetadata.Keys.ToHashSet(StringComparer.Ordinal);

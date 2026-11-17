@@ -41,7 +41,7 @@ public static class NarrationVersions
     public const string LocalMathReader = "local-math/1";
 
     /// <summary>Bump when the prose normalisation pipeline changes.</summary>
-    public const string ProsePipeline = "prose/1";
+    public const string ProsePipeline = "prose/2-word-anchors";
 }
 
 /// <summary>Planner configuration.</summary>
@@ -267,9 +267,9 @@ public sealed class NarrationPlanner
             // Merge into the previous link when it is the same anchor and contiguous, so a
             // multi-line paragraph on one page is one link rather than one per line.
             if (links.Count > 0 && links[^1].AnchorIds.Count == 1 && links[^1].AnchorIds[0] == fragment.AnchorId
-                && links[^1].SpokenRange.End == range.Start)
+                && links[^1].SpokenRange.End >= range.Start)
             {
-                links[^1] = links[^1] with { SpokenRange = TextRange.FromBounds(links[^1].SpokenRange.Start, range.End) };
+                links[^1] = links[^1] with { SpokenRange = TextRange.FromBounds(links[^1].SpokenRange.Start, Math.Max(links[^1].SpokenRange.End, range.End)) };
                 continue;
             }
             links.Add(new SourceLink(range, [fragment.AnchorId]));

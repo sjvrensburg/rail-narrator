@@ -125,6 +125,15 @@ public sealed class ServiceRegistry : IAsyncDisposable
                 extraction);
         }
 
+        string alignmentRoot = Path.Combine(XdgPaths.Data, "alignment");
+        IForcedAligner? aligner = settings.WordHighlighting ? new MfaForcedAligner(new MfaAlignerSettings(
+            settings.MfaExecutable ?? Path.Combine(alignmentRoot, "runtime", "bin", "mfa"),
+            settings.MfaDictionaryPath ?? Path.Combine(alignmentRoot, "models", "dictionary", "english_uk_mfa.dict"),
+            settings.MfaAcousticModelPath ?? Path.Combine(alignmentRoot, "models", "acoustic", "english_mfa.zip"),
+            Path.Combine(XdgPaths.Cache, "alignment"), settings.MfaRuntimeRevision)) : null;
+        if (aligner is not null)
+            notes.Add("Word highlighting uses local alignment when installed; see docs/word-highlighting.md for setup.");
+
         var coordinator = new NarrationCoordinator(
             // A registry-level provider is resolved lazily below; the coordinator needs one instance,
             // so the configured provider (or a fake that reports unavailability) is chosen here.
@@ -136,7 +145,9 @@ public sealed class ServiceRegistry : IAsyncDisposable
                 MaxConcurrentSynthesis: settings.MaxConcurrentSynthesis,
                 VoiceId: settings.KokoroVoiceId ?? settings.ZonosSpeakerId,
                 PlaybackRate: settings.PlaybackRate,
-                FollowMode: settings.FollowMode));
+                FollowMode: settings.FollowMode,
+                RequestTimings: settings.WordHighlighting),
+            aligner: aligner);
 
         return new ServiceRegistry
         {

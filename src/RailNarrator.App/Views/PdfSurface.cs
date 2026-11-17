@@ -54,22 +54,14 @@ public sealed class PdfSurface : Control
         new Dictionary<int, IReadOnlyList<PageRect>>();
     private NarrationHighlightStyle _highlightStyle = NarrationHighlightStyle.Default;
 
-    private readonly DispatcherTimer _frameTimer;
+    private bool _frameRequested;
 
     public PdfSurface()
     {
         Focusable = true;
         ClipToBounds = true;
 
-        // A fixed-rate tick polls the coordinator for the current cue. Cue resolution is a pure
-        // function of the media position, so a tick while the clock is stationary re-derives the same
-        // cue rather than advancing the reading position.
-        _frameTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(33) };
-        _frameTimer.Tick += (_, _) =>
-        {
-            _viewModel?.Coordinator.Tick();
-            InvalidateVisual();
-        };
+        AttachedToVisualTree += (_, _) => RequestFrame();
     }
 
     /// <summary>Attaches the view model: subscribes to cue and camera events and starts the frame loop.</summary>
@@ -85,12 +77,11 @@ public sealed class PdfSurface : Control
             InvalidateVisual();
         };
         _zoom = viewModel.Zoom;
-        _frameTimer.Start();
+        RequestFrame();
     }
 
     public void Detach()
     {
-        _frameTimer.Stop();
         if (_viewModel is { } vm)
         {
             vm.InvalidateSurface -= OnInvalidate;
@@ -99,7 +90,24 @@ public sealed class PdfSurface : Control
         _viewModel = null;
     }
 
-    private void OnInvalidate() => Dispatcher.UIThread.Post(InvalidateVisual);
+    private void RequestFrame()
+    {
+        if (_frameRequested || _viewModel is null || TopLevel.GetTopLevel(this) is not { } top) return;
+        _frameRequested = true;
+        top.RequestAnimationFrame(_ =>
+        {
+            _frameRequested = false;
+            if (_viewModel is null) return;
+            _viewModel.Coordinator.Tick();
+            RequestFrame();
+        });
+    }
+
+    private void OnInvalidate()
+    {
+        if (Dispatcher.UIThread.CheckAccess()) InvalidateVisual();
+        else Dispatcher.UIThread.Post(InvalidateVisual);
+    }
 
     /// <summary>Opens a document for display, releasing any previous one.</summary>
     public void OpenDocument(string path, IPdfServiceFactory? factory = null)

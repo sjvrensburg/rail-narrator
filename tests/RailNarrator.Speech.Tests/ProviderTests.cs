@@ -258,7 +258,7 @@ public sealed class ProviderContractTests
             var caps = await tts.GetCapabilitiesAsync();
             Assert.True(caps.IsAvailable, caps.Unavailable);
             // kokoro-fp16.onnx has no durations output, so no word timings may be claimed.
-            Assert.Equal(tts.ModelReportsDurations, caps.CanSupplyWordTiming);
+            Assert.False(caps.CanSupplyWordTiming); // Phoneme durations lack script-to-word correspondence.
             if (!tts.ModelReportsDurations) Assert.Equal(TimingProvenance.None, caps.NativeTiming);
         }
     }

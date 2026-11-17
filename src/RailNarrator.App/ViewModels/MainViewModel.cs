@@ -234,6 +234,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         => string.Join(", ", _services.SpeechProviders.RegisteredIds);
 
     public long CacheBytes => _services.AssetStore.TotalBytes();
+    private string _timingSummary = "Sentence highlighting until word alignment is available.";
+    public string TimingSummary { get => _timingSummary; private set => Set(ref _timingSummary, value); }
 
     // ---- commands --------------------------------------------------------------------
 
@@ -435,8 +437,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     private void OnSnapshotChanged(PlaybackSnapshot snapshot)
     {
-        Dispatcher.UIThread.Post(() =>
+        void Apply()
         {
+            if (snapshot.Generation != Coordinator.Generation) return;
             Playback = snapshot;
             FollowSuspended = snapshot.FollowSuspended;
             if (snapshot.SegmentIndex >= 0 && snapshot.SegmentIndex < Transcript.Count)
@@ -454,7 +457,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             if (snapshot.Error is { } error) StatusMessage = error.Message;
             else if (snapshot.Message is { } message) StatusMessage = message;
             RefreshCommands();
-        });
+        }
+        if (Dispatcher.UIThread.CheckAccess()) Apply(); else Dispatcher.UIThread.Post(Apply);
     }
 
     private int SelectedTranscriptIndexCore
@@ -465,15 +469,25 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     private void OnActiveCueChanged(ActiveCue cue)
     {
-        Dispatcher.UIThread.Post(() =>
+        void Apply()
         {
+            if (cue.Generation != Coordinator.Generation) return;
+            TimingSummary = cue.Granularity == CueGranularity.Word ? "Word highlighting · aligned to speech"
+                : $"{cue.Granularity} highlighting" + (cue.Diagnostics.Count > 0 ? ": " + cue.Diagnostics[0] : "");
             InvalidateSurface?.Invoke();
             UpdateMathsReview(cue.SegmentId);
-        });
+        }
+        if (Dispatcher.UIThread.CheckAccess()) Apply(); else Dispatcher.UIThread.Post(Apply);
     }
 
     private void OnFollowRequested(ActiveCue cue, IReadOnlyList<PageRect> rects, int page)
-        => Dispatcher.UIThread.Post(() => CameraRequested?.Invoke(page, rects));
+    {
+        void Apply()
+        {
+            if (cue.Generation == Coordinator.Generation) CameraRequested?.Invoke(page, rects);
+        }
+        if (Dispatcher.UIThread.CheckAccess()) Apply(); else Dispatcher.UIThread.Post(Apply);
+    }
 
     private void UpdateMathsReview(string segmentId)
     {

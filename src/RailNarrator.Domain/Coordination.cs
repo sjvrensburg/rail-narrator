@@ -115,6 +115,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     private readonly ITtsProvider _tts;
     private readonly IAudioTransport _audio;
     private readonly ISpeechAssetStore? _assetStore;
+    private readonly IForcedAligner? _aligner;
     private readonly IMonotonicClock _clock;
     private readonly object _gate = new();
 
@@ -129,6 +130,8 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     private bool _followSuspended;
     private PlaybackSnapshot _snapshot = PlaybackSnapshot.Idle;
     private ActiveCue? _lastCue;
+    private ActiveCue? _pendingFollow;
+    private double _lastFollowAt = double.NegativeInfinity;
     private readonly Dictionary<string, PreparedClip> _prepared = [];
     // In-flight preparations, keyed by generation + content-addressed asset id. The lookahead loop
     // and the playback path both prepare the current segment; without this they synthesise and store
@@ -141,11 +144,13 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         IAudioTransport audio,
         ISpeechAssetStore? assetStore = null,
         IMonotonicClock? clock = null,
-        NarrationCoordinatorOptions? options = null)
+        NarrationCoordinatorOptions? options = null,
+        IForcedAligner? aligner = null)
     {
         _tts = tts ?? throw new ArgumentNullException(nameof(tts));
         _audio = audio ?? throw new ArgumentNullException(nameof(audio));
         _assetStore = assetStore;
+        _aligner = aligner;
         _clock = clock ?? new SystemMonotonicClock();
         _options = options ?? NarrationCoordinatorOptions.Default;
 
@@ -522,18 +527,30 @@ public sealed class NarrationCoordinator : IAsyncDisposable
                 var cachedPcm = await _assetStore.TryLoadPcmAsync(assetId, ct).ConfigureAwait(false);
                 if (cachedPcm is { } pcm && generation == Generation)
                 {
-                    lock (_gate) _prepared[segment.Id] = new PreparedClip(cached, pcm.ToArray());
-                    AttachTimings(segment, cached);
+                    var beforeAlignment = cached;
+                    cached = await AlignAssetAsync(segment, cached, pcm, ct).ConfigureAwait(false);
+                    if (generation != Generation) return;
+                    if (!ReferenceEquals(beforeAlignment, cached)) await _assetStore.StoreAsync(cached, pcm, ct).ConfigureAwait(false);
+                    lock (_gate)
+                    {
+                        if (generation != Generation) return;
+                        _prepared[segment.Id] = new PreparedClip(cached, pcm.ToArray());
+                        AttachTimings(segment, cached);
+                    }
                     return;
                 }
             }
         }
 
         int maxChars = caps.MaxTextChars > 0 ? caps.MaxTextChars : int.MaxValue;
-        string text = segment.SpokenText.Length > maxChars ? segment.SpokenText[..maxChars] : segment.SpokenText;
-        var warnings = segment.SpokenText.Length > maxChars
-            ? new List<string> { $"Text was truncated to the provider's {maxChars}-character limit." }
-            : new List<string>();
+        if (segment.SpokenText.Length > maxChars)
+        {
+            Publish(PlaybackState.Error, null, NarrationError.SpeechSynthesisFailed(
+                $"This passage exceeds the provider's {maxChars}-character limit. Split or shorten it before narration.", segment.Id));
+            return;
+        }
+        string text = segment.SpokenText;
+        var warnings = new List<string>();
 
         TtsSynthesisResult result;
         try
@@ -563,11 +580,11 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         }
 
         var knownAnchors = (_scheduler?.SourceMap.KnownAnchorIds ?? new HashSet<string>());
-        var timings = result.Timings ?? [];
+        var timings = BindTimings(segment, result.Timings ?? []);
         // Native timings are evidence, not truth: they only become cues after range, monotonicity,
         // coverage and confidence checks. Otherwise a dropped word shifts every later highlight.
         var validated = timings.Count > 0
-            ? TimedCueValidator.Validate(timings, result.FrameCount, segment.SpokenText, knownAnchors)
+            ? TimedCueValidator.Validate(timings, result.FrameCount, segment.SpokenText, knownAnchors, provenance: result.TimingProvenance)
             : new CueValidationResult([], [], 0);
 
         var asset = new SpeechAsset(
@@ -580,9 +597,15 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             ModelRevision: caps.ModelRevision,
             VoiceId: voice,
             SynthesisOptions: SynthesisOptionsToken(format),
-            Timings: validated.Accepted,
-            TimingProvenance: validated.Accepted.Count > 0 ? result.TimingProvenance : TimingProvenance.ClipBoundary,
-            ScriptRevision: segment.ScriptRevision);
+            Timings: validated.IsUsable ? validated.Accepted : [],
+            TimingProvenance: validated.IsUsable ? result.TimingProvenance : TimingProvenance.ClipBoundary,
+            ScriptRevision: segment.ScriptRevision)
+        {
+            PcmHash = CacheKey.Sha256Hex(result.Pcm.Span),
+            TimingWarnings = result.Warnings.Concat(validated.Rejected.Select(r => r.Reason)).ToArray(),
+        };
+
+        asset = await AlignAssetAsync(segment, asset, result.Pcm, ct).ConfigureAwait(false);
 
         if (_assetStore is not null)
             await _assetStore.StoreAsync(asset, result.Pcm, ct).ConfigureAwait(false);
@@ -591,8 +614,12 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         // The clip is held in memory as well as in the store. Playback must not depend on a cache
         // being configured, and re-reading from disk to play what was just synthesised is waste.
         // The lookahead bound is what keeps this from growing: only prepared segments are retained.
-        lock (_gate) _prepared[segment.Id] = new PreparedClip(asset, result.Pcm.ToArray());
-        AttachTimings(segment, asset, warnings);
+        lock (_gate)
+        {
+            if (generation != Generation) return;
+            _prepared[segment.Id] = new PreparedClip(asset, result.Pcm.ToArray());
+            AttachTimings(segment, asset, warnings);
+        }
     }
 
     private void AttachTimings(NarrationSegment segment, SpeechAsset asset, IReadOnlyList<string>? extra = null)
@@ -601,12 +628,15 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         if (scheduler is null) return;
         var known = scheduler.SourceMap.KnownAnchorIds;
         var diagnostics = new List<string>(extra ?? []);
+        diagnostics.AddRange(asset.TimingWarnings);
 
-        if (asset.HasTimings)
+        if (_options.RequestTimings && asset.HasTimings)
         {
-            var revalidated = TimedCueValidator.Validate(asset.Timings, asset.FrameCount, segment.SpokenText, known);
+            var revalidated = TimedCueValidator.Validate(BindTimings(segment, asset.Timings), asset.FrameCount, segment.SpokenText, known,
+                provenance: asset.TimingProvenance);
             diagnostics.AddRange(revalidated.Rejected.Select(r => $"cue rejected: {r.Reason}"));
-            scheduler.AttachClip(asset, revalidated.Accepted, diagnostics);
+            if (!revalidated.IsUsable) diagnostics.Add("Incomplete or invalid timing evidence; highlighting the sentence.");
+            scheduler.AttachClip(asset, revalidated.IsUsable ? revalidated.Accepted : [], diagnostics);
         }
         else
         {
@@ -614,6 +644,43 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             // never interpolated word boundaries, which would look measured and be invented.
             diagnostics.Add($"No sub-clip timing from provider ({asset.TimingProvenance}); highlighting the whole unit.");
             scheduler.AttachClip(asset, [], diagnostics);
+        }
+    }
+
+    private IReadOnlyList<TimedCue> BindTimings(NarrationSegment segment, IReadOnlyList<TimedCue> timings)
+        => timings.Select(c => c.SpokenRange is { } range
+            ? c with { AnchorIds = segment.SourceLinks.Where(l => l.SpokenRange.Overlaps(range))
+                .SelectMany(l => l.AnchorIds).Distinct().ToArray(), Granularity = segment.IsMaths ? CueGranularity.Equation : c.Granularity }
+            : c).ToArray();
+
+    private async Task<SpeechAsset> AlignAssetAsync(NarrationSegment segment, SpeechAsset asset, ReadOnlyMemory<byte> pcm, CancellationToken ct)
+    {
+        if (!_options.RequestTimings || segment.IsMaths || _aligner is null) return asset;
+        // The initial bundled dictionary/acoustic model is English. Never apply it to other languages.
+        if (!segment.Language.StartsWith("en", StringComparison.OrdinalIgnoreCase)) return asset;
+        string hash = CacheKey.Sha256Hex(pcm.Span);
+        try
+        {
+            if (!await _aligner.IsAvailableAsync(ct).ConfigureAwait(false))
+                return asset with { TimingWarnings = asset.TimingWarnings.Append("Local word aligner is unavailable.").Distinct().ToArray() };
+            string revision = CacheKey.ForAlignment(hash, "forced", _aligner.Revision, CacheKey.Sha256Hex(segment.SpokenText));
+            if (asset.AlignmentRevision == revision && asset.PcmHash == hash && asset.HasTimings) return asset;
+            var aligned = await _aligner.AlignAsync(pcm, asset.Format, segment.SpokenText, ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();
+            var cues = BindTimings(segment, aligned.Words.Select(w => new TimedCue(w.StartSample, w.EndSample,
+                w.SpokenRange, [], CueGranularity.Word, w.Confidence, [])).ToArray());
+            var validated = TimedCueValidator.Validate(cues, asset.FrameCount, segment.SpokenText,
+                segment.SourceLinks.SelectMany(l => l.AnchorIds).ToHashSet(), provenance: TimingProvenance.ForcedAlignment);
+            if (!validated.IsUsable) throw new InvalidDataException("Word alignment failed script coverage, range or confidence checks.");
+            asset = asset with { Timings = validated.Accepted, TimingProvenance = TimingProvenance.ForcedAlignment,
+                AlignmentRevision = revision, PcmHash = hash, TimingWarnings = aligned.Warnings };
+            return asset;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            return asset with { Timings = [], TimingProvenance = TimingProvenance.ClipBoundary,
+                AlignmentRevision = null, PcmHash = hash, TimingWarnings = ["Word alignment unavailable: " + ex.Message] };
         }
     }
 
@@ -745,11 +812,13 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         if (_plan is null || _scheduler is null) return;
         if (_audio.State is not PlaybackState.Playing) return;
         RaiseCueForCurrentPosition();
+        if (_pendingFollow is { } follow && _clock.NowSeconds - _lastFollowAt >= 0.12) RaiseFollow(follow);
         PublishSnapshotOnly();
     }
 
     private void RaiseCueForCurrentPosition()
     {
+        long generation = Generation;
         var scheduler = _scheduler;
         var plan = _plan;
         if (scheduler is null || plan is null) return;
@@ -766,13 +835,18 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         var asset = prepared.Asset;
 
         long sample = asset.Format.ToFrames(_audio.PositionSeconds);
-        var cue = scheduler.Resolve(segmentId, sample);
-
-        bool changed = _lastCue is null
-            || _lastCue.SegmentId != cue.SegmentId
-            || _lastCue.Cue?.StartSample != cue.Cue?.StartSample
-            || _lastCue.Granularity != cue.Granularity;
-        _lastCue = cue;
+        var cue = scheduler.Resolve(segmentId, sample) with { Generation = generation };
+        bool changed;
+        lock (_gate)
+        {
+            if (generation != Generation) return;
+            changed = _lastCue is null
+                || _lastCue.Generation != cue.Generation
+                || _lastCue.SegmentId != cue.SegmentId
+                || _lastCue.Cue?.StartSample != cue.Cue?.StartSample
+                || _lastCue.Granularity != cue.Granularity;
+            _lastCue = cue;
+        }
         if (!changed) return;
 
         ActiveCueChanged?.Invoke(cue);
@@ -781,6 +855,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
 
     private void RaiseFollowForCurrentCue()
     {
+        _lastFollowAt = double.NegativeInfinity;
         if (_lastCue is { } cue) RaiseFollow(cue);
     }
 
@@ -788,6 +863,8 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     {
         if (_options.FollowMode == FollowMode.Off) return;
         if (FollowSuspended) return;
+        if (cue.Generation != Generation) return;
+        if (_clock.NowSeconds - _lastFollowAt < 0.12) { _pendingFollow = cue; return; }
         var scheduler = _scheduler;
         if (scheduler is null) return;
 
@@ -797,6 +874,8 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         int page = pages[0];
         var rects = rectsByPage.TryGetValue(page, out var r) ? r : [];
         if (rects.Count == 0) return;
+        _lastFollowAt = _clock.NowSeconds;
+        _pendingFollow = null;
         FollowRequested?.Invoke(cue, rects, page);
     }
 
@@ -821,6 +900,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             string? segmentId = plan is not null && index >= 0 && index < plan.SegmentCount ? plan.Segments[index].Id : null;
             snap = _snapshot with
             {
+                Generation = Generation,
                 SegmentId = segmentId,
                 SegmentIndex = Math.Max(0, index),
                 SegmentCount = plan?.SegmentCount ?? 0,
@@ -841,8 +921,14 @@ public sealed class NarrationCoordinator : IAsyncDisposable
 
     private long AdvanceGeneration()
     {
-        _inflight.Clear();
-        return Interlocked.Increment(ref _generation);
+        lock (_gate)
+        {
+            _inflight.Clear();
+            _lastCue = null;
+            _pendingFollow = null;
+            _lastFollowAt = double.NegativeInfinity;
+            return Interlocked.Increment(ref _generation);
+        }
     }
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
@@ -860,6 +946,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         _audio.Underflow -= OnUnderflow;
         _audio.DeviceFailed -= OnDeviceFailed;
         _prepareCts?.Dispose();
+        if (_aligner is IAsyncDisposable disposableAligner) await disposableAligner.DisposeAsync().ConfigureAwait(false);
     }
 }
 

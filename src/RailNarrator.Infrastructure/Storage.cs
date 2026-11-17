@@ -91,6 +91,11 @@ public sealed record RailNarratorSettings
     public double? ZonosLoudnessLufs { get; init; } = -18;
     public string? ZonosExecutable { get; init; }
     public string? ZonosModelDirectory { get; init; }
+    public bool WordHighlighting { get; init; } = true;
+    public string? MfaExecutable { get; init; }
+    public string? MfaDictionaryPath { get; init; }
+    public string? MfaAcousticModelPath { get; init; }
+    public string MfaRuntimeRevision { get; init; } = "3.3.9";
 
     public MathMode MathMode { get; init; } = MathMode.NaturalFaithful;
     public MathFallbackPolicy MathFallback { get; init; } = MathFallbackPolicy.AnnounceUnreadable;
@@ -289,7 +294,8 @@ public sealed class DiskSpeechAssetStore : ISpeechAssetStore
                 long frames = bytes.Length / Math.Max(1, asset.Format.BytesPerFrame);
                 // Not a ternary: byte[] converts implicitly to ReadOnlyMemory<byte>, which would
                 // turn the null arm into a default (empty) memory instead of a null result.
-                if (frames != asset.FrameCount) return null;
+                if (frames != asset.FrameCount || bytes.Length % Math.Max(1, asset.Format.BytesPerFrame) != 0) return null;
+                if (asset.PcmHash is { } hash && CacheKey.Sha256Hex(bytes) != hash) return null;
                 return bytes;
             }
             catch { return null; }

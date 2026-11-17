@@ -158,10 +158,14 @@ public sealed record CueValidationResult(
     IReadOnlyList<(TimedCue Cue, string Reason)> Rejected,
     double CoverageFraction)
 {
-    public bool IsUsable => Accepted.Count > 0;
+    public double WordCoverageFraction { get; init; }
+    public bool HasWordCues { get; init; }
+    public bool IsUsable => Accepted.Count > 0 && !ShouldFallBackToCoarse;
 
     /// <summary>True when rejection lost enough of the clip that coarse highlighting is the honest answer.</summary>
-    public bool ShouldFallBackToCoarse => CoverageFraction < 0.9;
+    public bool ShouldFallBackToCoarse => HasWordCues
+        ? WordCoverageFraction < 1.0 || Rejected.Count > 0
+        : CoverageFraction < 0.9;
 }
 
 /// <summary>
@@ -195,7 +199,8 @@ public static class TimedCueValidator
         long frameCount,
         string spokenText,
         IReadOnlySet<string> knownAnchorIds,
-        bool requireMonotonic = true)
+        bool requireMonotonic = true,
+        TimingProvenance provenance = TimingProvenance.None)
     {
         ArgumentNullException.ThrowIfNull(cues);
         ArgumentNullException.ThrowIfNull(spokenText);
@@ -205,6 +210,8 @@ public static class TimedCueValidator
         var rejected = new List<(TimedCue, string)>();
         long previousEnd = 0;
         bool havePrevious = false;
+        int previousTextEnd = 0;
+        var words = SpokenWord.Tokenize(spokenText);
 
         foreach (var cue in cues.OrderBy(c => c.StartSample))
         {
@@ -214,11 +221,17 @@ public static class TimedCueValidator
                 accepted.Add(cue);
                 previousEnd = cue.EndSample;
                 havePrevious = true;
+                if (cue.SpokenRange is { } range) previousTextEnd = range.End;
             }
             else rejected.Add((cue, reason));
         }
 
-        return new CueValidationResult(accepted, rejected, Coverage(accepted, frameCount));
+        return new CueValidationResult(accepted, rejected, Coverage(accepted, frameCount))
+        {
+            HasWordCues = cues.Any(c => c.Granularity == CueGranularity.Word),
+            WordCoverageFraction = words.Count == 0 ? 0 : words.Count(w => accepted.Any(c =>
+                c.SpokenRange is { } r && r.Start <= w.Range.Start && r.End >= w.Range.End)) / (double)words.Count,
+        };
 
         string? Reject(TimedCue cue)
         {
@@ -230,10 +243,14 @@ public static class TimedCueValidator
             if (unknown.Count > 0) return $"cue cites unknown anchor id(s) {string.Join(", ", unknown)}";
             if (cue.SpokenRange is { } r)
             {
-                if (r.Start < 0 || r.End > spokenText.Length) return $"spoken range {r} exceeds script length {spokenText.Length}";
+                if (r.Start < 0 || r.Length <= 0 || (long)r.Start + r.Length > spokenText.Length) return $"spoken range {r} exceeds script length {spokenText.Length}";
+                if (cue.Granularity == CueGranularity.Word && (r.Start < previousTextEnd || !words.Any(w => w.Range == r)))
+                    return "word range repeats, goes backwards, or does not match a script token";
             }
-            if (cue.Confidence is { } c && c < MinimumConfidence) return $"confidence {c:F2} is below {MinimumConfidence}";
-            if (cue.Granularity == CueGranularity.Word && cue.Confidence is null)
+            if (cue.Granularity == CueGranularity.Word && cue.SpokenRange is null) return "word cue has no script range";
+            if (cue.Confidence is { } c && (!double.IsFinite(c) || c < MinimumConfidence || c > 1)) return $"confidence {c:F2} is outside the accepted range";
+            if (cue.Granularity == CueGranularity.Word && cue.Confidence is null
+                && provenance is not (TimingProvenance.NativeDuration or TimingProvenance.ForcedAlignment))
                 return "word granularity claimed with no confidence value";
             if (requireMonotonic && havePrevious && cue.StartSample < previousEnd)
                 return $"starts at {cue.StartSample}, before the previous cue's end {previousEnd}";
@@ -311,6 +328,9 @@ public sealed record SpeechAsset(
     TimingProvenance TimingProvenance,
     int ScriptRevision)
 {
+    public string? AlignmentRevision { get; init; }
+    public string? PcmHash { get; init; }
+    public IReadOnlyList<string> TimingWarnings { get; init; } = [];
     public double DurationSeconds => Format.ToSeconds(FrameCount);
 
     public AudioTimebase Timebase => new(Format.SampleRate, Id);

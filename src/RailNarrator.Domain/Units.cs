@@ -203,8 +203,8 @@ public static class RunningElementDetector
 /// boundary keep every one of its disjoint source regions instead of being truncated at the break.
 /// </para>
 /// <para>
-/// Each unit's anchors hold one rectangle set per source line, never a union. A sentence spanning
-/// two columns therefore highlights two rectangles, not one covering the gutter and both columns.
+/// Prose anchors describe word fragments within a line; equation anchors retain disjoint line
+/// rectangles. A sentence spanning columns never highlights a union covering the gutter.
 /// </para>
 /// </remarks>
 public sealed class ReadingUnitBuilder
@@ -750,7 +750,7 @@ public sealed class ReadingUnitBuilder
             glyphs.Add((g, i));
         }
 
-        var anchors = BuildAnchors(glyphs, run, text, range, snapshot, seq);
+        var anchors = BuildAnchors(glyphs, snapshot, seq, kind);
         var (original, fragments, lineBreakOffsets) = ExtractOriginal(glyphs, anchors);
 
         var warnings = new List<string>();
@@ -797,111 +797,79 @@ public sealed class ReadingUnitBuilder
     {
         if (glyphs.Count == 0) return ("", [], []);
 
-        var anchorByPage = anchors.ToDictionary(a => a.PageIndex, a => a.AnchorId);
         var sb = new System.Text.StringBuilder(glyphs.Count);
         var fragments = new List<UnitSourceFragment>();
         var breaks = new List<int>();
-
-        int fragmentStart = 0;
-        string? currentAnchor = null;
-        // LineOrdinal is per-page, so on its own it collides across pages (every 1-line page is
-        // line 0) and a cross-page sentence lost its line-break space. Key on the same
-        // (page, ordinal, line id) triple BuildAnchors groups by.
         (int PageIndex, int LineOrdinal, string? LineId)? lastLine = null;
-
         foreach (var (g, _) in glyphs)
         {
-            string anchor = anchorByPage.GetValueOrDefault(g.PageIndex) ?? "";
-            bool lineChanged = lastLine is { } ll && ll != (g.PageIndex, g.LineOrdinal, g.LineId);
-            if (lineChanged)
+            var line = (g.PageIndex, g.LineOrdinal, g.LineId);
+            if (lastLine is { } previous && previous != line)
             {
                 breaks.Add(sb.Length);
                 sb.Append(' ');
             }
-
-            // Close the previous fragment when the anchor changes. The inserted space is attributed
-            // to the fragment that follows it.
-            if (currentAnchor is { } prev && prev != anchor && sb.Length > fragmentStart)
-            {
-                int end = lineChanged ? sb.Length - 1 : sb.Length;
-                if (end > fragmentStart) fragments.Add(new UnitSourceFragment(TextRange.FromBounds(fragmentStart, end), prev, PageOf(anchors, prev)));
-                fragmentStart = end;
-            }
-            else if (currentAnchor is null || lineChanged)
-            {
-                if (currentAnchor is not null && sb.Length > fragmentStart)
-                    fragments.Add(new UnitSourceFragment(TextRange.FromBounds(fragmentStart, sb.Length), currentAnchor, PageOf(anchors, currentAnchor)));
-                fragmentStart = lineChanged ? Math.Max(0, sb.Length - 1) : sb.Length;
-            }
-
+            int offset = sb.Length;
             sb.Append(g.Character);
-            currentAnchor = anchor;
-            lastLine = (g.PageIndex, g.LineOrdinal, g.LineId);
+            // SourceIndex comes from extraction, not a guessed character count. Spaces and
+            // line breaks remain in the text but need no highlight geometry of their own.
+            var anchor = anchors.FirstOrDefault(a => a.PageIndex == g.PageIndex
+                && a.SourceCharRange is { } r && r.Contains(g.SourceIndex));
+            if (anchor is not null)
+                fragments.Add(new UnitSourceFragment(new TextRange(offset, 1), anchor.AnchorId, g.PageIndex));
+            lastLine = line;
         }
-
-        if (currentAnchor is { } last && sb.Length > fragmentStart)
-            fragments.Add(new UnitSourceFragment(TextRange.FromBounds(fragmentStart, sb.Length), last, PageOf(anchors, last)));
-
-        return (sb.ToString().Trim(), fragments, breaks);
+        string raw = sb.ToString();
+        int trim = raw.Length - raw.TrimStart().Length;
+        string text = raw.Trim();
+        return (text,
+            fragments.Where(f => f.OriginalRange.Start >= trim && f.OriginalRange.End <= trim + text.Length)
+                .Select(f => f with { OriginalRange = new TextRange(f.OriginalRange.Start - trim, f.OriginalRange.Length) }).ToArray(),
+            breaks.Where(i => i >= trim && i < trim + text.Length).Select(i => i - trim).ToArray());
     }
 
-    private static int PageOf(IReadOnlyList<SourceAnchor> anchors, string anchorId)
-        => anchors.FirstOrDefault(a => a.AnchorId == anchorId)?.PageIndex ?? 0;
-
-    private IReadOnlyList<SourceAnchor> BuildAnchors(
-        List<(RunGlyph Glyph, int RunIndex)> glyphs, ReadingRun run, string text, TextRange range,
-        ExtractionSnapshot snapshot, int seq)
+    private static IReadOnlyList<SourceAnchor> BuildAnchors(
+        List<(RunGlyph Glyph, int RunIndex)> glyphs, ExtractionSnapshot snapshot, int seq, ReadingUnitKind kind)
     {
-        if (glyphs.Count == 0) return [];
-
-        // Group by page, then by line, so each line contributes its own tight rectangle. A unit that
-        // spans lines, columns or pages therefore keeps every disjoint region.
-        var anchors = new List<SourceAnchor>();
-        int anchorSeq = 0;
-        foreach (var pageGroup in glyphs.GroupBy(x => x.Glyph.PageIndex).OrderBy(x => x.Key))
+        var groups = new List<List<RunGlyph>>();
+        bool maths = kind is ReadingUnitKind.InlineMath or ReadingUnitKind.DisplayMath;
+        if (maths)
         {
-            var page = snapshot.Page(pageGroup.Key);
-            var rects = new List<PageRect>();
-            var lineIds = new List<string>();
-            string? blockId = null;
-
-            foreach (var lineGroup in pageGroup.GroupBy(x => (x.Glyph.LineOrdinal, x.Glyph.LineId)).OrderBy(x => x.Key.LineOrdinal))
+            groups.AddRange(glyphs.GroupBy(x => x.Glyph.PageIndex)
+                .Select(page => page.Select(x => x.Glyph).ToList()));
+        }
+        else
+        {
+            List<RunGlyph>? word = null;
+            foreach (var (g, _) in glyphs)
             {
-                var lineRects = lineGroup.Select(x => x.Glyph.Rect).Where(r => !r.IsEmpty).ToList();
-                if (lineRects.Count > 0)
+                if (char.IsWhiteSpace(g.Character)) { word = null; continue; }
+                if (word is null || word[^1].PageIndex != g.PageIndex || word[^1].LineOrdinal != g.LineOrdinal
+                    || word[^1].LineId != g.LineId)
                 {
-                    // One tight rectangle per source line. Lines are unioned only within a line, so a
-                    // unit spanning two columns keeps two rectangles and never covers the gutter.
-                    var tight = lineRects[0];
-                    for (int i = 1; i < lineRects.Count; i++) tight = tight.Union(lineRects[i]);
-                    rects.Add(tight);
+                    word = [];
+                    groups.Add(word);
                 }
-                if (lineGroup.Key.LineId is { } lid && !lineIds.Contains(lid)) lineIds.Add(lid);
-                blockId ??= lineGroup.First().Glyph.BlockId;
+                word.Add(g);
             }
-
-            // Source character range within the page's own text, taken from the glyphs themselves.
-            // Reconstructing it by counting positions would be wrong: a text layer carries
-            // characters that have no glyph, so offsets in it are not contiguous.
-            var pageChars = pageGroup.Select(x => x.Glyph.SourceIndex).ToList();
-            TextRange? sourceRange = pageChars.Count > 0
-                ? TextRange.FromBounds(pageChars.Min(), pageChars.Max() + 1)
-                : null;
-
-            if (rects.Count == 0 && sourceRange is null) continue;
-
+        }
+        var anchors = new List<SourceAnchor>();
+        foreach (var group in groups)
+        {
+            if (group.Count == 0) continue;
+            var rects = group.GroupBy(g => (g.LineOrdinal, g.LineId))
+                .Select(line => PageRect.UnionAll(line.Select(g => g.Rect).Where(r => !r.IsEmpty).ToArray()))
+                .Where(r => r.HasValue).Select(r => r!.Value).ToArray();
             anchors.Add(new SourceAnchor(
-                AnchorId: $"a{seq:D5}-{anchorSeq++}",
+                AnchorId: $"a{seq:D5}-{anchors.Count}",
                 Extraction: snapshot.Identity,
-                PageIndex: pageGroup.Key,
-                BlockId: blockId ?? "",
-                LineIds: lineIds,
-                SourceCharRange: sourceRange,
+                PageIndex: group[0].PageIndex,
+                BlockId: group[0].BlockId ?? "",
+                LineIds: group.Select(g => g.LineId).OfType<string>().Distinct().ToArray(),
+                SourceCharRange: TextRange.FromBounds(group.Min(g => g.SourceIndex), group.Max(g => g.SourceIndex) + 1),
                 Rects: rects,
                 Frame: snapshot.Frame,
-                Provenance: pageGroup.Any(x => x.Glyph.FromOcr)
-                    ? ExtractionProvenance.Ocr
-                    : ExtractionProvenance.NativeText));
+                Provenance: group.Any(g => g.FromOcr) ? ExtractionProvenance.Ocr : ExtractionProvenance.NativeText));
         }
         return anchors;
     }

@@ -26,7 +26,7 @@ spoken script range   ──► original PDF source anchors
 
 ## Status
 
-Implemented, built and tested. **174 automated tests pass**, the whole solution
+Implemented, built and tested. **the regression suite passes**, the whole solution
 builds with **0 warnings**, and the end-to-end path has been run for real:
 
 ```
@@ -44,9 +44,7 @@ before trusting any claim here.
 ```bash
 # Build and test
 dotnet build RailNarrator.slnx -c Release
-for p in Domain Pdf Speech Audio Inference; do
-  dotnet test tests/RailNarrator.$p.Tests -c Release
-done
+dotnet test RailNarrator.slnx -c Release
 
 # The model is NOT bundled and NOT fetched implicitly. See docs/model-manifest.json.
 mkdir -p ~/.local/share/rail-narrator/models
@@ -57,13 +55,17 @@ curl -L -o ~/.local/share/rail-narrator/models/kokoro-fp16.onnx \
 dotnet run --project src/RailNarrator.App -c Release -- path/to/document.pdf
 ```
 
+For word-by-word English prose highlighting, run `bash tools/setup-word-alignment.sh`
+after installing micromamba. See [setup and timing verification](docs/word-highlighting.md).
+
 Native dependency: `libportaudio.so.2` (Fedora `portaudio`, Debian/Ubuntu
 `libportaudio2`). Everything else — PDFium, Skia, ONNX Runtime, PP-OCRv5 OCR
 models, Kokoro voices — is bundled by the NuGet packages.
 
 ## Headless verification harness
 
-`rail-narrator-smoke` is how every claim in this repository was measured. It needs
+`rail-narrator-smoke` supplies headless extraction and synthesis checks; tests also
+cover alignment and native audio playback. It needs
 no display and no sound card for most commands.
 
 ```bash
@@ -85,14 +87,14 @@ $S all --kokoro-model <path>         # whole chain, printed pass/fail summary
 |---|---|---|
 | `RailNarrator.Domain` | Anchors, reading units, plans, source maps, cue scheduling, playback state, follow policy, caching keys | *nothing* |
 | `RailNarrator.Pdf` | RailReaderCore adapter: extraction snapshots, coordinate transforms, hit-testing, overlays | Core, SkiaSharp |
-| `RailNarrator.Speech` | `ITtsProvider` + Kokoro and ZONOS3 adapters, PCM/WAV codecs | Domain, KokoroSharp |
+| `RailNarrator.Speech` | Kokoro and ZONOS3 adapters, local MFA word alignment, PCM/WAV codecs | Domain, KokoroSharp |
 | `RailNarrator.Audio` | Output device, resampling, pitch-preserving speed, media clock | Domain |
 | `RailNarrator.Inference` | Maths transcription, verbalisation, closed-schema validation, local rule reader | Domain, Core.Vlm |
 | `RailNarrator.Infrastructure` | XDG settings, caches, model manifest and downloads, sidecar lifecycle | Domain |
 | `RailNarrator.App` | Avalonia views, commands, Skia-backed PDF surface | all of the above |
 
-`RailNarrator.Domain` has no dependencies at all. That is what lets 75 of the 171
-tests run with no GPU, no network, no model and no sound card.
+`RailNarrator.Domain` has no dependencies. Its tests run without a GPU, network,
+model or sound card.
 
 ## Design decisions
 
@@ -100,8 +102,8 @@ Recorded in `docs/decisions/`, each with the measurement that drove it:
 
 - **[ADR-0001](docs/decisions/ADR-0001-stack-and-core-pin.md)** — stack, and why RailReaderCore is pinned to published 0.89.0 packages
 - **[ADR-0002](docs/decisions/ADR-0002-speech-provider.md)** — Kokoro default, ZONOS3 alternative; both measured, neither inert
-- **[ADR-0003](docs/decisions/ADR-0003-audio-backend.md)** — PortAudio blocking interface and the derived presented-frame clock
-- **[ADR-0004](docs/decisions/ADR-0004-alignment-policy.md)** — clip-boundary highlighting ships; word timing is capability-gated
+- **[ADR-0003](docs/decisions/ADR-0003-audio-backend.md)** — PortAudio callback DAC timestamps and the presented-frame clock
+- **[ADR-0004](docs/decisions/ADR-0004-alignment-policy.md)** — local word alignment with validated sentence/equation fallback
 - **[ADR-0005](docs/decisions/ADR-0005-geometry-and-word-spacing.md)** — coordinate frames, and why word spacing comes from ink gaps
 
 ## Guarantees worth stating plainly
@@ -137,7 +139,10 @@ been through a clean-machine test.
 
 See `docs/status.md` for the full list. The headline items:
 
-- Word-level highlighting is unavailable (no timing source on this machine — ADR-0004).
+- Word highlighting needs the optional local alignment runtime and English models.
+  Missing dictionary words or invalid intervals trigger sentence highlighting.
+- Acoustic word-boundary error and audible-to-visible latency still need corpus
+  and loopback measurements; no millisecond accuracy guarantee is claimed.
 - Real audible playback and the full GUI interaction loop have not been verified by
   a human; the audio path is verified by measurement and by a controllable fake device.
 - Scanned-document OCR is wired and wired to real PP-OCRv5 models, but has not been

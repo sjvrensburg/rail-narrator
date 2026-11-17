@@ -8,5 +8,6 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="KokoroSharp.CPU" />
+    <EmbeddedResource Include="alignment_worker.py" />
   </ItemGroup>
 </Project>

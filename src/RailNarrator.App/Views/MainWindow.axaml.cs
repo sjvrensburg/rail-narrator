@@ -48,12 +48,15 @@ public partial class MainWindow : Window
         };
         _viewModel.Coordinator.ActiveCueChanged += cue =>
         {
-            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            void Apply()
             {
+                if (cue.Generation != _viewModel.Coordinator.Generation) return;
                 var pages = _viewModel.Coordinator.Scheduler?.SourceMap.HighlightRectsByPage(cue.AnchorIds);
                 if (pages is null) { Surface.ClearHighlight(); return; }
                 Surface.SetHighlightMultiPage(pages);
-            });
+            }
+            if (Avalonia.Threading.Dispatcher.UIThread.CheckAccess()) Apply();
+            else Avalonia.Threading.Dispatcher.UIThread.Post(Apply);
         };
         Closing += OnClosing;
     }
