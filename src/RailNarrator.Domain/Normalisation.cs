@@ -288,6 +288,13 @@ public static class TextNormaliser
                 i += m.Length;
                 continue;
             }
+            if (EnglishNumbers.At(input, i) is { } number)
+            {
+                mappings.Add(new TextMapping(new TextRange(sb.Length, number.Words.Length), new TextRange(i, number.Length)));
+                sb.Append(number.Words);
+                i += number.Length;
+                continue;
+            }
             mappings.Add(new TextMapping(new TextRange(sb.Length, 1), new TextRange(i, 1)));
             sb.Append(input[i]);
             i++;
@@ -333,6 +340,37 @@ public static class TextNormaliser
             composed.Add(new TextMapping(m2.Output, TextRange.FromBounds(start, end)));
         }
         return new TransformedText(second.Text, composed, first.SourceText);
+    }
+}
+
+/// <summary>English prose numbers are expanded before synthesis, so aligner and TTS see the same words.</summary>
+internal static class EnglishNumbers
+{
+    private static readonly string[] Small = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+        "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"];
+    private static readonly string[] Tens = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"];
+    public static (int Length, string Words)? At(string text, int offset)
+    {
+        if (!(char.IsAsciiDigit(text[offset]) || text[offset] is '-' or '+')
+            || offset > 0 && (char.IsLetterOrDigit(text[offset - 1]) || text[offset - 1] is '.' or '_')) return null;
+        var match = System.Text.RegularExpressions.Regex.Match(text[offset..], @"^[+-]?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?");
+        if (!match.Success || offset + match.Length < text.Length && (char.IsLetterOrDigit(text[offset + match.Length]) || text[offset + match.Length] == '_')) return null;
+        string value = match.Value.Replace(",", "", StringComparison.Ordinal);
+        string prefix = value[0] == '-' ? "minus " : value[0] == '+' ? "plus " : "";
+        value = value.TrimStart('-', '+');
+        var parts = value.Split('.');
+        string words = parts[0].Length > 1 && parts[0][0] == '0' || !long.TryParse(parts[0], out var n) || n >= 1_000_000_000_000
+            ? string.Join(" ", parts[0].Select(c => Small[c - '0'])) : Integer(n);
+        if (parts.Length == 2) words += " point " + string.Join(" ", parts[1].Select(c => Small[c - '0']));
+        return (match.Length, prefix + words);
+    }
+    private static string Integer(long n)
+    {
+        if (n < 20) return Small[n];
+        if (n < 100) return Tens[n / 10] + (n % 10 == 0 ? "" : " " + Small[n % 10]);
+        foreach (var (scale, label) in new[] { (1_000_000_000L, "billion"), (1_000_000L, "million"), (1000L, "thousand"), (100L, "hundred") })
+            if (n >= scale) return Integer(n / scale) + " " + label + (n % scale == 0 ? "" : " " + Integer(n % scale));
+        throw new InvalidOperationException();
     }
 }
 

@@ -1,74 +1,52 @@
-# ADR-0003: PortAudio blocking interface, with a derived presented-frame clock
+# ADR-0003: PortAudio callback output with a DAC presentation clock
 
-**Status:** accepted · **Date:** 2026-11-17
+**Status:** accepted, revised after timing review · **Date:** 2026-11-17
 
 ## Decision
 
-Use **PortAudio** (`libportaudio.so.2`) through a hand-written P/Invoke binding,
-driving the **blocking** interface from a dedicated writer thread. The media clock
-is
+Use PortAudio's callback interface with a bounded, preallocated PCM ring. Keep
+resampling, WSOLA, allocation and application events outside the callback. Record
+`outputBufferDacTime` for every block and count only actual content frames, excluding
+underrun silence. At display refresh, compare `Pa_GetStreamTime` with those block
+records to derive the presented content position.
 
-```
-presentedFrames = framesWritten − (bufferCapacity − Pa_GetStreamWriteAvailable())
-```
+`Pa_GetStreamInfo().outputLatency` is reported in diagnostics. It is not subtracted
+again: callback DAC timestamps already describe presentation time. Pause aborts the
+stream and rewinds the ring consumer to the presented position, retaining unheard
+samples. Seek flushes the ring and starts a new clock epoch. Completion waits for
+presentation of the final content frame.
 
-## Context: this was a spike, and the spike changed the design
+## Correction to the original investigation
 
-The brief requires a Linux-capable backend with a *measurable consumed/presented*
-position, validated by a short spike before committing. Three findings on the
-reference machine (PortAudio V19.7.0-devel, ALSA host, Fedora 44):
+The original spike declared `Pa_GetStreamTime` as an integer-returning function
+with an output parameter. Its actual signature returns a `double` directly. The
+claim that this clock was unusable was therefore invalid. With the corrected
+binding, a measured 232.431 ms wall interval advanced the stream clock 232.428 ms.
+The stream info reported 34.83 ms output latency in that probe.
 
-1. **`Pa_GetStreamTime` is unusable.** In callback mode it returned `0.0000 s`
-   while the callback had already delivered `0.3947 s` of audio. A clock pinned to
-   it would never move.
-2. **`Pa_GetStreamLatency` is not exported at all** by the shipped library —
-   `EntryPointNotFoundException`. Latency cannot be queried that way.
-3. **The blocking interface does report consumption.** `Pa_WriteStream` blocks in
-   real time (writing 0.44 s took 0.395 s of wall clock — exactly the 46.4 ms
-   buffer depth less), and `Pa_GetStreamWriteAvailable` oscillated 517→6 as the
-   device drained 512-frame chunks.
+There is no `Pa_GetStreamLatency` entry point; latency is in `PaStreamInfo`.
+The former blocking-backend result of -0.5 ms versus wall time measured queue
+consumption, not acoustic presentation. It did not establish sub-millisecond
+highlight synchronisation and is superseded by this design.
 
-A fourth finding shaped the resampler: `Pa_OpenDefaultStream` at **24 kHz fails
-with `paInvalidSampleRate`** on a device whose default rate is 44.1 kHz, because
-the ALSA host does not resample. Kokoro synthesises at 24 kHz, so conversion is
-mandatory, not optional.
+## Source-audio position
 
-## Why blocking rather than callback
+Kokoro's 24 kHz audio is resampled to the selected device rate. WSOLA returns both
+samples and a monotonic map of rendered output frames to source frames. In overlap
+regions this map uses the window-weighted source positions; it is an estimate of
+correspondence, not a claim that overlapped audio has a unique source instant.
+Seek and rate changes preserve source position using the map. Final grains include
+the actual clip tail, and output duration includes the specified rate even for
+short clips. A rate change stops the producer before flushing and swapping buffers.
 
-- It yields a real presented-frame count, which the callback path does not here.
-- Resampling and time-stretching stay out of the audio callback, so no allocation
-  or GC pressure on a real-time thread.
-- Seeking is a flush plus a cursor reset.
+## Verification and limits
 
-Cost: a writer thread blocks inside `Pa_WriteStream`. Acceptable — it is one
-thread, and backpressure is exactly what bounds memory.
+Deterministic tests cover delayed DAC presentation, underrun silence, jitter,
+clock reset, render lengths, source mapping, pitch, and tail preservation. The
+opt-in real-device test exercises silent playback, pause, seek, a 1.5x rate change,
+final drain and stop against the native backend.
 
-## Verified in application
-
-`rail-narrator-smoke audio` on the real device: 6 outputs enumerated with rates,
-channel counts and advertised latency; opened device 0 at 44100 Hz / 2 ch;
-measured buffer capacity **3072 frames (69.7 ms)**; wrote 36352 frames (0.824 s)
-in 0.767 s wall; presented 33797 frames (0.766 s) with 2555 still queued.
-**Clock error versus wall clock: −0.5 ms**, and the queued 2555 frames are
-reported separately rather than counted as heard.
-
-## Residual limits, stated rather than hidden
-
-`ReportedLatencySeconds` is `null` because the backend cannot supply it. The clock
-therefore carries a residual uncertainty of one device period plus the hardware
-buffer — about 12–70 ms measured here. `AudioClockDiagnostics` exposes written,
-presented and queued frames so that error can be measured rather than assumed
-away. The device's own advertised `defaultLowOutputLatency` (8.7 ms) is surfaced
-in enumeration for the same reason.
-
-## Alternatives rejected
-
-- **NAudio** — output drivers are Windows-only; the brief names this trap explicitly.
-- **KokoroSharp's OpenAL playback** — game-oriented, and would put the clock
-  outside this application's control.
-- **libpulse directly** — viable, but Linux-only and a larger binding surface for
-  no gain over PortAudio, which also abstracts the PipeWire/Pulse/ALSA choice.
-
-Note: PipeWire *is* present on this machine (`libpipewire-0.3.so.0`), so
-PortAudio's ALSA path could later be replaced by a PipeWire client for better
-latency reporting. The `IAudioOutputDevice` seam makes that a contained change.
+These tests do not establish audible-to-visible latency. PortAudio host timestamps,
+output hardware, WSOLA overlap, UI scheduling and display refresh all contribute.
+A loopback/display measurement is still required for an end-to-end accuracy bound.
+See [word highlighting](../word-highlighting.md) for the verification procedure.

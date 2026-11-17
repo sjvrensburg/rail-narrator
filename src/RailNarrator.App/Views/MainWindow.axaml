@@ -178,6 +178,7 @@
         <Expander Grid.Row="2" Header="Diagnostics and notes" Margin="0,8,0,0" IsExpanded="False">
           <StackPanel Spacing="4">
             <TextBlock Text="{Binding SpeechProviderSummary, StringFormat=Speech providers: {0}}" FontSize="11" />
+            <TextBlock Text="{Binding TimingSummary}" FontSize="11" TextWrapping="Wrap" />
             <TextBlock Text="{Binding MathEndpointSummary, StringFormat=Text LLM: {0}}" FontSize="11" TextWrapping="Wrap" />
             <TextBlock Text="{Binding VisionEndpointSummary, StringFormat=Vision: {0}}" FontSize="11" TextWrapping="Wrap" />
             <TextBlock Text="{Binding CacheBytes, StringFormat=Speech cache: {0} bytes}" FontSize="11" />

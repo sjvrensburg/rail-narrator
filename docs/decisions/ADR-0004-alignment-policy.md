@@ -1,91 +1,56 @@
-# ADR-0004: Clip-boundary highlighting ships; word timing is capability-gated and not currently available
+# ADR-0004: Local forced alignment for word highlighting, with validated fallback
 
-**Status:** accepted · **Date:** 2026-11-17
+**Status:** accepted, revised after timing review · **Date:** 2026-11-17
 
 ## Decision
 
-Ship **sentence / phrase / equation** highlighting derived from clip boundaries.
-Do not ship word-level highlighting in this release, and do not synthesise word
-boundaries by interpolation.
+Align English prose against its final trimmed PCM using a resident local
+MFA 3.3.9 / Kalpy 0.10.5 worker. Use the exact normalised script sent to TTS, not an
+independent transcription. The same token sequence is used for alignment and
+script offsets. Equation paraphrases retain whole-equation highlighting.
 
-## Context
+A first real integration check aligned all nine words in 2.952 seconds of Kokoro
+speech. Initial worker preparation took 2.913 seconds; a warm repeat took 0.017
+seconds. Keeping models and the compiled lexicon resident avoids per-sentence
+Python startup. Requests are serialised, cancellable and bounded by a timeout.
 
-Two independent checks showed no timing source is available on this machine:
+## Why native phoneme durations are insufficient
 
-- **Kokoro.** `kokoro-fp16.onnx` (KokoroSharpBinaries v2.0.0) has inputs
-  `tokens`, `style`, `speed` and output `audio` — and **no `durations` output**.
-  Verified three ways: scanning the 163 MB ONNX file finds zero occurrences of the
-  string `durations`; `KokoroSharp` reports `PhonemeTimestamp[] == null` for every
-  step at runtime; and the provider now reads the graph's `OutputMetadata` directly
-  at initialisation (`KokoroTtsProvider.ModelReportsDurations`), which is what
-  `TtsCapabilities.CanSupplyWordTiming` reports.
+The compatible `kokoro-fp16.onnx` graph emits audio without durations. The tested
+`kokoro-v1.0.onnx` duration export uses `input_ids` instead of KokoroSharp's `tokens`
+input and is rejected by the compatibility probe. Even a compatible duration output
+would still need a reliable phoneme-to-script-word map. `CanSupplyWordTiming` no
+longer infers that capability solely from the presence of phoneme durations.
 
-  The obvious alternative does **not** work. `kokoro-v1.0.onnx` (the kokoro-onnx
-  duration-enabled export, 325.5 MB) declares its inputs as **`input_ids`, `speed`,
-  `style`** — there is no `tokens` input, so KokoroSharp cannot feed it. This was
-  initially assumed to be a drop-in path to word timings; it is not, and feeding it
-  to the engine **aborts the process**:
+Kokoro raw-step timestamps now receive their step offset followed by one actual
+clip-trim adjustment. Forced alignment runs after trimming, so its offsets already
+refer to the cached playback waveform and need no further trim adjustment.
 
-  ```
-  OnnxRuntimeException: Input name: 'tokens' is not in the metadata
-    at KokoroSharp.Core.KokoroModel.Infer(...)
-    at KokoroSharp.Core.KokoroEngine.<.ctor>b__2_0()
-    at System.Threading.Thread.StartCallback()
-  ```
+## Acceptance and source geometry
 
-  KokoroSharp runs inference on its own dispatch thread and does not catch ONNX
-  errors, so this arrives as an unhandled exception on a background thread and
-  takes the whole application down. `KokoroTtsProvider` therefore probes the graph
-  before constructing the engine and reports a recoverable, actionable error naming
-  the tensors the file actually declares. Reaching word timings needs either a
-  KokoroSharp-compatible export built with a `durations` output, or a standalone
-  aligner — not a different off-the-shelf model file.
-- **ZONOS3.** `/v2/edit/align` belongs to the speech-editing feature set and needs
-  an edit backbone, encoder companions and a Python worker with `fusealign-hub`.
-  A synthesis-only install has none of them. Its presence in documentation is not
-  evidence this install can use it.
+Every script word must have exactly one ordered interval. Reject missing, repeated
+or unexpected words, overlaps, out-of-range intervals, invalid confidence values,
+and cues without valid source anchors. Ignore blank and `<eps>` silence entries;
+`<unk>` is a mismatch. Word coverage is lexical coverage, not the fraction of audio
+occupied by speech: legitimate pauses do not invalidate a complete alignment.
 
-## Why clip boundaries are sufficient, not a compromise
+MFA does not return calibrated word probabilities. Confidence remains null, allowed
+only with a recognised native/forced timing provenance and valid word ranges.
+Structural validation cannot prove correct acoustic boundaries; corpus evaluation
+is still needed. Failed evidence falls back to sentence highlighting with a reason.
 
-Each segment is synthesised as one independent clip, so its sample interval and
-its source anchors are both **known exactly**. That is measurement, not
-estimation: `TimedCue.ForWholeClip(frameCount, anchors, Sentence|Equation)`.
+PDF prose anchors cover individual words. Source mappings preserve repeated words,
+ligatures, dehyphenation across lines and number expansions. Cached timing ranges
+are rebound to the current plan's geometry instead of reusing foreign anchor IDs.
 
-For a paraphrased equation this is also the *correct* granularity. There is no
-one-to-one correspondence between a spoken word and a PDF glyph, so word cues over
-an equation would highlight text that was never read.
+## Cache identity and optional resources
 
-## What is explicitly not done
+Alignment identity includes PCM, script, model/dictionary hashes and runtime/worker
+revision. Changing alignment assets retimes existing cached audio. Stored PCM
+hashes detect same-length waveform substitutions. No aligner resources are fetched
+implicitly, and missing resources never prevent ordinary narration. See
+[setup and verification](../word-highlighting.md).
 
-Interpolating word positions uniformly, or proportionally by character count, and
-presenting the result as accurate alignment. It is indistinguishable from measured
-alignment in the UI and wrong in a way the listener cannot see. When timing
-evidence is insufficient the scheduler falls back to a coarser granularity and
-**says so in diagnostics**.
-
-## Guard rails that are implemented and tested
-
-`TimedCueValidator` rejects, and the rejections are covered by tests:
-out-of-range cues, overlapping/non-monotonic cues, sub-8-sample cues, cues citing
-an anchor id the plan does not contain, low-confidence cues, word-granularity cues
-with no confidence value, and spoken ranges beyond the script. Coverage is
-reported, and `ShouldFallBackToCoarse` trips below 90%.
-
-The failure mode this exists for is concrete: an aligner that drops or repeats one
-word shifts every later anchor by a word. The audio still sounds right while the
-highlight reads the wrong line.
-
-## Path to word timing later
-
-Either (a) obtain or build a KokoroSharp-compatible export — inputs `tokens`,
-`style`, `speed` — that also emits a `durations` output, or (b) put a standalone
-aligner behind `IForcedAligner`.
-
-No further code is needed for (a): the provider reads the graph's outputs at
-initialisation and upgrades `TtsCapabilities.NativeTiming` to `NativeDuration` when
-`durations` is present, and it also upgrades on observing real timestamps at
-runtime. `TimedCueValidator` still gates whatever comes back, so a duration output
-that is present but unreliable degrades to coarse highlighting rather than
-producing confident, wrong word positions.
-
-Until then the word path is reported as unavailable rather than offered.
+No uniform or character-weighted interpolation is used as a substitute for timing
+evidence. Animation-frame rendering reads the media clock; camera following is
+throttled independently so it does not limit word-highlight refresh.

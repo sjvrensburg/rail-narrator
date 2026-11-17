@@ -361,8 +361,9 @@ public sealed class CueSchedulerTests
         var plan = SyntheticNarration.Plan([unit]);
 
         IReadOnlyList<TimedCue>? timings = withTimings
-            ? [new TimedCue(0, 12000, new TextRange(0, 2), ["a0"], CueGranularity.Word, 0.95, []),
-               new TimedCue(12000, 24000, new TextRange(2, 6), ["a0"], CueGranularity.Word, 0.95, [])]
+            ? [new TimedCue(0, 4000, new TextRange(0, 1), ["a0"], CueGranularity.Word, 0.95, []),
+               new TimedCue(4000, 12000, new TextRange(2, 5), ["a0"], CueGranularity.Word, 0.95, []),
+               new TimedCue(12000, 24000, new TextRange(8, 8), ["a0"], CueGranularity.Word, 0.95, [])]
             : null;
         var asset = SyntheticNarration.Clip("s00000", 24000, timings: timings);
 
@@ -418,13 +419,13 @@ public sealed class CueSchedulerTests
     public void APositionInAGapBetweenCues_HoldsThePreviousCue()
     {
         var anchor = SyntheticNarration.Anchor("a0", 0, new PageRect(72, 100, 300, 112));
-        var plan = SyntheticNarration.Plan([SyntheticNarration.ProseUnit("u0", "text", anchor)]);
+        var plan = SyntheticNarration.Plan([SyntheticNarration.ProseUnit("u0", "two words", anchor)]);
         var scheduler = new CueScheduler(plan);
         // Two cues with a gap between them, as a real aligner leaves around a pause.
         var timings = new List<TimedCue>
         {
-            new(0, 1000, null, ["a0"], CueGranularity.Phrase, 0.9, []),
-            new(5000, 8000, null, ["a0"], CueGranularity.Phrase, 0.9, []),
+            new(0, 1000, new TextRange(0, 3), ["a0"], CueGranularity.Word, 0.9, []),
+            new(5000, 8000, new TextRange(4, 5), ["a0"], CueGranularity.Word, 0.9, []),
         };
         scheduler.AttachClip(SyntheticNarration.Clip("s00000", 9000, timings: timings), timings, []);
 

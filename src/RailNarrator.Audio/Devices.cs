@@ -3,125 +3,81 @@ using RailNarrator.Domain;
 
 namespace RailNarrator.Audio;
 
-/// <summary>
-/// P/Invoke bindings for PortAudio, restricted to the calls this product uses.
-/// </summary>
-/// <remarks>
-/// <para>
-/// The blocking interface is used rather than the callback interface, and that choice is measured
-/// rather than stylistic. On the reference machine (PortAudio V19.7.0-devel, ALSA host, Fedora 44):
-/// </para>
-/// <list type="bullet">
-/// <item><c>Pa_GetStreamTime</c> returns 0.0000 s throughout a callback stream that had already
-/// delivered 0.39 s of audio, so it cannot serve as a media clock.</item>
-/// <item><c>Pa_GetStreamLatency</c> is not exported by the shipped library at all
-/// (<c>EntryPointNotFoundException</c>), so latency cannot be queried that way either.</item>
-/// <item><c>Pa_GetStreamWriteAvailable</c> on a blocking stream tracks device consumption precisely,
-/// and <c>Pa_WriteStream</c> blocks in real time — writing 0.44 s took 0.40 s of wall clock, exactly
-/// the buffer depth of 46.4 ms less.</item>
-/// </list>
-/// <para>
-/// So the presented position is derived as <c>written − (capacity − writeAvailable)</c>, which is a
-/// genuine media position: not wall-clock time, not bytes received, and not samples merely queued.
-/// </para>
-/// <para>
-/// Opening at the device's native rate is mandatory. The same spike showed
-/// <c>Pa_OpenDefaultStream</c> at 24 kHz failing with <c>paInvalidSampleRate</c> on a device whose
-/// default rate is 44.1 kHz, because the ALSA host does not resample.
-/// </para>
-/// </remarks>
+/// <summary>PortAudio V19 ABI on Linux: C long/unsigned long are pointer-sized.</summary>
 internal static class PortAudioNative
 {
     private const string Library = "libportaudio.so.2";
-
-    /// <summary>paFloat32</summary>
-    public const uint SampleFormatFloat32 = 0x00000001;
-
-    /// <summary>paInt16</summary>
-    public const uint SampleFormatInt16 = 0x00000008;
-
-    /// <summary>paNoDevice</summary>
+    public const nuint SampleFormatFloat32 = 1;
+    public const nuint SampleFormatInt16 = 8;
     public const int NoDevice = -1;
-
     [StructLayout(LayoutKind.Sequential)]
     public struct DeviceInfo
     {
         public int structVersion;
         public IntPtr name;
-        public int hostApi;
-        public int maxInputChannels;
-        public int maxOutputChannels;
-        public double defaultLowInputLatency;
-        public double defaultLowOutputLatency;
-        public double defaultHighInputLatency;
-        public double defaultHighOutputLatency;
-        public double defaultSampleRate;
+        public int hostApi, maxInputChannels, maxOutputChannels;
+        public double defaultLowInputLatency, defaultLowOutputLatency;
+        public double defaultHighInputLatency, defaultHighOutputLatency, defaultSampleRate;
     }
-
     [StructLayout(LayoutKind.Sequential)]
     public struct StreamParameters
     {
-        public int device;
-        public int channelCount;
-        public uint sampleFormat;
+        public int device, channelCount;
+        public nuint sampleFormat;
         public double suggestedLatency;
         public IntPtr hostApiSpecificStreamInfo;
     }
-
+    [StructLayout(LayoutKind.Sequential)]
+    public struct StreamInfo
+    {
+        public int structVersion;
+        public double inputLatency, outputLatency, sampleRate;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    public struct CallbackTimes { public double inputBufferAdcTime, currentTime, outputBufferDacTime; }
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    public delegate int Callback(IntPtr input, IntPtr output, nuint frames, ref CallbackTimes times, nuint flags, IntPtr userData);
     [DllImport(Library)] public static extern int Pa_Initialize();
-    [DllImport(Library)] public static extern int Pa_Terminate();
     [DllImport(Library)] public static extern IntPtr Pa_GetVersionText();
     [DllImport(Library)] public static extern int Pa_GetDeviceCount();
     [DllImport(Library)] public static extern int Pa_GetDefaultOutputDevice();
     [DllImport(Library)] public static extern IntPtr Pa_GetDeviceInfo(int device);
     [DllImport(Library)] public static extern IntPtr Pa_GetErrorText(int error);
-    [DllImport(Library)] public static extern int Pa_IsFormatSupported(IntPtr input, ref StreamParameters output, double sampleRate);
-    [DllImport(Library)]
-    public static extern int Pa_OpenStream(
-        out IntPtr stream, IntPtr inputParameters, ref StreamParameters outputParameters,
-        double sampleRate, uint framesPerBuffer, uint streamFlags, IntPtr callback, IntPtr userData);
+    [DllImport(Library)] public static extern IntPtr Pa_GetStreamInfo(IntPtr stream);
+    [DllImport(Library)] public static extern double Pa_GetStreamTime(IntPtr stream);
+    [DllImport(Library)] public static extern int Pa_OpenStream(out IntPtr stream, IntPtr input,
+        ref StreamParameters output, double rate, nuint framesPerBuffer, nuint flags, Callback callback, IntPtr userData);
     [DllImport(Library)] public static extern int Pa_StartStream(IntPtr stream);
-    [DllImport(Library)] public static extern int Pa_StopStream(IntPtr stream);
     [DllImport(Library)] public static extern int Pa_AbortStream(IntPtr stream);
     [DllImport(Library)] public static extern int Pa_CloseStream(IntPtr stream);
     [DllImport(Library)] public static extern int Pa_IsStreamActive(IntPtr stream);
-    [DllImport(Library)] public static extern int Pa_WriteStream(IntPtr stream, byte[] buffer, uint frames);
-    [DllImport(Library)] public static extern int Pa_GetStreamWriteAvailable(IntPtr stream);
-
     public static string Describe(int code) => Marshal.PtrToStringAnsi(Pa_GetErrorText(code)) ?? $"error {code}";
-
     public static string? VersionText() => Marshal.PtrToStringAnsi(Pa_GetVersionText());
 }
 
 /// <summary>
-/// Real audio output through PortAudio.
+/// Callback audio output with a bounded, preallocated ring and DAC-timestamped content clock.
+/// The callback only copies samples and records timestamps: no locks, allocations or user events.
 /// </summary>
-/// <remarks>
-/// Native dependency: <c>libportaudio.so.2</c>. On Fedora it is <c>portaudio</c>; on Debian/Ubuntu
-/// <c>libportaudio2</c>. Enumerating devices must not throw when there is no audio server — an
-/// agent session or a headless container has none — so failures are reported as an empty device list
-/// and a clear message on <see cref="Open"/>, not as an unhandled exception at startup.
-/// </remarks>
 public sealed class PortAudioOutputDevice : IAudioOutputDevice
 {
-    /// <summary>Frames per blocking write. 512 measured as the device's own period on the reference machine.</summary>
     public const int FramesPerBuffer = 512;
-
     private static readonly object InitLock = new();
     private static bool _initialised;
     private static string? _initError;
-
-    private IntPtr _stream;
-    private long _framesWritten;
-    private int _bufferCapacityFrames;
-    private AudioFormat _format;
-    private bool _running;
-    private bool _disposed;
     private readonly object _gate = new();
-
+    private readonly PortAudioNative.Callback _callback;
+    private readonly PresentationClock _clock = new();
+    private IntPtr _stream;
+    private byte[] _ring = [];
+    private int _capacityFrames, _bytesPerFrame, _sampleRate;
+    private long _written, _consumed;
+    private bool _running, _disposed;
+    private double? _outputLatency;
+    private int _underflows;
     public event Action<string>? DeviceFailed;
+    public PortAudioOutputDevice() => _callback = Render;
 
-    /// <summary>Initialises PortAudio once per process. Returns the failure reason, or null.</summary>
     public static string? Initialise()
     {
         lock (InitLock)
@@ -130,230 +86,186 @@ public sealed class PortAudioOutputDevice : IAudioOutputDevice
             try
             {
                 int rc = PortAudioNative.Pa_Initialize();
-                _initError = rc == 0 ? null : $"Pa_Initialize failed: {PortAudioNative.Describe(rc)}";
+                _initError = rc == 0 ? null : PortAudioNative.Describe(rc);
             }
-            catch (DllNotFoundException ex)
-            {
-                _initError = "libportaudio.so.2 was not found. Install the 'portaudio' package.";
-                _ = ex;
-            }
-            catch (EntryPointNotFoundException ex)
-            {
-                _initError = $"The installed libportaudio is too old or incompatible: {ex.Message}";
-            }
+            catch (DllNotFoundException) { _initError = "Install libportaudio.so.2 to enable audio output."; }
+            catch (EntryPointNotFoundException ex) { _initError = ex.Message; }
             _initialised = true;
             return _initError;
         }
     }
-
-    /// <summary>The PortAudio version string, for diagnostics.</summary>
     public static string? Version => PortAudioNative.VersionText();
-
     public IReadOnlyList<AudioDeviceInfo> Enumerate()
     {
-        if (Initialise() is { } error) { _ = error; return []; }
-
+        if (Initialise() is not null) return [];
         var devices = new List<AudioDeviceInfo>();
-        int count = PortAudioNative.Pa_GetDeviceCount();
-        int defaultDevice = PortAudioNative.Pa_GetDefaultOutputDevice();
+        int count = PortAudioNative.Pa_GetDeviceCount(), defaultId = PortAudioNative.Pa_GetDefaultOutputDevice();
         for (int i = 0; i < count; i++)
         {
-            IntPtr infoPtr = PortAudioNative.Pa_GetDeviceInfo(i);
-            if (infoPtr == IntPtr.Zero) continue;
-            var info = Marshal.PtrToStructure<PortAudioNative.DeviceInfo>(infoPtr);
-            // An input-only device cannot play anything; listing it would offer a choice that fails.
+            var ptr = PortAudioNative.Pa_GetDeviceInfo(i);
+            if (ptr == IntPtr.Zero) continue;
+            var info = Marshal.PtrToStructure<PortAudioNative.DeviceInfo>(ptr);
             if (info.maxOutputChannels <= 0) continue;
-            devices.Add(new AudioDeviceInfo(
-                Id: i.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                Name: Marshal.PtrToStringAnsi(info.name) ?? $"device {i}",
-                IsDefault: i == defaultDevice,
-                PreferredSampleRate: info.defaultSampleRate > 0 ? (int)info.defaultSampleRate : 44100,
-                Channels: info.maxOutputChannels,
-                OutputLatencySeconds: info.defaultLowOutputLatency > 0 ? info.defaultLowOutputLatency : null));
+            devices.Add(new AudioDeviceInfo(i.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                Marshal.PtrToStringAnsi(info.name) ?? $"Device {i}", i == defaultId,
+                info.defaultSampleRate > 0 ? (int)info.defaultSampleRate : 44100, info.maxOutputChannels,
+                info.defaultLowOutputLatency > 0 ? info.defaultLowOutputLatency : null));
         }
         return devices;
     }
-
     public void Open(string deviceId, AudioFormat format)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (Initialise() is { } error) throw new InvalidOperationException(error);
-
+        if (!format.IsValid) throw new ArgumentException("Invalid output format.");
         lock (_gate)
         {
             CloseCore();
-
-            int device = int.TryParse(deviceId, out int parsed) ? parsed : PortAudioNative.Pa_GetDefaultOutputDevice();
-            if (device == PortAudioNative.NoDevice)
-                throw new InvalidOperationException(
-                    "No audio output device is available. On a headless session there is no sound server to open; start one or choose a device.");
-
-            uint sampleFormat = format.SampleFormat switch
+            int device = int.TryParse(deviceId, out int id) ? id : PortAudioNative.Pa_GetDefaultOutputDevice();
+            var ptr = PortAudioNative.Pa_GetDeviceInfo(device);
+            if (ptr == IntPtr.Zero) throw new InvalidOperationException("No usable audio output device.");
+            var info = Marshal.PtrToStructure<PortAudioNative.DeviceInfo>(ptr);
+            var parameters = new PortAudioNative.StreamParameters
             {
-                SampleFormat.Float32LittleEndian => PortAudioNative.SampleFormatFloat32,
-                SampleFormat.Int16LittleEndian => PortAudioNative.SampleFormatInt16,
-                _ => throw new NotSupportedException($"PortAudio output does not support {format.SampleFormat}."),
+                device = device, channelCount = format.Channels,
+                sampleFormat = format.SampleFormat switch
+                {
+                    SampleFormat.Float32LittleEndian => PortAudioNative.SampleFormatFloat32,
+                    SampleFormat.Int16LittleEndian => PortAudioNative.SampleFormatInt16,
+                    _ => throw new NotSupportedException("Unsupported output encoding."),
+                },
+                suggestedLatency = Math.Max(0.01, info.defaultLowOutputLatency),
             };
-
-            var output = new PortAudioNative.StreamParameters
-            {
-                device = device,
-                channelCount = Math.Max(1, format.Channels),
-                sampleFormat = sampleFormat,
-                // Ask for the low-latency figure the device advertises; the host clamps to what it
-                // can actually deliver, and the resulting buffer depth is read back below.
-                suggestedLatency = 0.05,
-                hostApiSpecificStreamInfo = IntPtr.Zero,
-            };
-
-            int rc = PortAudioNative.Pa_OpenStream(
-                out _stream, IntPtr.Zero, ref output, format.SampleRate, FramesPerBuffer,
-                0 /* paNoFlag */, IntPtr.Zero, IntPtr.Zero);
-            if (rc != 0)
-                throw new InvalidOperationException(
-                    $"Cannot open audio device {device} at {format.SampleRate} Hz: {PortAudioNative.Describe(rc)}. " +
-                    "Devices commonly reject rates other than their own, so open at the device's preferred rate and resample.");
-
-            _format = format;
-            _framesWritten = 0;
-            // Capacity is whatever the host actually allocated, not what was requested.
-            int available = PortAudioNative.Pa_GetStreamWriteAvailable(_stream);
-            _bufferCapacityFrames = available > 0 ? available : FramesPerBuffer * 4;
+            _bytesPerFrame = format.BytesPerFrame;
+            _sampleRate = format.SampleRate;
+            _capacityFrames = Math.Max(FramesPerBuffer * 8, _sampleRate / 4);
+            _ring = new byte[_capacityFrames * _bytesPerFrame];
+            _written = _consumed = 0;
+            _underflows = 0;
+            _clock.Reset();
+            int rc = PortAudioNative.Pa_OpenStream(out var opened, IntPtr.Zero, ref parameters,
+                format.SampleRate, FramesPerBuffer, 0, _callback, IntPtr.Zero);
+            if (rc != 0) throw new InvalidOperationException("Cannot open audio: " + PortAudioNative.Describe(rc));
+            _stream = opened;
+            var streamInfo = PortAudioNative.Pa_GetStreamInfo(_stream);
+            _outputLatency = streamInfo == IntPtr.Zero ? null : Marshal.PtrToStructure<PortAudioNative.StreamInfo>(streamInfo).outputLatency;
         }
     }
-
-    /// <summary>Device buffer depth in frames, measured after <see cref="Open"/>. Used to convert queued frames into latency.</summary>
-    public int BufferCapacityFrames { get { lock (_gate) return _bufferCapacityFrames; } }
+    public int BufferCapacityFrames => _capacityFrames;
+    public int UnderflowCount => Volatile.Read(ref _underflows);
+    public double? ReportedLatencySeconds { get { lock (_gate) return _outputLatency; } }
+    public bool IsRunning { get { lock (_gate) return _running; } }
+    public long PresentedFrames { get { lock (_gate) return PresentedCore(); } }
+    private long PresentedCore() => _stream == IntPtr.Zero ? 0
+        : Math.Min(Interlocked.Read(ref _written), _clock.PresentedAt(PortAudioNative.Pa_GetStreamTime(_stream)));
+    public long QueuedFrames { get { lock (_gate) return Math.Max(0, _written - PresentedCore()); } }
+    public bool HasDrained { get { lock (_gate) return PresentedCore() >= _written; } }
 
     public void Start()
     {
         lock (_gate)
         {
-            if (_stream == IntPtr.Zero) throw new InvalidOperationException("The audio device is not open.");
+            if (_stream == IntPtr.Zero) throw new InvalidOperationException("The audio device is closed.");
             if (_running) return;
             int rc = PortAudioNative.Pa_StartStream(_stream);
-            if (rc != 0) throw new InvalidOperationException($"Cannot start audio playback: {PortAudioNative.Describe(rc)}");
+            if (rc != 0) throw new InvalidOperationException(PortAudioNative.Describe(rc));
             _running = true;
         }
     }
-
     public void Pause()
     {
         lock (_gate)
         {
-            if (_stream == IntPtr.Zero || !_running) return;
-            // Stop (not abort) so already-queued audio finishes rather than being cut mid-word.
-            PortAudioNative.Pa_StopStream(_stream);
+            if (!_running || _stream == IntPtr.Zero) return;
+            long presented = PresentedCore();
+            PortAudioNative.Pa_AbortStream(_stream);
             _running = false;
+            // The ring retains unpresented samples, even if they were already copied to a callback.
+            // Rewind the consumer so aborting does not skip those samples on resume.
+            _consumed = presented;
+            _clock.Reset(presented);
         }
     }
-
     public void Flush()
     {
         lock (_gate)
         {
-            if (_stream == IntPtr.Zero) return;
-            // Abort discards the buffer immediately. A seek must not leave the previous position's
-            // audio playing over the new one.
-            PortAudioNative.Pa_AbortStream(_stream);
-            _framesWritten = 0;
+            if (_stream != IntPtr.Zero && _running) PortAudioNative.Pa_AbortStream(_stream);
             _running = false;
+            _written = _consumed = 0;
+            _clock.Reset();
         }
     }
-
-    public void Close()
-    {
-        lock (_gate) CloseCore();
-    }
-
+    public void Close() { lock (_gate) CloseCore(); }
     private void CloseCore()
     {
-        if (_stream == IntPtr.Zero) return;
-        try
+        if (_stream != IntPtr.Zero)
         {
             if (_running) PortAudioNative.Pa_AbortStream(_stream);
             PortAudioNative.Pa_CloseStream(_stream);
         }
-        catch { /* a device that vanished mid-close is already gone */ }
         _stream = IntPtr.Zero;
         _running = false;
-        _framesWritten = 0;
+        _written = _consumed = 0;
+        _outputLatency = null;
+        _clock.Reset();
     }
-
-    public bool IsRunning { get { lock (_gate) return _running; } }
-
-    public long PresentedFrames
-    {
-        get
-        {
-            lock (_gate)
-            {
-                if (_stream == IntPtr.Zero) return _framesWritten;
-                int available = PortAudioNative.Pa_GetStreamWriteAvailable(_stream);
-                long queued = available >= 0 ? Math.Max(0, _bufferCapacityFrames - available) : 0;
-                return Math.Max(0, _framesWritten - queued);
-            }
-        }
-    }
-
-    public long QueuedFrames
-    {
-        get
-        {
-            lock (_gate)
-            {
-                if (_stream == IntPtr.Zero) return 0;
-                int available = PortAudioNative.Pa_GetStreamWriteAvailable(_stream);
-                return available >= 0 ? Math.Max(0, _bufferCapacityFrames - available) : 0;
-            }
-        }
-    }
-
-    /// <summary>
-    /// Null: this PortAudio build does not export <c>Pa_GetStreamLatency</c>, so latency is estimated
-    /// from the device's advertised figure and its measured buffer depth instead of claimed exactly.
-    /// Pretending to a precision the backend cannot supply would hide real scheduling error.
-    /// </summary>
-    public double? ReportedLatencySeconds => null;
-
     public int Write(ReadOnlySpan<byte> pcm, int frames)
     {
         if (frames <= 0) return 0;
-        byte[] buffer = pcm.ToArray();
-        int rc;
-        lock (_gate)
-        {
-            if (_stream == IntPtr.Zero || !_running) return 0;
-            rc = PortAudioNative.Pa_WriteStream(_stream, buffer, (uint)frames);
-        }
-        if (rc != 0)
-        {
-            string detail = PortAudioNative.Describe(rc);
-            DeviceFailed?.Invoke($"Write failed: {detail}");
-            throw new InvalidOperationException($"Audio write failed: {detail}");
-        }
-        Interlocked.Add(ref _framesWritten, frames);
-        return frames;
-    }
-
-    public bool HasDrained
-    {
-        get
+        long deadline = Environment.TickCount64 + 5000;
+        while (true)
         {
             lock (_gate)
             {
-                if (_stream == IntPtr.Zero) return true;
-                int available = PortAudioNative.Pa_GetStreamWriteAvailable(_stream);
-                return available >= 0 && available >= _bufferCapacityFrames;
+                if (!_running || _stream == IntPtr.Zero) return 0;
+                int available = (int)Math.Max(0, _capacityFrames - (_written - PresentedCore()));
+                int count = Math.Min(Math.Min(frames, pcm.Length / _bytesPerFrame), available);
+                if (count > 0)
+                {
+                    int first = (int)(_written % _capacityFrames);
+                    int part = Math.Min(count, _capacityFrames - first);
+                    pcm[..(part * _bytesPerFrame)].CopyTo(_ring.AsSpan(first * _bytesPerFrame));
+                    pcm.Slice(part * _bytesPerFrame, (count - part) * _bytesPerFrame).CopyTo(_ring);
+                    Interlocked.Add(ref _written, count);
+                    return count;
+                }
             }
+            // Backpressure is outside the state lock; UI clock reads never wait for a device write.
+            if (Environment.TickCount64 >= deadline)
+            {
+                const string detail = "Audio presentation clock stalled for five seconds.";
+                DeviceFailed?.Invoke(detail);
+                throw new IOException(detail);
+            }
+            Thread.Sleep(1);
         }
     }
-
+    private unsafe int Render(IntPtr input, IntPtr output, nuint frames, ref PortAudioNative.CallbackTimes times, nuint flags, IntPtr userData)
+    {
+        int frameCount = (int)frames;
+        var destination = new Span<byte>((void*)output, frameCount * _bytesPerFrame);
+        destination.Clear();
+        long start = _consumed;
+        int count = (int)Math.Min(frameCount, Math.Max(0, Interlocked.Read(ref _written) - start));
+        if (count > 0)
+        {
+            int first = (int)(start % _capacityFrames);
+            int part = Math.Min(count, _capacityFrames - first);
+            _ring.AsSpan(first * _bytesPerFrame, part * _bytesPerFrame).CopyTo(destination);
+            _ring.AsSpan(0, (count - part) * _bytesPerFrame).CopyTo(destination[(part * _bytesPerFrame)..]);
+        }
+        _clock.Record(times.outputBufferDacTime, start, count, _sampleRate);
+        Interlocked.Exchange(ref _consumed, start + count);
+        if ((flags & 4) != 0) Interlocked.Increment(ref _underflows);
+        return 0;
+    }
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
         Close();
+        GC.KeepAlive(_callback);
     }
 }
 

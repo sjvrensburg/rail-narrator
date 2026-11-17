@@ -55,6 +55,19 @@ public sealed class DiskSpeechAssetStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task TryLoadPcm_RejectsSameLengthReplacementWhenTimingsReferToAnotherWaveform()
+    {
+        var store = new DiskSpeechAssetStore(_root);
+        var pcm = SyntheticNarration.TonePcm(2400);
+        var asset = SyntheticNarration.Clip("s0", frames: 2400) with { PcmHash = CacheKey.Sha256Hex(pcm) };
+        await store.StoreAsync(asset, pcm);
+        string pcmPath = Directory.EnumerateFiles(_root, "audio.pcm", SearchOption.AllDirectories).Single();
+        pcm[0] ^= 1;
+        await File.WriteAllBytesAsync(pcmPath, pcm);
+        Assert.Null(await store.TryLoadPcmAsync(asset.Id));
+    }
+
+    [Fact]
     public async Task Invalidate_NeverDeletesCachedSpeech()
     {
         // Cache keys are content-addressed (script revision + spoken text), so an edited segment

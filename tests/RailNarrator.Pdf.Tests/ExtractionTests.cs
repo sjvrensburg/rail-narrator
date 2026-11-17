@@ -213,13 +213,12 @@ public sealed class ExtractionTests
         Assert.Contains("retrieval pipeline", unit.OriginalText);
         Assert.Contains("strong baseline", unit.OriginalText);
 
-        // One anchor, but two disjoint rectangles - one per source line. Their union would cover the
-        // gap between the lines and highlight text that is not part of this sentence.
-        var anchor = Assert.Single(unit.Anchors);
-        Assert.Equal(2, anchor.Rects.Count);
-        Assert.True(anchor.Rects[0].Bottom <= anchor.Rects[1].Top,
-            $"expected two vertically disjoint line rects, got {anchor.Rects[0]} and {anchor.Rects[1]}");
-        Assert.DoesNotContain(anchor.Rects, r => r.IsEmpty);
+        // Individual word anchors stay on their own source line, including a sentence spanning lines.
+        Assert.True(unit.Anchors.Count > 2);
+        var rects = unit.Anchors.SelectMany(a => a.Rects).ToArray();
+        Assert.DoesNotContain(rects, r => r.IsEmpty);
+        float midGap = (rects.Min(r => r.Bottom) + rects.Max(r => r.Top)) / 2;
+        Assert.All(rects, r => Assert.True(r.Bottom <= midGap || r.Top >= midGap));
     }
 
     [Fact]

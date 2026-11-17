@@ -40,7 +40,7 @@ public sealed record TtsCapabilities(
         .FirstOrDefault();
 
     /// <summary>True when the provider can supply word-level timing evidence itself.</summary>
-    public bool CanSupplyWordTiming => NativeTiming is TimingProvenance.NativeDuration or TimingProvenance.ForcedAlignment;
+    public bool CanSupplyWordTiming { get; init; }
 }
 
 /// <summary>A voice a provider can synthesise with.</summary>
@@ -388,12 +388,15 @@ public sealed record MathVerbalisationResult(
 /// </remarks>
 public interface IForcedAligner
 {
+    /// <summary>Includes runtime, model, dictionary and alignment-policy revisions for caching.</summary>
+    string Revision { get; }
+
     /// <summary>True when an aligner is installed and usable.</summary>
     Task<bool> IsAvailableAsync(CancellationToken ct = default);
 
     /// <summary>Aligns <paramref name="pcm"/> against <paramref name="script"/>. Returns candidate cues that still need <see cref="TimedCueValidator"/>.</summary>
-    Task<IReadOnlyList<TimedCue>> AlignAsync(
-        ReadOnlyMemory<byte> pcm, AudioFormat format, string script, IReadOnlyList<string> anchorIds, CancellationToken ct = default);
+    Task<WordAlignment> AlignAsync(
+        ReadOnlyMemory<byte> pcm, AudioFormat format, string script, CancellationToken ct = default);
 }
 
 /// <summary>

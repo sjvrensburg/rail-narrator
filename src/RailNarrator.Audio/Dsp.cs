@@ -178,92 +178,96 @@ public sealed class WsolaTimeStretcher
     /// Stretches mono audio. <paramref name="rate"/> greater than 1 shortens it (faster speech);
     /// less than 1 lengthens it. Pitch is unchanged either way.
     /// </summary>
-    public float[] Process(ReadOnlySpan<float> input, double rate)
-    {
-        double r = Math.Clamp(rate, MinRate, MaxRate);
-        if (Math.Abs(r - 1.0) < 1e-6) return input.ToArray();
-        if (input.Length < _frameSize * 2) return input.ToArray();
-
-        int analysisHop = Math.Max(1, (int)Math.Round(_synthesisHop * r));
-        int estimated = (int)OutputLengthFor(input.Length, r) + _frameSize;
-        var output = new float[estimated];
-        int outPos = 0;
-        int inPos = 0;
-
-        var fade = HannHalf(_synthesisHop);
-
-        while (inPos + _frameSize <= input.Length && outPos + _frameSize < output.Length)
-        {
-            int best = FindBestOffset(input, inPos, analysisHop);
-
-            // Cross-fade the incoming frame's head against the previous frame's tail so the seam is
-            // continuous. The fade-in curve is applied to the new frame and its complement to what is
-            // already in the output buffer.
-            if (outPos >= _synthesisHop)
-            {
-                int overlapStart = outPos - _synthesisHop;
-                for (int i = 0; i < _synthesisHop; i++)
-                    output[overlapStart + i] = output[overlapStart + i] * (1f - fade[i]) + input[best + i] * fade[i];
-                CopyFrom(input, best + _synthesisHop, output, outPos, _synthesisHop);
-            }
-            else
-            {
-                CopyFrom(input, best, output, outPos, _frameSize);
-            }
-
-            outPos += _synthesisHop;
-            inPos += analysisHop;
-        }
-
-        // Flush whatever remains of the input so the last word is not truncated. A dropped tail is
-        // audible as a clipped final consonant and would also shorten the clip the cues were built for.
-        int tail = Math.Min(_frameSize, input.Length - Math.Max(0, inPos - analysisHop));
-        if (tail > 0 && outPos + tail < output.Length)
-        {
-            CopyFrom(input, Math.Max(0, input.Length - tail), output, outPos, tail);
-            outPos += tail;
-        }
-
-        return outPos == output.Length ? output : output.AsSpan(0, Math.Max(0, outPos)).ToArray();
-    }
-
-    private static void CopyFrom(ReadOnlySpan<float> input, int inputOffset, float[] output, int outputOffset, int count)
-    {
-        for (int i = 0; i < count; i++)
-        {
-            int src = inputOffset + i;
-            output[outputOffset + i] = src >= 0 && src < input.Length ? input[src] : 0f;
-        }
-    }
-
-    /// <summary>Raised-cosine fade over half a frame, used for both the fade-in and its complement.</summary>
-    private static float[] HannHalf(int length)
-    {
-        var fade = new float[length];
-        for (int i = 0; i < length; i++) fade[i] = 0.5f - 0.5f * (float)Math.Cos(Math.PI * i / Math.Max(1, length - 1));
-        return fade;
-    }
+    public float[] Process(ReadOnlySpan<float> input, double rate) => Render(input, rate).Samples;
 
     /// <summary>
-    /// Chooses the input offset whose first half-frame best matches the waveform already written to
-    /// the output, within a small search window. Correlation on the overlap is what makes WSOLA sound
-    /// continuous where fixed-overlap OLA sounds phasy.
+    /// Produces samples and their source-frame map together. Overlap regions have multiple source
+    /// contributions; the map uses their window-weighted position, made monotonic for cue lookup.
     /// </summary>
-    private int FindBestOffset(ReadOnlySpan<float> input, int nominal, int analysisHop)
+    public PlaybackRender Render(ReadOnlySpan<float> input, double rate)
     {
-        int overlapStart = Math.Max(0, nominal - _synthesisHop);
-        if (overlapStart + _synthesisHop > input.Length) return Math.Clamp(nominal, 0, Math.Max(0, input.Length - _frameSize));
-
-        int best = nominal;
-        float bestScore = float.MinValue;
-        for (int delta = -_tolerance; delta <= _tolerance; delta++)
+        if (!double.IsFinite(rate)) throw new ArgumentOutOfRangeException(nameof(rate));
+        double r = Math.Clamp(rate, MinRate, MaxRate);
+        if (input.Length == 0 || Math.Abs(r - 1) < 1e-6) return new PlaybackRender(input.ToArray(), input.Length);
+        int length = Math.Max(1, (int)OutputLengthFor(input.Length, r));
+        var output = new float[length];
+        var weights = new double[length];
+        var positions = new double[length + 1];
+        // Keep separate onset and tail grains even when a very short clip is sped up.
+        int window = Math.Min(_frameSize, Math.Min(input.Length, Math.Max(1, length / 2)));
+        int hop = Math.Max(1, window / 2);
+        int previous = 0;
+        for (int target = 0; ; target = Math.Min(target + hop, length - window))
         {
-            int candidate = nominal + delta - _synthesisHop;
-            if (candidate < 0 || candidate + _synthesisHop > input.Length) continue;
-            float score = 0;
-            for (int i = 0; i < _synthesisHop; i++) score += input[candidate + i] * input[overlapStart + i];
-            if (score > bestScore) { bestScore = score; best = candidate; }
+            bool last = target == length - window;
+            // Anchor the final complete grain to the actual clip tail. Partial trailing grains
+            // otherwise discard the final consonant at faster rates or repeat it at slower rates.
+            int nominal = last ? input.Length - window
+                : Math.Clamp((int)Math.Round(target * r), 0, Math.Max(0, input.Length - window));
+            int best = nominal;
+            double bestScore = double.NegativeInfinity;
+            if (target > 0 && !last)
+            {
+                // Correlate against the actual output overlap, not another slice of the input.
+                for (int candidate = Math.Max(previous, nominal - _tolerance);
+                    candidate <= Math.Min(input.Length - window, nominal + _tolerance); candidate++)
+                {
+                    double dot = 0, a = 0, b = 0;
+                    for (int i = 0; i < hop && target + i < length; i++)
+                    {
+                        double x = weights[target + i] > 0 ? output[target + i] / weights[target + i] : 0;
+                        double y = input[candidate + i];
+                        dot += x * y; a += x * x; b += y * y;
+                    }
+                    double score = dot / Math.Sqrt(Math.Max(1e-20, a * b)) - Math.Abs(candidate - nominal) * 1e-8;
+                    if (score > bestScore) { bestScore = score; best = candidate; }
+                }
+            }
+            best = Math.Max(previous, best);
+            previous = best;
+            for (int i = 0; i < window && target + i < length; i++)
+            {
+                double weight = Math.Max(1e-6, 0.5 - 0.5 * Math.Cos(2 * Math.PI * (i + 0.5) / window));
+                output[target + i] += (float)(input[best + i] * weight);
+                weights[target + i] += weight;
+                positions[target + i] += (best + i) * weight;
+            }
+            if (last) break;
         }
-        return Math.Clamp(best, 0, Math.Max(0, input.Length - _frameSize));
+        for (int i = 0; i < length; i++)
+        {
+            if (weights[i] > 0) { output[i] = (float)(output[i] / weights[i]); positions[i] /= weights[i]; }
+            if (i > 0) positions[i] = Math.Max(positions[i - 1], positions[i]);
+        }
+        positions[0] = 0;
+        positions[length] = input.Length;
+        return new PlaybackRender(output, input.Length, positions);
+    }
+}
+
+/// <summary>One rendered clip and its monotonic output-to-source correspondence.</summary>
+public sealed class PlaybackRender(float[] samples, int sourceFrames, double[]? positions = null)
+{
+    public float[] Samples { get; } = samples;
+    public int SourceFrames { get; } = sourceFrames;
+    public double SourceFrameAt(double outputFrame)
+    {
+        if (Samples.Length == 0) return 0;
+        double frame = Math.Clamp(outputFrame, 0, Samples.Length);
+        if (positions is null) return frame * SourceFrames / Samples.Length;
+        int i = (int)frame;
+        return i >= Samples.Length ? SourceFrames : positions[i] + (positions[i + 1] - positions[i]) * (frame - i);
+    }
+    public long OutputFrameAt(double sourceFrame)
+    {
+        double source = Math.Clamp(sourceFrame, 0, SourceFrames);
+        if (positions is null) return SourceFrames == 0 ? 0 : (long)Math.Round(source * Samples.Length / SourceFrames);
+        int lo = 0, hi = Samples.Length;
+        while (lo < hi)
+        {
+            int mid = lo + (hi - lo) / 2;
+            if (positions[mid] < source) lo = mid + 1; else hi = mid;
+        }
+        return lo;
     }
 }

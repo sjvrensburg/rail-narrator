@@ -146,7 +146,10 @@ public sealed record ActiveCue(
     CueGranularity Granularity,
     TextRange? SpokenRange,
     TimingProvenance Provenance,
-    IReadOnlyList<string> Diagnostics);
+    IReadOnlyList<string> Diagnostics)
+{
+    public long Generation { get; init; }
+}
 
 /// <summary>
 /// Resolves a clip position to the cue that should be highlighted.
@@ -197,7 +200,14 @@ public sealed class CueScheduler
     {
         ArgumentNullException.ThrowIfNull(asset);
         validated ??= [];
-        lock (_gate) _clips[asset.SegmentId] = new ClipTiming(asset, validated, diagnostics ?? []);
+        var segment = _sourceMap.Segment(asset.SegmentId);
+        var checkedCues = TimedCueValidator.Validate(validated, asset.FrameCount, segment?.SpokenText ?? "",
+            _sourceMap.KnownAnchorIds, provenance: asset.TimingProvenance);
+        var notes = new List<string>(diagnostics ?? []);
+        if (validated.Count > 0 && !checkedCues.IsUsable)
+            notes.Add($"Alignment rejected: script coverage {checkedCues.WordCoverageFraction:P0}, rejected cues {checkedCues.Rejected.Count}.");
+        lock (_gate) _clips[asset.SegmentId] = new ClipTiming(asset,
+            checkedCues.IsUsable ? checkedCues.Accepted : [], notes);
     }
 
     /// <summary>Forgets a clip, e.g. after its script was edited.</summary>
@@ -214,7 +224,9 @@ public sealed class CueScheduler
     {
         var segment = _sourceMap.Segment(segmentId);
         if (segment is null) return CueGranularity.Region;
-        if (HasSubClipTiming(segmentId)) return CueGranularity.Word;
+        lock (_gate)
+            if (_clips.TryGetValue(segmentId, out var clip) && clip.Cues.Count > 0)
+                return clip.Cues.Max(c => c.Granularity);
         return segment.IsMaths ? CueGranularity.Equation : CueGranularity.Sentence;
     }
 
@@ -242,6 +254,9 @@ public sealed class CueScheduler
         // Timings finer than the clip: find the cue containing this sample.
         if (clip.Cues.Count > 0)
         {
+            if (sampleInClip < clip.Cues[0].StartSample)
+                return new ActiveCue(segmentId, sampleInClip, null, [], clip.Cues[0].Granularity,
+                    null, clip.Asset.TimingProvenance, ["Waiting for the first aligned word."]);
             var cue = clip.Cues.FirstOrDefault(c => c.Contains(sampleInClip));
             if (cue is not null)
             {
