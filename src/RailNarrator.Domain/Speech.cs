@@ -204,11 +204,17 @@ public static class TimedCueValidator
         var accepted = new List<TimedCue>();
         var rejected = new List<(TimedCue, string)>();
         long previousEnd = 0;
+        bool havePrevious = false;
 
         foreach (var cue in cues.OrderBy(c => c.StartSample))
         {
             string? reason = Reject(cue);
-            if (reason is null) accepted.Add(cue);
+            if (reason is null)
+            {
+                accepted.Add(cue);
+                previousEnd = cue.EndSample;
+                havePrevious = true;
+            }
             else rejected.Add((cue, reason));
         }
 
@@ -229,7 +235,8 @@ public static class TimedCueValidator
             if (cue.Confidence is { } c && c < MinimumConfidence) return $"confidence {c:F2} is below {MinimumConfidence}";
             if (cue.Granularity == CueGranularity.Word && cue.Confidence is null)
                 return "word granularity claimed with no confidence value";
-            if (requireMonotonic && cue.StartSample < previousEnd) return $"starts at {cue.StartSample}, before the previous cue's end {previousEnd}";
+            if (requireMonotonic && havePrevious && cue.StartSample < previousEnd)
+                return $"starts at {cue.StartSample}, before the previous cue's end {previousEnd}";
             return null;
         }
     }
@@ -240,6 +247,39 @@ public static class TimedCueValidator
         long covered = accepted.Sum(c => c.DurationSamples);
         return Math.Clamp((double)covered / frameCount, 0, 1);
     }
+}
+
+/// <summary>
+/// Minimal sample inspection the domain needs to reject audio that is present but inaudible.
+/// </summary>
+/// <remarks>
+/// A provider's own self-test is not sufficient: the coordinator verifies what it was actually handed,
+/// because a decoder that outputs silence returns a correctly sized, correctly formatted buffer. On
+/// the reference machine the ZONOS3 Vulkan decoder does exactly this (peak ~0.0017) while the CPU
+/// path works, so the check is the difference between an error the user can act on and a reading
+/// session that silently produces nothing.
+/// </remarks>
+public static class AudioSamples
+{
+    /// <summary>Peak absolute sample value in [-1, 1]. Zero for an empty buffer.</summary>
+    public static float Peak(ReadOnlySpan<byte> pcm, AudioFormat format)
+    {
+        int stride = format.BytesPerFrame;
+        if (stride <= 0 || pcm.Length < stride) return 0f;
+        float peak = 0f;
+        for (int i = 0; i + stride <= pcm.Length; i += stride)
+            peak = Math.Max(peak, Math.Abs(ReadSample(pcm, i, format.SampleFormat)));
+        return peak;
+    }
+
+    /// <summary>Reads one little-endian sample as a float in [-1, 1].</summary>
+    public static float ReadSample(ReadOnlySpan<byte> pcm, int byteOffset, SampleFormat format) => format switch
+    {
+        SampleFormat.Float32LittleEndian => System.Buffers.Binary.BinaryPrimitives.ReadSingleLittleEndian(pcm.Slice(byteOffset, 4)),
+        SampleFormat.Int16LittleEndian => System.Buffers.Binary.BinaryPrimitives.ReadInt16LittleEndian(pcm.Slice(byteOffset, 2)) / 32768f,
+        SampleFormat.Int32LittleEndian => System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(pcm.Slice(byteOffset, 4)) / 2147483648f,
+        _ => throw new ArgumentOutOfRangeException(nameof(format)),
+    };
 }
 
 /// <summary>

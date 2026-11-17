@@ -103,6 +103,13 @@ public sealed record NarrationCoordinatorOptions(
 /// </remarks>
 public sealed class NarrationCoordinator : IAsyncDisposable
 {
+    /// <summary>
+    /// Peak amplitude below which a clip counts as silence rather than speech. Matches
+    /// <see cref="ProviderSelfTestResult.SilencePeakThreshold"/>; measured against a known-silent
+    /// Vulkan decoder that peaked at 0.0017 and healthy speech that peaks between 0.3 and 0.7.
+    /// </summary>
+    public const float SilencePeakThreshold = 0.005f;
+
     private readonly ITtsProvider _tts;
     private readonly IAudioTransport _audio;
     private readonly ISpeechAssetStore? _assetStore;
@@ -120,7 +127,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     private bool _followSuspended;
     private PlaybackSnapshot _snapshot = PlaybackSnapshot.Idle;
     private ActiveCue? _lastCue;
-    private readonly Dictionary<string, SpeechAsset> _prepared = [];
+    private readonly Dictionary<string, PreparedClip> _prepared = [];
 
     public NarrationCoordinator(
         ITtsProvider tts,
@@ -431,11 +438,15 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         if (_assetStore is not null)
         {
             var cached = await _assetStore.TryGetAsync(assetId, ct).ConfigureAwait(false);
-            if (cached is not null && generation == Generation)
+            if (cached is not null)
             {
-                lock (_gate) _prepared[segment.Id] = cached;
-                AttachTimings(segment, cached);
-                return;
+                var cachedPcm = await _assetStore.TryLoadPcmAsync(assetId, ct).ConfigureAwait(false);
+                if (cachedPcm is { } pcm && generation == Generation)
+                {
+                    lock (_gate) _prepared[segment.Id] = new PreparedClip(cached, pcm.ToArray());
+                    AttachTimings(segment, cached);
+                    return;
+                }
             }
         }
 
@@ -461,9 +472,12 @@ public sealed class NarrationCoordinator : IAsyncDisposable
 
         if (generation != Generation) return;   // a late result from a superseded plan
 
-        if (result.IsSilentOrEmpty)
+        if (result.IsSilentOrEmpty || AudioSamples.Peak(result.Pcm.Span, result.Format) < SilencePeakThreshold)
         {
-            warnings.Add("The provider returned no audible audio for this segment.");
+            // Frame count alone cannot detect a silent decoder: it returns a correctly sized,
+            // correctly formatted buffer of zeros. See AudioSamples for why this is verified here
+            // rather than trusted from the provider's own self-test.
+            warnings.Add("The provider returned audio that is effectively silent.");
             Publish(PlaybackState.Error, null, NarrationError.SpeechSynthesisFailed(
                 "The speech provider produced silence for this segment.", segment.Id));
             return;
@@ -495,7 +509,10 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             await _assetStore.StoreAsync(asset, result.Pcm, ct).ConfigureAwait(false);
 
         if (generation != Generation) return;
-        lock (_gate) _prepared[segment.Id] = asset;
+        // The clip is held in memory as well as in the store. Playback must not depend on a cache
+        // being configured, and re-reading from disk to play what was just synthesised is waste.
+        // The lookahead bound is what keeps this from growing: only prepared segments are retained.
+        lock (_gate) _prepared[segment.Id] = new PreparedClip(asset, result.Pcm.ToArray());
         AttachTimings(segment, asset, warnings);
     }
 
@@ -564,25 +581,17 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     {
         var plan = _plan;
         if (plan is null) return;
-        SpeechAsset asset;
+        PreparedClip prepared;
         string segmentId;
         lock (_gate)
         {
             if (_segmentIndex < 0 || _segmentIndex >= plan.SegmentCount) return;
             segmentId = plan.Segments[_segmentIndex].Id;
-            if (!_prepared.TryGetValue(segmentId, out asset!)) return;
+            if (!_prepared.TryGetValue(segmentId, out prepared!)) return;
         }
         if (generation != Generation) return;
 
-        var pcm = _assetStore is not null ? await _assetStore.TryLoadPcmAsync(asset.Id, ct).ConfigureAwait(false) : null;
-        if (pcm is null)
-        {
-            Publish(PlaybackState.Error, null, NarrationError.SpeechSynthesisFailed("Prepared audio is no longer available.", segmentId));
-            return;
-        }
-        if (generation != Generation) return;
-
-        await _audio.LoadAsync(segmentId, asset, pcm.Value, ct).ConfigureAwait(false);
+        await _audio.LoadAsync(segmentId, prepared.Asset, prepared.Pcm, ct).ConfigureAwait(false);
         if (withinSeconds > 0) await _audio.SeekAsync(withinSeconds, ct).ConfigureAwait(false);
         await _audio.PlayAsync(ct).ConfigureAwait(false);
         Publish(PlaybackState.Playing, null);
@@ -667,8 +676,9 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             if (_segmentIndex < 0 || _segmentIndex >= plan.SegmentCount) return;
             segmentId = plan.Segments[_segmentIndex].Id;
         }
-        var asset = _prepared.GetValueOrDefault(segmentId);
-        if (asset is null) return;
+        var prepared = _prepared.GetValueOrDefault(segmentId);
+        if (prepared is null) return;
+        var asset = prepared.Asset;
 
         long sample = asset.Format.ToFrames(_audio.PositionSeconds);
         var cue = scheduler.Resolve(segmentId, sample);
@@ -763,6 +773,9 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         _prepareCts?.Dispose();
     }
 }
+
+/// <summary>A synthesised clip held ready for playback: its metadata and its samples.</summary>
+internal sealed record PreparedClip(SpeechAsset Asset, byte[] Pcm);
 
 /// <summary>Wall-clock monotonic time. Replaceable in tests so timing logic needs no waiting.</summary>
 public sealed class SystemMonotonicClock : IMonotonicClock

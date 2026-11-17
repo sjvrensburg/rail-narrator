@@ -23,11 +23,23 @@ public readonly record struct TextMapping(TextRange Output, TextRange Input);
 /// </remarks>
 public sealed record TransformedText(string Text, IReadOnlyList<TextMapping> Mappings, string SourceText)
 {
-    /// <summary>The identity transform over <paramref name="text"/>.</summary>
+    /// <summary>
+    /// The identity transform over <paramref name="text"/>.
+    /// </summary>
+    /// <remarks>
+    /// One mapping <b>per character</b>, not one mapping covering the whole string. Composition
+    /// resolves a downstream range by asking the upstream mapping what it came from, so a single
+    /// whole-string mapping answers "the entire string" for every character and collapses every
+    /// source link onto the whole unit. That is a silent correctness failure rather than a
+    /// performance detail: the highlights would cover the page.
+    /// </remarks>
     public static TransformedText Identity(string text)
     {
         ArgumentNullException.ThrowIfNull(text);
-        return new TransformedText(text, [new TextMapping(TextRange.OfString(text), TextRange.OfString(text))], text);
+        var mappings = new List<TextMapping>(text.Length);
+        for (int i = 0; i < text.Length; i++)
+            mappings.Add(new TextMapping(new TextRange(i, 1), new TextRange(i, 1)));
+        return new TransformedText(text, mappings, text);
     }
 
     /// <summary>
@@ -215,7 +227,30 @@ public static class TextNormaliser
         int fragmentStart = hyphenIndex - 1;
         while (fragmentStart > 0 && char.IsLetter(s[fragmentStart - 1])) fragmentStart--;
         if (hyphenIndex - fragmentStart < 2) return false;
-        return !StandalonePrefixes.Contains(s[fragmentStart..hyphenIndex].ToLowerInvariant());
+        if (StandalonePrefixes.Contains(s[fragmentStart..hyphenIndex].ToLowerInvariant())) return false;
+
+        // A hyphenated compound keeps its hyphens. "state-" at a line end followed by "of-the-art" is
+        // one compound word, not a soft hyphen, and joining it would invent "stateof". Without a
+        // dictionary the reliable signal is that either side already carries a hyphen of its own.
+        if (TokenContainsHyphen(s, breakEnd, forward: true)) return false;
+        if (TokenContainsHyphen(s, fragmentStart, forward: false)) return false;
+        return true;
+    }
+
+    /// <summary>True when the token starting at <paramref name="from"/> (in the given direction) contains a hyphen.</summary>
+    private static bool TokenContainsHyphen(string s, int from, bool forward)
+    {
+        if (forward)
+        {
+            for (int i = from; i < s.Length && !char.IsWhiteSpace(s[i]); i++)
+                if (s[i] == '-') return true;
+        }
+        else
+        {
+            for (int i = from - 1; i >= 0 && !char.IsWhiteSpace(s[i]); i--)
+                if (s[i] == '-') return true;
+        }
+        return false;
     }
 
     /// <summary>Prefixes that keep their hyphen even at a line break.</summary>

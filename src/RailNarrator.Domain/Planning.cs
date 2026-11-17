@@ -167,13 +167,19 @@ public sealed class NarrationPlanner
     {
         ArgumentNullException.ThrowIfNull(unit);
         var breaks = unit.LineBreakOffsets.ToHashSet();
-        var spoken = TextNormaliser.ExpandLigatures(unit.OriginalText)
+
+        // Order matters. Dehyphenation runs first because the recorded line-break offsets are offsets
+        // into OriginalText; expanding ligatures before it would shift every later offset by one per
+        // ligature and join or refuse the wrong hyphens. Composition keeps one mapping all the way
+        // back to the original characters.
+        var spoken = TransformedText.Identity(unit.OriginalText)
             .Then(t => TextNormaliser.Compose(t, TextNormaliser.Dehyphenate(t.Text, breaks)))
+            .Then(t => TextNormaliser.Compose(t, TextNormaliser.ExpandLigatures(t.Text)))
             .Then(t => TextNormaliser.Compose(t, TextNormaliser.CollapseWhitespace(t.Text)))
             .Then(t => TextNormaliser.Compose(t, TextNormaliser.ExpandForSpeech(t.Text, _options.PronunciationDictionary)));
 
         string text = spoken.Text.Trim();
-        int trim = LeadingTrim(unit.OriginalText, spoken.Text);
+        int trim = LeadingTrim(spoken.Text);
         var links = BuildSourceLinks(unit, spoken, trim, text.Length);
 
         var warnings = new List<string>(unit.ExtractionWarnings);
@@ -190,10 +196,14 @@ public sealed class NarrationPlanner
             ScriptRevision: 1);
     }
 
-    private static int LeadingTrim(string original, string transformed)
+    /// <summary>
+    /// How many leading whitespace characters <see cref="NarrationSegment.SpokenText"/> dropped by
+    /// being trimmed, so source links computed before the trim still land on the right offsets.
+    /// </summary>
+    private static int LeadingTrim(string transformed)
     {
         int n = 0;
-        while (n < original.Length && char.IsWhiteSpace(original[n])) n++;
+        while (n < transformed.Length && char.IsWhiteSpace(transformed[n])) n++;
         return n;
     }
 
