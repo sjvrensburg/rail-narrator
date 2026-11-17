@@ -315,6 +315,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         Busy = true;
         try
         {
+            // The document being replaced keeps its place, even if the new one fails to open.
+            await SavePositionAsync();
             await Coordinator.StopAsync();
             StatusMessage = "Reading the document…";
 
@@ -373,6 +375,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             _snapshot = snapshot;
             Plan = plan;
             DocumentPath = path;
+            _documentHash = hash;
             committed = true;
 
             RebuildTranscript();
@@ -381,6 +384,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             var position = await _services.PlanStore.TryGetPositionAsync(hash);
             await Coordinator.LoadPlanAsync(plan, position);
             if (position is not null) ShowRestoredPreferences(position);
+            // The starting passage is where the reader already is; only a move is worth saving.
+            _lastSavedSegmentId = Coordinator.Snapshot.SegmentId;
 
             StatusMessage = position is { SegmentId: not null }
                 ? $"Ready. Restored your position ({plan.SegmentCount} passages)."
@@ -524,6 +529,14 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             // last ("Seeking", "Preparing speech") for as long as the passage lasted.
             else if (snapshot.State == PlaybackState.Playing && snapshot.SegmentCount > 0)
                 StatusMessage = $"Reading passage {snapshot.SegmentIndex + 1} of {snapshot.SegmentCount}.";
+            // Save the place on every move, not only at exit: a crash, a power cut or a SIGKILL
+            // otherwise lost the whole session's progress. Not while loading, when the snapshot
+            // describes a plan whose restored preferences are not applied yet.
+            if (!Busy && DocumentPath is not null && snapshot.SegmentId is { } segmentId && segmentId != _lastSavedSegmentId)
+            {
+                _lastSavedSegmentId = segmentId;
+                RunObserved(SavePositionAsync(), "Could not save the reading position");
+            }
             RefreshCommands();
         }
         if (Dispatcher.UIThread.CheckAccess()) Apply(); else Dispatcher.UIThread.Post(Apply);
@@ -691,13 +704,22 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     /// <summary>Remembers where the reader stopped. Never triggers auto-play on the next open.</summary>
     public async Task SavePositionAsync()
     {
-        if (DocumentPath is null || Plan is null) return;
-        string hash = CacheKey.Sha256HexOfFile(DocumentPath);
+        if (_documentHash is null || Plan is null) return;
+        // Captured on the caller's thread, then written one at a time: saves now happen on every
+        // passage change, and an older position must never land after a newer one.
         var snapshot = Coordinator.Snapshot;
-        await _services.PlanStore.SavePositionAsync(new ReaderPosition(
-            hash, snapshot.SegmentId, PageIndex: 0, snapshot.PositionSeconds,
-            SelectedVoiceId, _services.CurrentSettings.MathMode, Zoom, FollowMode, PlaybackRate));
+        var position = new ReaderPosition(
+            _documentHash, snapshot.SegmentId, PageIndex: 0, snapshot.PositionSeconds,
+            SelectedVoiceId, _services.CurrentSettings.MathMode, Zoom, FollowMode, PlaybackRate);
+        await _saveGate.WaitAsync();
+        try { await _services.PlanStore.SavePositionAsync(position); }
+        finally { _saveGate.Release(); }
     }
+
+    // The loaded document's content hash, computed once at load rather than on every save.
+    private string? _documentHash;
+    private string? _lastSavedSegmentId;
+    private readonly SemaphoreSlim _saveGate = new(1, 1);
 
     private void RefreshCommands()
     {

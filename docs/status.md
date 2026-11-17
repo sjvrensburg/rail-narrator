@@ -226,9 +226,6 @@ Not fixed yet. Each was observed in the run described above.
   for neither unless one clearly dominates.
 - **One display equation becomes several passages**, each announcing that it could not be read,
   and two of three display equations tried did not respond to a click.
-- **Closing by signal saves no reading position.** Only File > Exit (and, untested, the window's
-  close button) disposes the view model, which is where the position is written; a `SIGTERM`
-  ends the process without it.
 - **About 0.4 s of silence is still inserted between passages** (on top of the ~0.5 s each Kokoro
   clip ends with). It is output latency: from a write to the first presented frame takes
   ~320–335 ms on this machine (PipeWire through its ALSA bridge, Bluetooth sink), even on a
@@ -367,3 +364,12 @@ threads meeting.
     is now 366–396 ms at 1× and 426–454 ms at 1.25×; a loopback recording of the sink gave
     373–405 ms at 1×, agreeing with the engine's clock. The remaining time is output latency
     (see Open defects). Not re-measured in the GUI: other audio was playing on the sink.
+28. **The reading position was saved only by File > Exit or the close button.** A `SIGTERM`
+    (logout, `kill`), Ctrl+C, a crash or a power cut lost the session's progress, and opening a
+    second document did not save the first one's place. The position is now saved on every move
+    to another passage (the document's hash is computed once at load, not on every save, and
+    saves are serialised so an older one cannot land last), before another document is opened,
+    and SIGTERM, SIGINT and SIGHUP close the window the ordinary way. Verified in the GUI: two
+    Next presses wrote s00009 while the app was running; after `kill -KILL` a relaunch reported
+    "Restored your position" and Next continued to s00010; `kill -TERM` then exited cleanly in
+    under 2 s, saving on the way out.

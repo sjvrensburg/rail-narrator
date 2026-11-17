@@ -1,6 +1,8 @@
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
+using Avalonia.Threading;
+using System.Runtime.InteropServices;
 using RailNarrator.App.Composition;
 using RailNarrator.App.Views;
 
@@ -15,8 +17,10 @@ public sealed class App : Application
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             var services = ServiceRegistry.Create();
-            desktop.MainWindow = new MainWindow(services);
+            var window = new MainWindow(services);
+            desktop.MainWindow = window;
             desktop.Exit += (_, _) => DisposeServices(services);
+            HandleTerminationSignals(window);
         }
         base.OnFrameworkInitializationCompleted();
     }
@@ -41,4 +45,25 @@ public sealed class App : Application
     }
 
     private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// Turns SIGTERM, SIGINT and SIGHUP — a session logout, <c>kill</c>, Ctrl+C in a terminal —
+    /// into an ordinary window close, so the reading position is saved and the speech runtime and
+    /// alignment worker are stopped. Without this the runtime's default handling ended the process
+    /// with neither.
+    /// </summary>
+    private static void HandleTerminationSignals(MainWindow window)
+    {
+        foreach (var signal in new[] { PosixSignal.SIGTERM, PosixSignal.SIGINT, PosixSignal.SIGHUP })
+        {
+            SignalRegistrations.Add(PosixSignalRegistration.Create(signal, context =>
+            {
+                context.Cancel = true;   // the close below ends the process once disposal is done
+                Dispatcher.UIThread.Post(window.Close);
+            }));
+        }
+    }
+
+    // Kept alive for the life of the process: a collected registration stops handling its signal.
+    private static readonly List<PosixSignalRegistration> SignalRegistrations = [];
 }
