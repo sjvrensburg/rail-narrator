@@ -97,15 +97,15 @@
     {
       "id": "pp-doclayout-v3",
       "component": "Semantic layout model (block roles incl. display maths)",
-      "file": "not bundled",
-      "source": "RailReader.Core.Analysis; model downloaded separately by the user",
+      "file": "PP-DocLayoutV3.onnx",
+      "source": "https://huggingface.co/stefanj0/PP-DocLayoutV3-ONNX/resolve/main/PP-DocLayoutV3.onnx (RailReaderCore LayoutModelRegistry); downloaded only from Models and endpoints > Download layout model",
       "revision": "PP-DocLayoutV3",
-      "bytes": null,
-      "sha256": null,
-      "licence": "Apache-2.0 (model)",
+      "bytes": 130502049,
+      "sha256": "d24809294b2f9f1a9a2767043a64df2714b66e5be056887be2233d1117d784f6",
+      "licence": "Apache-2.0 (PaddlePaddle model)",
       "required": false,
       "optional": true,
-      "notes": "Without it the model-free TextLayoutAnalyzer is used, which reports every block as plain text. Role-keyed features (header/footer suppression by role, display-maths detection by role) then fall back to geometry and glyph cues, which is less accurate but still functional. Set LayoutModelPath in settings to enable."
+      "notes": "Used automatically once installed in the models directory (or set LayoutModelPath). Supplies block roles, so narration skips running headers, footers, page numbers, footnotes, references and figures, announces tables and algorithms instead of reading their cells, and takes display formulas from the model rather than geometry. Without it the model-free TextLayoutAnalyzer labels every block as text and those features fall back to geometric heuristics."
     },
     {
       "id": "mfa-english-acoustic",

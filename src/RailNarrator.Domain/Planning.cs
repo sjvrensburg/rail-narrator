@@ -41,7 +41,7 @@ public static class NarrationVersions
     public const string LocalMathReader = "local-math/1";
 
     /// <summary>Bump when the prose normalisation pipeline changes.</summary>
-    public const string ProsePipeline = "prose/3-years-and-identifiers";
+    public const string ProsePipeline = "prose/4-layout-roles";
 }
 
 /// <summary>Planner configuration.</summary>
@@ -172,9 +172,11 @@ public sealed class NarrationPlanner
             var unit = units[i];
             if (unit.IsMaths) mathsSeen++;
 
-            NarrationSegment segment = unit.IsMaths
-                ? await BuildMathsSegmentAsync(unit, seq++, ct).ConfigureAwait(false)
-                : BuildProseSegment(unit, seq++);
+            NarrationSegment segment = unit.Kind is ReadingUnitKind.Table or ReadingUnitKind.Algorithm
+                ? StructureAnnouncement(unit, seq++)
+                : unit.IsMaths
+                    ? await BuildMathsSegmentAsync(unit, seq++, ct).ConfigureAwait(false)
+                    : BuildProseSegment(unit, seq++);
 
             // A unit with nothing to say produces no segment; the text was empty or whitespace-only.
             if (segment.SpokenText.Trim().Length > 0) segments.Add(segment);
@@ -358,6 +360,20 @@ public sealed class NarrationPlanner
     /// </summary>
     private static IReadOnlyList<SourceLink> WholeUnitLinks(IReadOnlyList<string> anchors, int spokenLength)
         => anchors.Count > 0 ? [new SourceLink(new TextRange(0, spokenLength), anchors)] : [];
+
+    /// <summary>
+    /// A table or algorithm: announced, with the whole region linked so it is highlighted and
+    /// brought into view while the announcement plays. Its cells are never read as sentences.
+    /// </summary>
+    public NarrationSegment StructureAnnouncement(ReadingUnit unit, int seq)
+    {
+        ArgumentNullException.ThrowIfNull(unit);
+        string text = unit.Kind == ReadingUnitKind.Algorithm ? "Algorithm not read aloud." : "Table not read aloud.";
+        return new NarrationSegment(
+            $"s{seq:D5}", [unit.Id], unit.Kind, text, _options.Language,
+            WholeUnitLinks(unit.AnchorIds, text.Length), _options.MathMode,
+            ScriptProvenance.StructureAnnouncement, [.. unit.ExtractionWarnings], 1);
+    }
 
     private NarrationSegment Announcement(int seq, ReadingUnit unit, IReadOnlyList<string> anchors, List<string> warnings, ScriptProvenance provenance)
         => new(

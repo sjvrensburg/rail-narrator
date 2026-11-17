@@ -245,11 +245,21 @@ public sealed class RailReaderExtractionSource : IExtractionSource, IDisposable
         PageAnalysis analysis;
         try
         {
-            analysis = analyzer.RunAnalysis(rgb, pxW, pxH, pageW, pageH, text.CharBoxes);
+            // A layout model takes the page at exactly its input size (max side == InputSize) and
+            // rejects anything larger rather than crop it. Rendering it the high-resolution raster
+            // made every page fail, so a configured model silently produced no blocks at all. The
+            // high-resolution raster is still what line detection below works on.
+            if (backend.Capabilities.Classes.Count > 0 && backend.Capabilities.InputSize > 0
+                && Math.Max(pxW, pxH) != backend.Capabilities.InputSize)
+            {
+                var (modelRgb, modelW, modelH) = pdf.RenderPagePixmap(pageIndex, backend.Capabilities.InputSize, viewRotation);
+                analysis = analyzer.RunAnalysis(modelRgb, modelW, modelH, pageW, pageH, text.CharBoxes);
+            }
+            else analysis = analyzer.RunAnalysis(rgb, pxW, pxH, pageW, pageH, text.CharBoxes);
         }
         catch (Exception ex)
         {
-            warnings.Add($"Layout analysis failed ({ex.GetType().Name}); this page may not be narrated correctly.");
+            warnings.Add($"Layout analysis failed ({ex.GetType().Name}: {ex.Message}); this page may not be narrated correctly.");
             analysis = new PageAnalysis { PageWidth = pageW, PageHeight = pageH };
         }
 

@@ -7,12 +7,12 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 268 passing, 2 opt-in skips, 0 warnings
+## Verified by automated tests — 277 passing, 3 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
-| `RailNarrator.Domain.Tests` | 131 | Years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
-| `RailNarrator.Pdf.Tests` | 15 | **Real PDFs** through the real RailReaderCore pipeline, including a cached snapshot building the same plan as a fresh one |
+| `RailNarrator.Domain.Tests` | 140 | Layout roles (model formulas trusted over geometry, display lines merged, headings kept apart, inline maths kept in its sentence, tables announced, publisher cover sheets skipped), years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
+| `RailNarrator.Pdf.Tests` | 15 (+1 opt-in) | **Real PDFs** through the real RailReaderCore pipeline, including a cached snapshot building the same plan as a fresh one; opt-in, the real PP-DocLayoutV3 model through the adapter |
 | `RailNarrator.Speech.Tests` | 36 | PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
 | `RailNarrator.Audio.Tests` | 39 | Resampler (polyphase path equal to the direct sinc filter on four rate pairs), time-stretcher (fast grain search equal to the direct search at three rates), playback engine against a controllable fake device, engine lock ordering, coordinator-plus-engine transition stress |
 | `RailNarrator.Infrastructure.Tests` | 9 | Cache round-trips and waveform integrity, including same-length replacement; extraction-cache keying, degraded and encrypted documents never stored, corrupt entries treated as misses |
@@ -227,6 +227,11 @@ Not fixed yet. Each was observed in the run described above.
   for neither unless one clearly dominates.
 - **One display equation becomes several passages**, each announcing that it could not be read,
   and two of three display equations tried did not respond to a click.
+- **A sideways page with no Rotate attribute loses a line under the layout model.** The
+  synthetic landscape scan comes out as three captions and drops "Final line of the sideways
+  body."; the model-free analyzer read all four lines. The model sees the page unrotated.
+- **A restored position is a passage id.** When a document's units change (a new layout model, a
+  new pipeline version), the saved id can name a different passage than the one the reader left.
 - **About 0.4 s of silence is still inserted between passages** (on top of the ~0.5 s each Kokoro
   clip ends with). It is output latency: from a write to the first presented frame takes
   ~320–335 ms on this machine (PipeWire through its ALSA bridge, Bluetooth sink), even on a
@@ -384,3 +389,20 @@ threads meeting.
     27-page paper the spoken text changed in 39 places, every one intended: 34 years, the two
     ISSNs and two dates; on the thesis, 7 citation years. `ProsePipeline` was bumped so cached
     plans and audio are rebuilt.
+30. **A configured layout model produced nothing at all.** The adapter rasterised each page for
+    line detection (up to 8192 px) and handed that raster to PP-DocLayoutV3, which accepts only its
+    800 px input size and threw on every page; the warning named only "ArgumentException". The
+    model now gets a raster at its input size and line detection keeps the high-resolution one.
+    A model downloaded from the new Models menu entry (131 MB, checksum from RailReaderCore's
+    registry) is used without further setup and changes the extraction cache key.
+31. **First-reading skips by layout role.** With the model, on the 27-page GARCH article: 150
+    blocks are skipped by role (footnotes, references, figures, page furniture), the publisher's
+    download cover sheet is skipped (it read a DOI digit by digit and "Article views: nine hundred
+    seventy six"), and the passages drop from 833 to 595. Display maths falls from 297 units to
+    80 — the model's formula class is trusted, where the geometric fallback promoted prose lines
+    carrying a symbol — and each equation is one unit instead of its summation limits as
+    fragments. Headings no longer run into the paragraph after them. A sentence with inline maths
+    stays one unit, flagged as containing maths (147 on that paper) instead of being cut into
+    "where", "ε ∗", "t". Tables and algorithm listings are announced ("Table not read aloud.") with
+    the whole region highlighted, instead of their cells being read as sentences of numbers. On
+    the annotated thesis scan, OCR'd handwriting ("lact plact", "rewoucd") is no longer read.

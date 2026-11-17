@@ -81,6 +81,13 @@ public sealed record ReadingUnit(
 
     public bool IsMaths => Kind is ReadingUnitKind.InlineMath or ReadingUnitKind.DisplayMath;
 
+    /// <summary>
+    /// A prose sentence with mathematics inside it. The sentence stays one unit — cutting the maths
+    /// out left fragments such as "where", "ε ∗", "t" — and is interpreted whole when a maths
+    /// interpreter is configured, read verbatim otherwise.
+    /// </summary>
+    public bool ContainsMaths { get; init; }
+
     /// <summary>Every anchor id, in order. Used to validate that a verbaliser only cites real sources.</summary>
     public IReadOnlyList<string> AnchorIds => Anchors.Select(a => a.AnchorId).ToList();
 
@@ -136,6 +143,12 @@ public enum ScriptProvenance
 
     /// <summary>An explicit announcement that the content could not be read reliably.</summary>
     FailureAnnouncement,
+
+    /// <summary>
+    /// A fixed announcement standing in for content that is shown, not read: a table or an
+    /// algorithm listing. Contains no document text.
+    /// </summary>
+    StructureAnnouncement,
 }
 
 /// <summary>
@@ -232,7 +245,7 @@ public sealed record NarrationPlanHeader(
 /// <param name="IncludeCaptions">Read figure and table captions. On by default: a caption is usually the only narratable part of a visual region.</param>
 /// <param name="IncludeReferences">Read the bibliography. Off by default.</param>
 /// <param name="IncludeEquations">Read mathematical content. On by default.</param>
-/// <param name="IncludeTables">Announce tables rather than inventing their contents. On by default.</param>
+/// <param name="IncludeTables">Announce each table ("Table not read aloud.") with the whole table highlighted, rather than reading its cells. On by default; off skips tables silently. Algorithm listings are announced the same way.</param>
 public sealed record NarrationFilterSettings(
     bool ExcludeRunningHeaders = true,
     bool ExcludeFooters = true,

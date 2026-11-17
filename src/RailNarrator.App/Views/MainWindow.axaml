@@ -57,6 +57,7 @@
       </MenuItem>
       <MenuItem Header="_Models and endpoints">
         <MenuItem Header="Download _Kokoro model…" Command="{Binding DownloadKokoroModel}" />
+        <MenuItem Header="Download _layout model (PP-DocLayoutV3, 131 MB)…" Command="{Binding DownloadLayoutModel}" />
         <MenuItem Header="_Test text LLM endpoint" Command="{Binding TestMathEndpoint}" />
         <MenuItem Header="Test _vision endpoint" Command="{Binding TestVisionEndpoint}" />
       </MenuItem>
