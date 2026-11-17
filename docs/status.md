@@ -81,13 +81,41 @@ The clock is accurate to half a millisecond against wall time **and** correctly
 excludes the 2555 still-queued frames. That separation is the whole point: a clock
 counting queued samples would run ~58 ms ahead of what the listener hears.
 
-### ZONOS3 sidecar
+### ZONOS3 sidecar, through this application's adapter
 A real `zonos3-server` was started from the operator's existing build and driven
-over HTTP: 4.333 s of audio in 2.516 s (RTF 0.58), peak 0.5117, with
-`speaker_cfg_scale: 1.5` and `condition_values: {"loudness": -18}` accepted. The
-response headers (`X-Audio-Sample-Rate`, `X-Audio-Format`, `X-Audio-Channels`,
-`X-Seed`, `X-Decoder`) were read and honoured. 30 speakers enumerated; Imogen is
-`default_b78b28baf5c31a1d`.
+through `ZonosHttpTtsProvider` (not curl):
+
+```
+voices: 30
+[s00000] 4.50s audio in 2742 ms (RTF 0.61)  format=44100Hz/1ch/Float32  peak=0.6204 rms=0.0711
+         WARN Trimmed 232 ms of leading silence.
+[s00001] 4.36s audio in 2615 ms (RTF 0.60)  format=44100Hz/1ch/Float32  peak=0.7346 rms=0.0898
+         WARN Trimmed 244 ms of leading silence.
+```
+
+`speaker_cfg_scale: 1.5` and `condition_values: {"loudness": -18}` were accepted;
+the response headers (`X-Audio-Sample-Rate`, `X-Audio-Format`, `X-Audio-Channels`,
+`X-Seed`, `X-Decoder`) were read and honoured rather than assumed. Imogen is
+`default_b78b28baf5c31a1d`. The leading-silence trim matters here: this runtime
+pads clips, and without trimming the first ~240 ms of every clip would hold the
+previous highlight on screen while nothing is being said.
+
+### Full chain in one pass
+`rail-narrator-smoke all` — fixture, extraction, units, plan, audio clock and real
+Kokoro synthesis, in a single process:
+
+```
+PASS  fixture      synthetic PDF written
+PASS  extraction   247 chars over 1 page(s)
+PASS  units        4 reading units from 245 source characters
+PASS  plan         4 segments, all source-linked
+PASS  audio-clock  queued 100800 frames; mid-clip position 2.100s of 4.200s
+PASS  kokoro       1.72s of audio, peak 0.404, in 1200 ms
+```
+
+The audio-clock line is the one worth reading closely: advancing the device to
+exactly half of a 4.200 s clip reports 2.100 s. The clock is exact against the
+device's own presented-frame count, not approximate against wall time.
 
 ### Desktop application
 Built, packaged and launched under X11:

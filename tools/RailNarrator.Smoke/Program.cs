@@ -476,11 +476,21 @@ internal static class Program
                     "fake", "fake/1", "fake-default", "", [], TimingProvenance.ClipBoundary, 1);
                 await engine.LoadAsync(asset.SegmentId, asset, result.Pcm).ConfigureAwait(false);
                 await engine.PlayAsync().ConfigureAwait(false);
-                fake.AdvanceBySeconds(result.DurationSeconds / 2);
+
+                // The engine writes from its own thread and the fake device only advances frames that
+                // have actually been queued, so wait for the writer before advancing. Advancing first
+                // measures nothing - which is exactly the flake this caught in the test suite.
+                long want = result.Format.ToFrames(result.DurationSeconds / 2);
+                var deadline = Environment.TickCount64 + 5000;
+                while (fake.TotalWritten - fake.PresentedFrames < want && Environment.TickCount64 < deadline)
+                    await Task.Delay(10).ConfigureAwait(false);
+
+                fake.AdvanceByFrames(want);
                 double mid = engine.PositionSeconds;
+                bool queued = fake.TotalWritten > 0;
                 fake.DrainAll();
-                results.Add(("audio-clock", mid > 0 && mid < result.DurationSeconds,
-                    $"mid-clip position {mid:F3}s of {result.DurationSeconds:F3}s"));
+                results.Add(("audio-clock", queued && mid > 0 && mid < result.DurationSeconds,
+                    $"queued {fake.TotalWritten} frames; mid-clip position {mid:F3}s of {result.DurationSeconds:F3}s"));
             }
         }
 
