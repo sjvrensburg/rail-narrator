@@ -199,6 +199,25 @@ public sealed class LayoutRoleTests
     }
 
     [Fact]
+    public void ArticleMetadataIsSkipped_ButNotABodySentenceThatStartsTheSameWay()
+    {
+        var snapshot = new LayoutPage(0)
+            .Block(BlockKind.Title, "Specification and testing of time-varying models")
+            .Block(BlockKind.Text, "In this article we develop a specification technique for these models.")
+            .Block(BlockKind.Text, "JEL CLASSIFICATION C12; C22; C51; C52")
+            .Block(BlockKind.Text, "Keywords: conditional heteroskedasticity; nonlinear time series")
+            .Block(BlockKind.Text, "Received wisdom holds that the variance is constant over long samples.")
+            .Snapshot();
+
+        var units = new ReadingUnitBuilder().Build(snapshot, out var diagnostics);
+
+        Assert.DoesNotContain(units, u => u.OriginalText.StartsWith("JEL", StringComparison.Ordinal));
+        Assert.DoesNotContain(units, u => u.OriginalText.StartsWith("Keywords", StringComparison.Ordinal));
+        Assert.Contains(units, u => u.OriginalText.StartsWith("Received wisdom", StringComparison.Ordinal));
+        Assert.Contains(diagnostics, d => d.Contains("metadata", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void TablesCanBeSkippedEntirely()
     {
         var snapshot = new LayoutPage()

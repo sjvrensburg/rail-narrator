@@ -7,11 +7,11 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 320 passing, 3 opt-in skips, 0 warnings
+## Verified by automated tests — 321 passing, 3 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
-| `RailNarrator.Domain.Tests` | 165 | A lead-in sentence and its equation interpreted as one passage, Citation markers left out (and brackets that are content kept), regenerate re-asks the model, Maths left pending with an honest fallback, interpreted once with surrounding definitions and cached, spoken by the coordinator; Layout roles (model formulas trusted over geometry, display lines merged, headings kept apart, inline maths kept in its sentence, tables announced, publisher cover sheets skipped), years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
+| `RailNarrator.Domain.Tests` | 166 | Front-matter metadata skipped (body sentences that start the same way kept), A lead-in sentence and its equation interpreted as one passage, Citation markers left out (and brackets that are content kept), regenerate re-asks the model, Maths left pending with an honest fallback, interpreted once with surrounding definitions and cached, spoken by the coordinator; Layout roles (model formulas trusted over geometry, display lines merged, headings kept apart, inline maths kept in its sentence, tables announced, publisher cover sheets skipped), years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
 | `RailNarrator.Pdf.Tests` | 15 (+1 opt-in) | **Real PDFs** through the real RailReaderCore pipeline, including a cached snapshot building the same plan as a fresh one; opt-in, the real PP-DocLayoutV3 model through the adapter |
 | `RailNarrator.Speech.Tests` | 36 | PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
 | `RailNarrator.Audio.Tests` | 39 | Resampler (polyphase path equal to the direct sinc filter on four rate pairs), time-stretcher (fast grain search equal to the direct search at three rates), playback engine against a controllable fake device, engine lock ordering, coordinator-plus-engine transition stress |
@@ -447,3 +447,13 @@ threads meeting.
     region. On the GARCH paper with the local model: 8 of 8 passages interpreted, median 8.3 s;
     one took 82 s. The validator now also rejects "phi", "rho", "mu" and the other Greek letter
     names (one answer had said "two plus phi"); prompt version 3 so no cached answer escapes it.
+36. **Front matter and run-on blocks.** "JEL CLASSIFICATION C12; C22; C51; C52" was read; keyword
+    lines, classification codes, article history and contact lines on the first two article
+    pages are now skipped when they carry their standard label ("Received wisdom holds…" in the
+    body is still read: ordinary-word labels count only in capitals, before a colon or a date,
+    or beside an e-mail address). Two blocks of the same kind are now separate units when the
+    first ends finished (a full stop, a digit, a bracket) or is a single line, and the next
+    starts with a capital; a paragraph flowing into the next column ends mid-sentence and stays
+    whole. On the GARCH paper this separated "…, j = 1, …, p." from the next sentence and a
+    figure's axis label ("SPD/USD") from its caption; on the thesis, a list item from the
+    paragraph after it.
