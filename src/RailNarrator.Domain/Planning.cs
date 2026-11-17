@@ -41,7 +41,7 @@ public static class NarrationVersions
     public const string LocalMathReader = "local-math/1";
 
     /// <summary>Bump when the prose normalisation pipeline changes.</summary>
-    public const string ProsePipeline = "prose/4-layout-roles";
+    public const string ProsePipeline = "prose/5-citations-dropped";
 }
 
 /// <summary>Planner configuration.</summary>
@@ -183,10 +183,10 @@ public sealed class NarrationPlanner
             NarrationSegment segment = unit.Kind is ReadingUnitKind.Table or ReadingUnitKind.Algorithm
                 ? StructureAnnouncement(unit, seq++)
                 : _options.DefersMaths && (unit.Kind == ReadingUnitKind.DisplayMath || unit.ContainsMaths)
-                    ? PendingInterpretation(unit, seq++)
+                    ? PendingInterpretation(unit, seq++, filters)
                     : unit.IsMaths
                         ? await BuildMathsSegmentAsync(unit, seq++, ct).ConfigureAwait(false)
-                        : BuildProseSegment(unit, seq++);
+                        : BuildProseSegment(unit, seq++, filters);
 
             // A unit with nothing to say produces no segment; the text was empty or whitespace-only.
             if (segment.SpokenText.Trim().Length > 0) segments.Add(segment);
@@ -212,8 +212,9 @@ public sealed class NarrationPlanner
     /// Builds the spoken text for a prose unit and links each spoken fragment back to the anchors it
     /// came from. Pure and synchronous: no model is involved.
     /// </summary>
-    public NarrationSegment BuildProseSegment(ReadingUnit unit, int seq)
+    public NarrationSegment BuildProseSegment(ReadingUnit unit, int seq, NarrationFilterSettings? filters = null)
     {
+        bool dropCitations = !(filters ?? NarrationFilterSettings.Default).IncludeCitations;
         ArgumentNullException.ThrowIfNull(unit);
         var breaks = unit.LineBreakOffsets.ToHashSet();
 
@@ -224,6 +225,7 @@ public sealed class NarrationPlanner
         var spoken = TransformedText.Identity(unit.OriginalText)
             .Then(t => TextNormaliser.Compose(t, TextNormaliser.Dehyphenate(t.Text, breaks)))
             .Then(t => TextNormaliser.Compose(t, TextNormaliser.ExpandLigatures(t.Text)))
+            .Then(t => dropCitations ? TextNormaliser.Compose(t, TextNormaliser.DropCitations(t.Text)) : t)
             .Then(t => TextNormaliser.Compose(t, TextNormaliser.CollapseWhitespace(t.Text)))
             .Then(t => TextNormaliser.Compose(t, TextNormaliser.ExpandForSpeech(t.Text, _options.PronunciationDictionary)));
 
@@ -376,11 +378,11 @@ public sealed class NarrationPlanner
     /// then — the verbatim reading of a sentence, the announcement for an equation — so a failed
     /// or unavailable interpreter still leaves something honest to say.
     /// </summary>
-    public NarrationSegment PendingInterpretation(ReadingUnit unit, int seq)
+    public NarrationSegment PendingInterpretation(ReadingUnit unit, int seq, NarrationFilterSettings? filters = null)
     {
         ArgumentNullException.ThrowIfNull(unit);
         if (unit.Kind != ReadingUnitKind.DisplayMath && unit.Kind != ReadingUnitKind.InlineMath)
-            return BuildProseSegment(unit, seq) with { Provenance = ScriptProvenance.PendingInterpretation };
+            return BuildProseSegment(unit, seq, filters) with { Provenance = ScriptProvenance.PendingInterpretation };
         var warnings = new List<string>(unit.ExtractionWarnings);
         return Announcement(seq, unit, unit.AnchorIds, warnings, ScriptProvenance.PendingInterpretation);
     }

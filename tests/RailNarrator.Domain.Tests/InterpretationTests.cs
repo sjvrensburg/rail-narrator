@@ -155,6 +155,51 @@ public sealed class InterpretationTests
         lock (published) Assert.Equal(words, published.First(s => s.Id == plan.Segments[1].Id).SpokenText);
     }
 
+    [Fact]
+    public async Task RegenerateAsksAgainDespiteTheCache_AndKeepsTheWordingIfTheAnswerIsUnusable()
+    {
+        var plan = await PlanAsync(Interpret);
+        int call = 0;
+        var interpreter = new FakeInterpreter(_ => ++call switch
+        {
+            1 => new MathInterpretationResult("The variance splits into two multiplied parts.", [], []),
+            2 => new MathInterpretationResult("The variance is a product of a short-run and a long-run part.", [], []),
+            _ => MathInterpretationResult.Reject("It still contains notation."),
+        });
+        var resolver = new MathInterpretationResolver(interpreter, cache: new MemoryCache(), options: Interpret);
+
+        var first = await resolver.ResolveAsync(plan, plan.Segments[1]);
+        var second = await resolver.RefreshAsync(plan, first);
+        var third = await resolver.RefreshAsync(plan, second);
+
+        Assert.Equal(3, interpreter.Requests.Count);   // each refresh went to the model, not the cache
+        Assert.Equal("The variance is a product of a short-run and a long-run part.", second.SpokenText);
+        Assert.True(second.ScriptRevision > first.ScriptRevision);
+        Assert.Equal(second.SpokenText, third.SpokenText);
+        Assert.Contains(third.Warnings, w => w.Contains("previous wording is kept", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task TheCoordinatorSpeaksARegeneratedPassage()
+    {
+        var plan = await PlanAsync(Interpret);
+        int call = 0;
+        var interpreter = new FakeInterpreter(_ => new MathInterpretationResult(++call == 1 ? "First wording of the passage." : "Second wording of the passage.", [], []));
+        var tts = new FakeTtsProvider();
+        await using var coordinator = new NarrationCoordinator(tts, new FakeAudioTransport(),
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 3),
+            resolver: new MathInterpretationResolver(interpreter, options: Interpret));
+        await coordinator.LoadPlanAsync(plan);
+        await WaitUntil(() => coordinator.Plan?.Segments[1].Provenance == ScriptProvenance.ModelGenerated, "the first interpretation");
+
+        var fresh = await coordinator.RegenerateSegmentAsync(plan.Segments[1].Id);
+        await coordinator.PlayAsync();
+
+        Assert.Equal("Second wording of the passage.", fresh?.SpokenText);
+        Assert.Equal("Second wording of the passage.", coordinator.Plan!.Segments[1].SpokenText);
+        await WaitUntil(() => tts.Requests.Any(r => r.Text == "Second wording of the passage."), "the regenerated wording to be synthesised");
+    }
+
     private static async Task WaitUntil(Func<bool> condition, string what, int timeoutMs = 5000)
     {
         var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);

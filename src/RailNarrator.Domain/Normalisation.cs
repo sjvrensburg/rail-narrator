@@ -128,6 +128,57 @@ public static class TextNormaliser
         return new TransformedText(sb.ToString(), mappings, input);
     }
 
+    // An author name: capitalised, possibly with an initial particle, a hyphen or diacritics.
+    private const string Author = @"(?:(?:van|von|de|der|den|du|da|di|le|la)\s+)*\p{Lu}[\p{L}'’\-]+";
+    private const string Year = @"(?:1[5-9]|20)\d{2}[a-z]?";
+
+    // "(Hamilton, 1989; Ang & Timmermann, 2012)", "(see Engle, 1982)", "(Glosten et al., 1993, p. 4)".
+    private static readonly System.Text.RegularExpressions.Regex Parenthetical = new(
+        @"\s*\((?=[^()]*" + Author + @"(?:\s*(?:,|and|&)\s*" + Author + @")*(?:\s+et\s+al\.?)?,?\s+" + Year + @")[^()]{1,300}\)",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    // "Engle (1982)", "Amado and Teräsvirta (2008, 2013)": the bracket holds only years.
+    private static readonly System.Text.RegularExpressions.Regex Narrative = new(
+        @"(?<=(?:" + Author + @"|al\.)\s*)\s*\(\s*" + Year + @"(?:\s*[,;]\s*" + Year + @")*\s*\)",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    // " [12]", " [3, 7]", " [4–6]": after a space, so an index such as "v[2]" is not a citation.
+    private static readonly System.Text.RegularExpressions.Regex Numeric = new(
+        @"\s+\[\d{1,3}(?:\s*[,–\-]\s*\d{1,3})*\]", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// Leaves out in-line citation markers, as a reader does on a first reading: "Engle (1982)
+    /// proposed" becomes "Engle proposed", "volatility (Hamilton, 1989)." becomes "volatility.",
+    /// and "[12]" disappears. The dropped characters keep a mapping to an empty output range, so
+    /// highlights around them are unaffected.
+    /// </summary>
+    /// <remarks>
+    /// A bracket counts as a citation only with an author or a name before it: "(1990–1995)" in
+    /// "the period (1990–1995)" is content and is read.
+    /// </remarks>
+    public static TransformedText DropCitations(string input)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+        var drop = new bool[input.Length];
+        foreach (var regex in new[] { Parenthetical, Narrative, Numeric })
+            foreach (System.Text.RegularExpressions.Match m in regex.Matches(input))
+                for (int i = m.Index; i < m.Index + m.Length; i++) drop[i] = true;
+
+        var sb = new System.Text.StringBuilder(input.Length);
+        var mappings = new List<TextMapping>(input.Length);
+        for (int i = 0; i < input.Length; i++)
+        {
+            if (drop[i])
+            {
+                mappings.Add(new TextMapping(new TextRange(sb.Length, 0), new TextRange(i, 1)));
+                continue;
+            }
+            mappings.Add(new TextMapping(new TextRange(sb.Length, 1), new TextRange(i, 1)));
+            sb.Append(input[i]);
+        }
+        return new TransformedText(sb.ToString(), mappings, input);
+    }
+
     /// <summary>
     /// Collapses runs of whitespace to a single space and trims the ends, keeping a mapping for every
     /// surviving character. Whitespace that collapses away maps to an empty output range so its
@@ -508,7 +559,7 @@ public static class SpeechExpansions
     {
         ["§"] = "section ", ["§§"] = "sections ",
         ["%"] = " percent", ["‰"] = " per mille",
-        ["e.g."] = "for example, ", ["i.e."] = "that is, ", ["et al."] = "and others, ",
+        ["e.g."] = "for example, ", ["i.e."] = "that is, ", ["et al."] = "and others",
         ["cf."] = "compare ", ["vs."] = "versus ", ["viz."] = "namely, ",
         ["Fig."] = "Figure ", ["fig."] = "figure ", ["Figs."] = "Figures ",
         ["Eq."] = "Equation ", ["eq."] = "equation ", ["Eqs."] = "Equations ",
