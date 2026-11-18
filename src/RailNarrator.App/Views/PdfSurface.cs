@@ -73,7 +73,11 @@ public sealed class PdfSurface : Control
         viewModel.CameraRequested += OnCameraRequested;
         viewModel.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName == nameof(MainViewModel.Zoom)) _zoom = viewModel.Zoom;
+            // A zoom from the toolbar or keyboard: keep the middle of the view where it is, then let
+            // follow place the word being read at the new magnification. Zooms that start here
+            // (wheel, fit) have already set _zoom, so they do not come through twice.
+            if (e.PropertyName == nameof(MainViewModel.Zoom) && Math.Abs(viewModel.Zoom - _zoom) > 1e-9)
+                ZoomAbout(viewModel.Zoom, Bounds.Width / 2, Bounds.Height / 2);
             InvalidateVisual();
         };
         _zoom = viewModel.Zoom;
@@ -117,6 +121,7 @@ public sealed class PdfSurface : Control
         _pdf = (factory ?? new SkiaPdfServiceFactory()).CreatePdfService(path);
         CurrentPage = 0;
         FitToWidth();
+        PageChanged?.Invoke(CurrentPage, PageCount);
         InvalidateVisual();
     }
 
@@ -136,6 +141,9 @@ public sealed class PdfSurface : Control
         }
     }
 
+    /// <summary>Raised with the zero-based page shown and the page count whenever either changes.</summary>
+    public event Action<int, int>? PageChanged;
+
     public void GoToPage(int page, PageRect? focus = null)
     {
         if (_pdf is null || page < 0 || page >= _pdf.PageCount) return;
@@ -143,6 +151,8 @@ public sealed class PdfSurface : Control
         {
             ReleasePage();
             CurrentPage = page;
+            ClampOffsets();   // the new page may be a different size
+            PageChanged?.Invoke(CurrentPage, PageCount);
         }
         if (focus is { IsEmpty: false } rect) CentreOn(rect);
         InvalidateVisual();
@@ -151,6 +161,23 @@ public sealed class PdfSurface : Control
     public void NextPage() => GoToPage(CurrentPage + 1);
 
     public void PreviousPage() => GoToPage(CurrentPage - 1);
+
+    /// <summary>
+    /// The reader turns to the next or previous page: shown from its top (or, going back, its bottom),
+    /// with following paused so the camera does not pull the view straight back.
+    /// </summary>
+    public void TurnPage(int direction)
+    {
+        if (_pdf is null) return;
+        int target = CurrentPage + Math.Sign(direction);
+        if (target < 0 || target >= _pdf.PageCount) return;
+        _viewModel?.NotifyManualNavigation();
+        GoToPage(target);
+        var (_, h) = _pdf.GetPageSize(CurrentPage);
+        _offsetY = direction > 0 ? 0 : Bounds.Height - h * _zoom;
+        ClampOffsets();
+        InvalidateVisual();
+    }
 
     /// <summary>Fits the page width to the control and records that as the reader's zoom.</summary>
     public void FitToWidth()
@@ -163,6 +190,21 @@ public sealed class PdfSurface : Control
         _offsetY = 0;
         if (_viewModel is not null) _viewModel.Zoom = _zoom;
         InvalidateVisual();
+    }
+
+    /// <summary>
+    /// Changes magnification keeping the page point under (<paramref name="x"/>, <paramref name="y"/>)
+    /// where it is, then re-checks follow. Zooming is not browsing: it does not suspend following, so
+    /// at high magnification the view keeps up with the word being read.
+    /// </summary>
+    private void ZoomAbout(double zoom, double x, double y)
+    {
+        var (pageX, pageY) = new PageTransform(_zoom, _offsetX, _offsetY).ToPage(x, y);
+        double next = Math.Clamp(zoom, 0.25, 8.0);
+        _offsetX = x - pageX * next;
+        _offsetY = y - pageY * next;
+        Zoom = next;
+        _viewModel?.Coordinator.RefollowCurrentCue();
     }
 
     private void CentreOn(PageRect rect)
@@ -202,7 +244,13 @@ public sealed class PdfSurface : Control
     private void OnCameraRequested(int page, IReadOnlyList<PageRect> rects)
     {
         if (rects.Count == 0) return;
-        if (page != CurrentPage) { GoToPage(page); return; }
+        // Reading moved to another page: show it, then place the cue on it now. Returning here kept
+        // the old scroll position, so at high magnification the new page opened at its bottom.
+        if (page != CurrentPage)
+        {
+            GoToPage(page);
+            if (page != CurrentPage) return;
+        }
 
         // Follow the active cue rather than the midpoint of a whole paragraph, and move only when the
         // cue has left the safe zone. The decision is made in page points, so it behaves identically at
@@ -214,11 +262,15 @@ public sealed class PdfSurface : Control
             _viewModel?.FollowMode ?? FollowMode.KeepVisible,
             new FollowOptions(ReduceMotion: _viewModel?.Services.CurrentSettings.ReduceMotion ?? false));
 
-        if (!decision.ShouldMove) return;
-        _offsetX += (visible.Left - decision.TargetVisible.Visible.Left) * _zoom;
-        _offsetY += (visible.Top - decision.TargetVisible.Visible.Top) * _zoom;
-        ClampOffsets();
-        InvalidateVisual();
+        double beforeX = _offsetX, beforeY = _offsetY;
+        if (decision.ShouldMove)
+        {
+            _offsetX += (visible.Left - decision.TargetVisible.Visible.Left) * _zoom;
+            _offsetY += (visible.Top - decision.TargetVisible.Visible.Top) * _zoom;
+            ClampOffsets();
+            InvalidateVisual();
+        }
+        FollowLog.Write(page, rects, visible, decision, Bounds, _zoom, (beforeX, beforeY), (_offsetX, _offsetY));
     }
 
     /// <summary>The DPI to rasterise at, quantised so a small zoom change does not force a re-render.</summary>
@@ -365,8 +417,8 @@ public sealed class PdfSurface : Control
         _dragging = true;
         _dragStart = point;
         _dragOffsetStart = (_offsetX, _offsetY);
-        // Manual panning suspends the camera, not the audio.
-        _viewModel?.NotifyManualNavigation();
+        // Following is suspended once the pointer actually pans (see OnPointerMoved). A plain click
+        // on blank space or between lines used to suspend it, and with it the move to the next page.
         e.Pointer.Capture(this);
     }
 
@@ -375,6 +427,8 @@ public sealed class PdfSurface : Control
         base.OnPointerMoved(e);
         if (!_dragging) return;
         var point = e.GetPosition(this);
+        // Manual panning suspends the camera, not the audio.
+        if (Math.Abs(point.X - _dragStart.X) + Math.Abs(point.Y - _dragStart.Y) > 4) _viewModel?.NotifyManualNavigation();
         _offsetX = _dragOffsetStart.X + (point.X - _dragStart.X);
         _offsetY = _dragOffsetStart.Y + (point.Y - _dragStart.Y);
         ClampOffsets();
@@ -391,17 +445,38 @@ public sealed class PdfSurface : Control
     protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
     {
         base.OnPointerWheelChanged(e);
-        if (Math.Abs(e.Delta.Y) < 0.01) return;
+        if (Math.Abs(e.Delta.Y) < 0.01 && Math.Abs(e.Delta.X) < 0.01) return;
         var point = e.GetPosition(this);
-        var (pageX, pageY) = new PageTransform(_zoom, _offsetX, _offsetY).ToPage(point.X, point.Y);
+        if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            // Zoom about the pointer so the text under the cursor stays under it. The new zoom is
+            // kept (follow pans, it never zooms), and following carries on.
+            ZoomAbout(_zoom * (e.Delta.Y > 0 ? 1.15 : 1 / 1.15), point.X, point.Y);
+            e.Handled = true;
+            return;
+        }
+        ScrollBy(e.KeyModifiers.HasFlag(KeyModifiers.Shift) ? e.Delta.Y : e.Delta.X, e.KeyModifiers.HasFlag(KeyModifiers.Shift) ? 0 : e.Delta.Y);
+        e.Handled = true;
+    }
 
-        // Zoom about the pointer so the text under the cursor stays under it and the reader's place is
-        // not lost. The new zoom becomes the preferred zoom rather than being undone by follow mode.
-        double next = Math.Clamp(_zoom * (e.Delta.Y > 0 ? 1.15 : 1 / 1.15), 0.25, 8.0);
-        _offsetX = point.X - pageX * next;
-        _offsetY = point.Y - pageY * next;
-        Zoom = next;
+    /// <summary>
+    /// Scrolls by wheel notches, carrying on to the next or previous page at a page's end. Scrolling
+    /// is browsing, so it pauses following (Resume following, F9 or Escape restores it).
+    /// </summary>
+    private void ScrollBy(double notchesX, double notchesY)
+    {
+        if (_pdf is null) return;
+        const double Step = 80;
         _viewModel?.NotifyManualNavigation();
+        var (w, h) = _pdf.GetPageSize(CurrentPage);
+        double minY = Math.Min(0, Bounds.Height - h * _zoom);
+        bool atBottom = _offsetY <= minY + 0.5, atTop = _offsetY >= -0.5;
+        if (notchesY < 0 && atBottom && CurrentPage + 1 < _pdf.PageCount) { TurnPage(+1); return; }
+        if (notchesY > 0 && atTop && CurrentPage > 0) { TurnPage(-1); return; }
+        _offsetX += notchesX * Step;
+        _offsetY += notchesY * Step;
+        ClampOffsets();
+        InvalidateVisual();
     }
 
     protected override void OnKeyDown(KeyEventArgs e)
@@ -410,9 +485,9 @@ public sealed class PdfSurface : Control
         switch (e.Key)
         {
             case Key.PageDown:
-                NextPage(); _viewModel?.NotifyManualNavigation(); e.Handled = true; break;
+                TurnPage(+1); e.Handled = true; break;
             case Key.PageUp:
-                PreviousPage(); _viewModel?.NotifyManualNavigation(); e.Handled = true; break;
+                TurnPage(-1); e.Handled = true; break;
             case Key.Escape:
                 _viewModel?.Coordinator.ResumeFollow(); e.Handled = true; break;
         }
@@ -422,5 +497,38 @@ public sealed class PdfSurface : Control
     {
         base.OnPropertyChanged(change);
         if (change.Property == BoundsProperty) FitToWidth();
+    }
+}
+
+/// <summary>
+/// Opt-in camera diagnostics: with <c>RN_FOLLOW_LOG=1</c> every follow request is appended to
+/// <c>$XDG_STATE_HOME/rail-narrator/logs/follow.log</c> with the cue, the visible region, the
+/// control size, zoom and offsets, and the decision. Off by default; nothing is logged otherwise.
+/// </summary>
+internal static class FollowLog
+{
+    private static readonly string? Path = Environment.GetEnvironmentVariable("RN_FOLLOW_LOG") == "1"
+        ? System.IO.Path.Combine(RailNarrator.Infrastructure.XdgPaths.State, "logs", "follow.log")
+        : null;
+
+    public static void Write(int page, IReadOnlyList<PageRect> rects, PageRect visible, FollowDecision decision,
+        Rect bounds, double zoom, (double X, double Y) before, (double X, double Y) after)
+    {
+        if (Path is null) return;
+        try
+        {
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
+            var cue = PageRect.UnionAll(rects);
+            var c = System.Globalization.CultureInfo.InvariantCulture;
+            File.AppendAllText(Path, string.Format(c,
+                "{0:HH:mm:ss.fff} page={1} cue=[{2}] visible=[{3:F1},{4:F1},{5:F1},{6:F1}] bounds={7:F0}x{8:F0} zoom={9:F2} " +
+                "offset=({10:F0},{11:F0})->({12:F0},{13:F0}) move={14} reason={15}\n",
+                DateTime.Now, page + 1,
+                cue is { } u ? string.Format(c, "{0:F1},{1:F1},{2:F1},{3:F1} n={4}", u.Left, u.Top, u.Right, u.Bottom, rects.Count) : "none",
+                visible.Left, visible.Top, visible.Right, visible.Bottom, bounds.Width, bounds.Height, zoom,
+                before.X, before.Y, after.X, after.Y, decision.ShouldMove, decision.Reason));
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 }

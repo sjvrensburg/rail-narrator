@@ -137,7 +137,25 @@
       "licence": "CC BY 4.0 per the MFA model card; the file itself carries no licence field",
       "required": false,
       "optional": true,
-      "notes": "A word missing from this dictionary makes that sentence fall back to sentence highlighting; it never blocks playback. Hash folded into the alignment revision like the acoustic model."
+      "notes": "A word missing from this dictionary gets a pronunciation from the G2P model below (or, for an all-capitals acronym, is spelled from this dictionary's letter names); only a word with neither falls the sentence back to sentence highlighting. It never blocks playback. Hash folded into the alignment revision like the acoustic model."
+    },
+    {
+      "id": "mfa-english-uk-g2p",
+      "component": "Word highlighting: pronunciations for words the dictionary lacks",
+      "file": "alignment/models/g2p/english_uk_mfa.zip",
+      "source": "mfa model download g2p english_uk_mfa (run by tools/setup-word-alignment.sh)",
+      "revision": "english_uk_mfa G2P as downloaded by MFA 3.3.9 on 18 Nov 2026 (meta.json version 2.2.6.dev1, phonetisaurus, train_date 2023-05-07)",
+      "bytes": 10969592,
+      "sha256": "117658c503af884535c202c04be38bd72af0830694b16f0e279a9463e619c52e",
+      "licence": "CC BY 4.0 per the MFA model card; the archive itself carries no licence field",
+      "required": false,
+      "optional": true,
+      "notes": "Same phone set as the dictionary. Without it, 45% of the prose sentences of a 24-page forecasting chapter held a word the dictionary lacks and were highlighted whole. Hash folded into the alignment revision. See docs/word-highlighting.md.",
+      "measured": {
+        "sampledSentencesWithUnknownWords": 40,
+        "alignedWordByWord": 38,
+        "stillSentenceHighlighted": 2
+      }
     }
   ],
   "excluded": [

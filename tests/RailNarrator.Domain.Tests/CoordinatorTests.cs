@@ -310,6 +310,38 @@ public sealed class NarrationCoordinatorTests
         Assert.False(coordinator.FollowSuspended);
     }
 
+    /// <summary>
+    /// Zooming changes what is on screen without leaving the reading position, so the camera checks
+    /// the current cue at once, at the new magnification, instead of waiting for the next word, or the
+    /// next sentence when there is no word timing. A reader who has panned away stays where they are.
+    /// </summary>
+    [Fact]
+    public async Task RefollowingTheCurrentCue_MovesTheCameraNow_UnlessFollowIsSuspended()
+    {
+        var tts = new FakeTtsProvider();
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(tts, transport);
+        var follows = new List<string>();
+        coordinator.FollowRequested += (cue, _, _) => { lock (follows) follows.Add(cue.SegmentId); };
+
+        var plan = PlanWith(3);
+        await coordinator.LoadPlanAsync(plan);
+        await coordinator.PlayAsync();
+        await WaitUntil(() => transport.PlayCount > 0, what: "playback to start");
+        await WaitUntil(() => { coordinator.Tick(); lock (follows) return follows.Count > 0; }, what: "the first follow");
+
+        int before;
+        lock (follows) before = follows.Count;
+        coordinator.RefollowCurrentCue();   // well inside the 0.12 s follow throttle
+        lock (follows) Assert.Equal(before + 1, follows.Count);
+        lock (follows) Assert.Equal(plan.Segments[0].Id, follows[^1]);
+
+        coordinator.SuspendFollow();
+        coordinator.RefollowCurrentCue();
+        lock (follows) Assert.Equal(before + 1, follows.Count);
+        Assert.True(coordinator.FollowSuspended);
+    }
+
     [Fact]
     public async Task AScriptEdit_InvalidatesTheCachedSpeechForThatDocument()
     {

@@ -516,13 +516,33 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         };
     }
 
-    /// <summary>Called by the surface when the reader pans or navigates by hand.</summary>
+    private DispatcherTimer? _followResumeTimer;
+
+    /// <summary>
+    /// Called by the surface when the reader pans or navigates by hand. Pauses following, and (unless
+    /// <see cref="RailNarratorSettings.FollowAutoResumeSeconds"/> is 0) resumes it once the reader has
+    /// stopped browsing for that long; every further scroll, drag or page turn restarts the wait.
+    /// </summary>
     public void NotifyManualNavigation()
     {
-        if (FollowSuspended) return;
-        Coordinator.SuspendFollow();
-        FollowSuspended = true;
-        StatusMessage = "Following paused while you browse. Audio continues.";
+        double seconds = _services.CurrentSettings.FollowAutoResumeSeconds;
+        if (!FollowSuspended)
+        {
+            Coordinator.SuspendFollow();
+            FollowSuspended = true;
+        }
+        StatusMessage = seconds > 0
+            ? $"Following paused while you browse; it resumes {seconds:0.#} s after you stop (or press F9). Audio continues."
+            : "Following paused while you browse. Press F9 to resume. Audio continues.";
+        if (seconds <= 0) return;
+        _followResumeTimer ??= new DispatcherTimer(TimeSpan.FromSeconds(seconds), DispatcherPriority.Background, (_, _) =>
+        {
+            _followResumeTimer?.Stop();
+            if (FollowSuspended) _services.Coordinator.ResumeFollow();
+        });
+        _followResumeTimer.Interval = TimeSpan.FromSeconds(seconds);
+        _followResumeTimer.Stop();
+        _followResumeTimer.Start();   // restart the wait
     }
 
     private void OnSnapshotChanged(PlaybackSnapshot snapshot)

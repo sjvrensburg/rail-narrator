@@ -28,6 +28,7 @@ public partial class MainWindow : Window
         DataContext = _viewModel = new MainViewModel(services);
         InitializeComponent();
 
+        Surface.PageChanged += (page, count) => PageLabel.Text = count > 0 ? $"Page {page + 1} / {count}" : "Page –";
         Surface.Attach(_viewModel);
         Surface.SetHighlightStyle(BuildHighlightStyle());
         _viewModel.TopLevelProvider = () => this;
@@ -86,6 +87,10 @@ public partial class MainWindow : Window
 
     private void OnOpenClicked(object? sender, RoutedEventArgs e)
         => _viewModel.RunObserved(_viewModel.OpenDocumentAsync(this), "Could not open a document");
+
+    private void OnPreviousPageClicked(object? sender, RoutedEventArgs e) => Surface.TurnPage(-1);
+
+    private void OnNextPageClicked(object? sender, RoutedEventArgs e) => Surface.TurnPage(+1);
 
     private void OnFitClicked(object? sender, RoutedEventArgs e) => Surface.FitToWidth();
     private void OnCloseClicked(object? sender, RoutedEventArgs e) => Close();

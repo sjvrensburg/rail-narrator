@@ -151,7 +151,9 @@ been through a clean-machine test.
 See `docs/status.md` for the full list. The headline items:
 
 - Word highlighting needs the optional local alignment runtime and English models.
-  Missing dictionary words or invalid intervals trigger sentence highlighting.
+  Words missing from the dictionary get a generated pronunciation (acronyms are spelled
+  out). A word that cannot be pronounced (letter–digit tokens such as "ggplot2") or an
+  invalid interval triggers sentence highlighting for that sentence, with the reason.
 - Acoustic word-boundary error and audible-to-visible latency still need corpus
   and loopback measurements; no millisecond accuracy guarantee is claimed.
 - Real audible playback and the full GUI interaction loop have not been verified by

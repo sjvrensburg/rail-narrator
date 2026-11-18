@@ -33,6 +33,7 @@ implicitly. Existing installations can be selected by merging these settings int
   "MfaExecutable": "/absolute/path/runtime/bin/mfa",
   "MfaDictionaryPath": "/absolute/path/english_uk_mfa.dict",
   "MfaAcousticModelPath": "/absolute/path/english_mfa.zip",
+  "MfaG2pModelPath": "/absolute/path/g2p/english_uk_mfa.zip",
   "MfaRuntimeRevision": "3.3.9"
 }
 ```
@@ -50,11 +51,16 @@ sentence highlighting even when cached word cues exist.
 - Matches every aligned word to its ordered UTF-16 range in the spoken script,
   then follows the source mappings to individual PDF word rectangles. Repeated
   words, ligatures, dehyphenation and expanded numbers retain their source links.
+- Gives a word the dictionary lacks a pronunciation before aligning: an all-capitals acronym
+  is also tried spelled out from the dictionary's letter names, and the G2P model proposes
+  one from the spelling. The aligner chooses between them acoustically, and the timing notes
+  name every word aligned this way. A word with neither (a letter–digit token such as
+  "ggplot2") falls that sentence back to sentence highlighting, and the reason names the word.
 - Requires complete lexical coverage, valid ordered intervals and known anchors.
   Silence need not occupy word intervals. MFA supplies no calibrated word
   probability, so confidence is left unknown rather than invented.
-- Falls back to sentence highlighting when assets are missing, words are absent
-  from the dictionary, or alignment fails. Playback remains available and the
+- Falls back to sentence highlighting when assets are missing, a word has no
+  pronunciation, or alignment fails. Playback remains available and the
   timing status shows the reason. It never spreads words evenly across a clip.
 - Keys alignment by PCM hash, spoken-script hash and aligner/model/dictionary
   revision. Model changes can realign cached speech without synthesising it again.
@@ -77,8 +83,9 @@ The first worker request took 2.913 seconds; a repeat with the loaded worker too
 0.017 seconds. These are a small integration benchmark, not a throughput guarantee.
 
 Run the model-free suite with `dotnet test RailNarrator.slnx -c Release`. To run the
-real alignment test, export `RAIL_NARRATOR_KOKORO_MODEL`, `RN_MFA_EXECUTABLE`,
-`RN_MFA_DICTIONARY` and `RN_MFA_MODEL`, then run:
+real alignment tests, export `RAIL_NARRATOR_KOKORO_MODEL`, `RN_MFA_EXECUTABLE`,
+`RN_MFA_DICTIONARY` and `RN_MFA_MODEL` (and `RN_MFA_G2P` for the test with words the
+dictionary lacks), then run:
 
 ```bash
 dotnet test tests/RailNarrator.Speech.Tests -c Release \

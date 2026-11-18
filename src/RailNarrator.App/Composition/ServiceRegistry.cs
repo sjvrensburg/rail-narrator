@@ -156,7 +156,8 @@ public sealed class ServiceRegistry : IAsyncDisposable
             settings.MfaExecutable ?? Path.Combine(alignmentRoot, "runtime", "bin", "mfa"),
             settings.MfaDictionaryPath ?? Path.Combine(alignmentRoot, "models", "dictionary", "english_uk_mfa.dict"),
             settings.MfaAcousticModelPath ?? Path.Combine(alignmentRoot, "models", "acoustic", "english_mfa.zip"),
-            Path.Combine(XdgPaths.Cache, "alignment"), settings.MfaRuntimeRevision)) : null;
+            Path.Combine(XdgPaths.Cache, "alignment"), settings.MfaRuntimeRevision,
+            G2pModelPath: settings.MfaG2pModelPath ?? Path.Combine(alignmentRoot, "models", "g2p", "english_uk_mfa.zip"))) : null;
         if (aligner is not null)
             notes.Add("Word highlighting uses local alignment when installed; see docs/word-highlighting.md for setup.");
 

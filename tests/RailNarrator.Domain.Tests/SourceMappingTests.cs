@@ -144,6 +144,56 @@ public sealed class NormalisationTests
         Assert.Equal('\u00A7', "see \u00A73 and Fig. 4"[source!.Value.Start]);
     }
 
+    /// <summary>
+    /// An abbreviation is a word of its own. "p." inside "Chap." or "overlap." is the end of another
+    /// word, and "p.adjust" is a name; expanding them gave "Chapage", "overlapage" and "page adjust",
+    /// which the voice then read aloud.
+    /// </summary>
+    [Theory]
+    [InlineData("[17, Chap. 3]", "[seventeen, Chap. three]")]
+    [InlineData("the intervals overlap.", "the intervals overlap.")]
+    [InlineData("through p.adjust() in R", "through p.adjust() in R")]
+    [InlineData("a Test. Then", "a Test. Then")]
+    [InlineData("see p. 4 and pp. 5", "see page  four and pages  five")]
+    [InlineData("St. Louis", "Saint  Louis")]
+    [InlineData("(Fig. 2)", "(Figure  two)")]
+    [InlineData("10% and 5 %", "ten percent and five  percent")]
+    public void Abbreviations_AreExpandedOnlyAsWholeWords(string text, string expected)
+        => Assert.Equal(expected, TextNormaliser.ExpandForSpeech(text).Text);
+
+    /// <summary>
+    /// A sentence read as printed (no maths model, or a refused interpretation) must still be
+    /// speakable. Kokoro's phonemiser threw on maths italic letters, so such sentences were not
+    /// spoken at all; it reads plain Greek letters by name, so the script says the name, which the
+    /// aligner can also find in its dictionary.
+    /// </summary>
+    [Theory]
+    [InlineData("below \U0001D6FC.", "below alpha.")]
+    [InlineData("\U0001D436 and \U0001D70E must", "C and sigma must")]
+    [InlineData("Here \U0001D707\u210E is", "Here mu h is")]
+    [InlineData("the \U0001D700-insensitive loss", "the epsilon-insensitive loss")]
+    [InlineData("variance \u03C3 and \u03B1", "variance sigma and alpha")]
+    [InlineData("\u0394x", "Delta x")]
+    public void MathsLettersAreSpokenAsPlainLettersAndGreekNames(string escaped, string expected)
+        => Assert.Equal(expected, TextNormaliser.ExpandForSpeech(System.Text.RegularExpressions.Regex.Unescape(escaped)).Text);
+
+    [Fact]
+    public void AMathsLetterMapsBackToBothOfItsUtf16Units()
+    {
+        const string text = "below \U0001D6FC.";  // C# reads \U as one UTF-32 code point: two UTF-16 units
+        var spoken = TextNormaliser.ExpandForSpeech(text);
+        int start = spoken.Text.IndexOf("alpha", StringComparison.Ordinal);
+        var source = spoken.ToSourceRanges(new TextRange(start, "alpha".Length));
+        Assert.Equal(char.ConvertFromUtf32(0x1D6FC), text.Substring(source.Min(r => r.Start), source.Max(r => r.End) - source.Min(r => r.Start)));
+    }
+
+    [Fact]
+    public void AUserEntryThatIsAWord_IsNotExpandedInsideAnotherWord()
+    {
+        var user = new Dictionary<string, string> { ["SVR"] = "S V R" };
+        Assert.Equal("the S V R and the SVRs", TextNormaliser.ExpandForSpeech("the SVR and the SVRs", user).Text);
+    }
+
     [Fact]
     public void PronunciationDictionary_OverridesTheBuiltInTable()
     {

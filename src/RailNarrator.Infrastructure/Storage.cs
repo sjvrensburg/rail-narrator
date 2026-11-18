@@ -95,6 +95,7 @@ public sealed record RailNarratorSettings
     public string? MfaExecutable { get; init; }
     public string? MfaDictionaryPath { get; init; }
     public string? MfaAcousticModelPath { get; init; }
+    public string? MfaG2pModelPath { get; init; }
     public string MfaRuntimeRevision { get; init; } = "3.3.9";
 
     public MathMode MathMode { get; init; } = MathMode.Interpret;
@@ -136,6 +137,13 @@ public sealed record RailNarratorSettings
     public FollowMode FollowMode { get; init; } = FollowMode.KeepVisible;
     public double PreferredZoom { get; init; } = 1.0;
     public bool ReduceMotion { get; init; }
+
+    /// <summary>
+    /// Seconds without scrolling, dragging or turning pages after which following resumes by itself.
+    /// 0 keeps it paused until the reader resumes it (F9). A silent, indefinite pause was easy to miss:
+    /// the reading moved on while the view stayed put.
+    /// </summary>
+    public double FollowAutoResumeSeconds { get; init; } = 6;
     public byte HighlightAlpha { get; init; } = 72;
     public bool HighlightHighContrast { get; init; }
 
