@@ -71,6 +71,10 @@ run, so compare tallies, not single passages.
   flag the recorder raises the PipeWire quantum and starves the app's stream. To find exact clip
   start times, cross-correlate the recording with the cached clips
   (`$XDG_CACHE_HOME/rail-narrator/speech/rn/*/audio.pcm`, 24 kHz float32).
+- **Camera decisions.** Start the app with `RN_FOLLOW_LOG=1` to append every follow request to
+  `$XDG_STATE_HOME/rail-narrator/logs/follow.log`: the cue's rectangle, the visible region in page
+  points, the control's size, zoom, offsets before and after, and the decision with its reason. No
+  lines while the word moves means no follow was requested (paused, or no word timing).
 - **`PULSE_SINK` does not redirect this app.** PortAudio opens PipeWire's ALSA device, whose streams
   are named `PipeWire ALSA [rail-narrator]` and carry no process id, and it ignored `PULSE_SINK`: a
   test run played to the user's default headset. Create a null sink

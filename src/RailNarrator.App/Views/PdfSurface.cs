@@ -262,11 +262,15 @@ public sealed class PdfSurface : Control
             _viewModel?.FollowMode ?? FollowMode.KeepVisible,
             new FollowOptions(ReduceMotion: _viewModel?.Services.CurrentSettings.ReduceMotion ?? false));
 
-        if (!decision.ShouldMove) return;
-        _offsetX += (visible.Left - decision.TargetVisible.Visible.Left) * _zoom;
-        _offsetY += (visible.Top - decision.TargetVisible.Visible.Top) * _zoom;
-        ClampOffsets();
-        InvalidateVisual();
+        double beforeX = _offsetX, beforeY = _offsetY;
+        if (decision.ShouldMove)
+        {
+            _offsetX += (visible.Left - decision.TargetVisible.Visible.Left) * _zoom;
+            _offsetY += (visible.Top - decision.TargetVisible.Visible.Top) * _zoom;
+            ClampOffsets();
+            InvalidateVisual();
+        }
+        FollowLog.Write(page, rects, visible, decision, Bounds, _zoom, (beforeX, beforeY), (_offsetX, _offsetY));
     }
 
     /// <summary>The DPI to rasterise at, quantised so a small zoom change does not force a re-render.</summary>
@@ -493,5 +497,38 @@ public sealed class PdfSurface : Control
     {
         base.OnPropertyChanged(change);
         if (change.Property == BoundsProperty) FitToWidth();
+    }
+}
+
+/// <summary>
+/// Opt-in camera diagnostics: with <c>RN_FOLLOW_LOG=1</c> every follow request is appended to
+/// <c>$XDG_STATE_HOME/rail-narrator/logs/follow.log</c> with the cue, the visible region, the
+/// control size, zoom and offsets, and the decision. Off by default; nothing is logged otherwise.
+/// </summary>
+internal static class FollowLog
+{
+    private static readonly string? Path = Environment.GetEnvironmentVariable("RN_FOLLOW_LOG") == "1"
+        ? System.IO.Path.Combine(RailNarrator.Infrastructure.XdgPaths.State, "logs", "follow.log")
+        : null;
+
+    public static void Write(int page, IReadOnlyList<PageRect> rects, PageRect visible, FollowDecision decision,
+        Rect bounds, double zoom, (double X, double Y) before, (double X, double Y) after)
+    {
+        if (Path is null) return;
+        try
+        {
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
+            var cue = PageRect.UnionAll(rects);
+            var c = System.Globalization.CultureInfo.InvariantCulture;
+            File.AppendAllText(Path, string.Format(c,
+                "{0:HH:mm:ss.fff} page={1} cue=[{2}] visible=[{3:F1},{4:F1},{5:F1},{6:F1}] bounds={7:F0}x{8:F0} zoom={9:F2} " +
+                "offset=({10:F0},{11:F0})->({12:F0},{13:F0}) move={14} reason={15}\n",
+                DateTime.Now, page + 1,
+                cue is { } u ? string.Format(c, "{0:F1},{1:F1},{2:F1},{3:F1} n={4}", u.Left, u.Top, u.Right, u.Bottom, rects.Count) : "none",
+                visible.Left, visible.Top, visible.Right, visible.Bottom, bounds.Width, bounds.Height, zoom,
+                before.X, before.Y, after.X, after.Y, decision.ShouldMove, decision.Reason));
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
     }
 }

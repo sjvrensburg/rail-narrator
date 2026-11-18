@@ -28,7 +28,10 @@ The default run needs no GPU, network, model file or sound card. Two opt-in
 integration tests are skipped unless their dependencies are explicitly enabled. The Audio suite
 runs stable across repeated invocations; an earlier flake (a test that drained the
 device before the writer thread had finished queuing) was fixed by waiting for the
-completion event instead of a fixed delay. One Audio test failed once in a full-solution run while the local LLM was busy on
+completion event instead of a fixed delay. On 18 November 2026,
+`CoordinatorLockingTests.NaturalAdvance_SlidesTheLookaheadWindow` failed once in a full-solution
+run, after about 5 s (one of its 5 s waits). It then passed 10 isolated runs and 5 further
+full-solution runs. The cause was not identified, and the failure message was not captured. One Audio test failed once in a full-solution run while the local LLM was busy on
 the same machine and passed in three reruns; it was not identified.
 
 ## Verified by running the real thing
@@ -573,3 +576,11 @@ threads meeting.
     than keeping the old page's scroll position.
 49. **The toolbar was wider than the window.** With the page controls added, the follow-mode and
     Resume following buttons were cut off; the toolbar now wraps.
+
+50. **Following stayed paused without the reader noticing.** Any scroll, drag or page turn paused
+    following until F9, and the only sign was a toolbar button. A reader who zoomed in and then
+    scrolled to find their place saw the view stop following altogether, sideways and onto the next
+    line. Following now resumes by itself 6 s after the last scroll, drag or page turn
+    (`FollowAutoResumeSeconds`, 0 to keep the old behaviour), and the status bar says so. This was
+    checked in the window: a wheel scroll during playback showed Resume following, and 5.9 s later
+    the camera moved back to the word being read.
