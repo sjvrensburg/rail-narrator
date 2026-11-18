@@ -127,6 +127,7 @@ public sealed class PdfSurface : Control
             // resume, a zoom, a seek while paused).
             if (_viewModel.Coordinator.CurrentFollowTarget() is { } follow) OnCameraRequested(follow);
             StepGlide(dt);
+            ShowPreparingPassage();
             if (_viewModel.IsPreparing) InvalidateVisual();   // the preparing outline pulses
             RequestFrame();
         });
@@ -319,6 +320,35 @@ public sealed class PdfSurface : Control
             }
         }
         FollowLog.Write(target.PageIndex, target.CueRects, visible, decision, Bounds, _zoom, (beforeX, beforeY), (_offsetX, _offsetY));
+    }
+
+    private string? _shownPreparingSegmentId;
+
+    /// <summary>
+    /// When a start has to wait for a passage (Next or Previous across a page, a click after
+    /// browsing), brings that passage into view once, so the pulsing outline and the card are seen
+    /// together. The reader asked to read from there, so a pause in following from browsing ends.
+    /// </summary>
+    private void ShowPreparingPassage()
+    {
+        string? segmentId = _viewModel?.Playback.Preparation?.SegmentId;
+        if (segmentId == _shownPreparingSegmentId) return;
+        _shownPreparingSegmentId = segmentId;
+        if (segmentId is null || _viewModel is not { } vm || vm.FollowMode == FollowMode.Off) return;
+        if (vm.Coordinator.Scheduler?.SourceMap is not { } map || map.Segment(segmentId) is not { } segment) return;
+        var pages = map.PagesFor(segment.AnchorIds);
+        if (pages.Count == 0) return;
+        int page = pages[0];
+        var rects = map.HighlightRects(segment.AnchorIds, page);
+        if (rects.Count == 0) return;
+
+        if (vm.FollowSuspended) vm.Coordinator.ResumeFollow();
+        // Already in view (a click on the page being read): leave the camera where it is.
+        var visible = new PageTransform(_zoom, _offsetX, _offsetY).ToPageRect(0, 0, Bounds.Width, Bounds.Height);
+        if (page == CurrentPage && rects.All(r => r.Left >= visible.Left && r.Right <= visible.Right
+                                               && r.Top >= visible.Top && r.Bottom <= visible.Bottom)) return;
+        // No word timing exists yet, so the passage's start is framed and held, as for any sentence cue.
+        OnCameraRequested(new FollowTarget(page, rects, rects, CueGranularity.Sentence));
     }
 
     /// <summary>Moves the camera one frame along its glide.</summary>

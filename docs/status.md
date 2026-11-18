@@ -636,3 +636,13 @@ threads meeting.
     without a load, the fallback, an edit clearing the queue). Smoke-tested by the maintainer in
     the running app on 18 November 2026: passages followed one another without the gap. The
     remaining pause has **not been measured** with a loopback recording.
+57. **A wait for a passage on another page showed its outline nowhere.** Next or Previous across a
+    page break raised the preparing card, but the pulsing outline was drawn on the page in view,
+    not the one being prepared. Once a start has to wait, the view now moves to that passage
+    (framing its start) unless it is already fully in view, and a pause in following from
+    browsing ends, since the reader chose where to read. Nothing moves when following is off. Not
+    watched in the running app: the isolated GUI run has no speech model, and playing to the real
+    device was avoided.
+58. **Colour filter strength had no control.** A slider beside the colour filter, shown only while a
+    filter is on, sets `ColourEffectIntensity` (0–100 %) and redraws the page at once. Checked under
+    Xvfb: High Visibility at 50 % gives the half-way blend (grey paper, olive text).

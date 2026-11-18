@@ -42,13 +42,13 @@ public partial class MainWindow : Window
                 _viewModel.Status($"Narration is ready, but the page could not be displayed: {ex.Message}");
             }
         });
-        Surface.SetColourEffect(_viewModel.ColourEffect, services.CurrentSettings.ColourEffectIntensity);
+        Surface.SetColourEffect(_viewModel.ColourEffect, _viewModel.ColourEffectIntensity);
         _viewModel.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName is nameof(MainViewModel.HighlightAlpha) or nameof(MainViewModel.HighlightHighContrast))
                 Surface.SetHighlightStyle(BuildHighlightStyle());
-            if (e.PropertyName is nameof(MainViewModel.ColourEffect))
-                Surface.SetColourEffect(_viewModel.ColourEffect, _services.CurrentSettings.ColourEffectIntensity);
+            if (e.PropertyName is nameof(MainViewModel.ColourEffect) or nameof(MainViewModel.ColourEffectIntensity))
+                Surface.SetColourEffect(_viewModel.ColourEffect, _viewModel.ColourEffectIntensity);
         };
         _viewModel.Coordinator.ActiveCueChanged += cue =>
         {
