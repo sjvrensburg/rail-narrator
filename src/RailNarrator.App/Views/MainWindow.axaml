@@ -62,7 +62,7 @@
         </MenuItem>
         <Separator />
         <MenuItem Header="Show _script, maths review and diagnostics" ToggleType="CheckBox"
-                  IsChecked="{Binding TranscriptVisible}" />
+                  IsChecked="{Binding TranscriptVisible, Mode=TwoWay}" />
       </MenuItem>
       <MenuItem Header="_Maths">
         <MenuItem Header="Mark region as _maths" Click="OnMarkAsMathsClicked" />

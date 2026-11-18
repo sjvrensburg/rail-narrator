@@ -488,6 +488,52 @@ public sealed class NarrationCoordinatorTests
         await WaitUntil(() => transport.QueuedSegmentId == plan.Segments[1].Id, what: "the corrected passage to be queued");
     }
 
+    /// <summary>
+    /// Next pressed again while the last Next is still waiting for audio steps on from where the
+    /// reader is going: three quick presses from the first passage land on the fourth, not the second.
+    /// </summary>
+    [Fact]
+    public async Task NextPressedWhileASeekWaits_CountsFromTheSeeksTarget()
+    {
+        var tts = new FakeTtsProvider(new FakeTtsOptions(Latency: TimeSpan.FromMilliseconds(300)));
+        // Stop yields, as the real engine's does: the window in which a second press used to count
+        // from the passage still playing.
+        var transport = new FakeAudioTransport { StopDelay = TimeSpan.FromMilliseconds(30) };
+        await using var coordinator = new NarrationCoordinator(tts, transport,
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 1));
+        var plan = PlanWith(8);
+        await coordinator.LoadPlanAsync(plan);
+
+        var first = coordinator.NextSegmentAsync();
+        var second = coordinator.NextSegmentAsync();
+        var third = coordinator.NextSegmentAsync();
+        await Task.WhenAll(first, second, third);
+
+        await WaitUntil(() => coordinator.Snapshot.State == PlaybackState.Playing, what: "playback of the last target");
+        Assert.Equal(plan.Segments[3].Id, coordinator.Snapshot.SegmentId);
+        Assert.Equal(plan.Segments[3].Id, transport.Loaded[^1].SegmentId);
+    }
+
+    [Fact]
+    public async Task PreviousPressedWhileASeekWaits_CountsFromTheSeeksTarget()
+    {
+        var tts = new FakeTtsProvider(new FakeTtsOptions(Latency: TimeSpan.FromMilliseconds(300)));
+        // Stop yields, as the real engine's does: the window in which a second press used to count
+        // from the passage still playing.
+        var transport = new FakeAudioTransport { StopDelay = TimeSpan.FromMilliseconds(30) };
+        await using var coordinator = new NarrationCoordinator(tts, transport,
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 1));
+        var plan = PlanWith(8);
+        await coordinator.LoadPlanAsync(plan);
+
+        var forward = coordinator.GoToSegmentAsync(plan.Segments[6].Id);
+        var back = coordinator.PreviousSegmentAsync();
+        await Task.WhenAll(forward, back);
+
+        await WaitUntil(() => coordinator.Snapshot.State == PlaybackState.Playing, what: "playback");
+        Assert.Equal(plan.Segments[5].Id, coordinator.Snapshot.SegmentId);
+    }
+
     [Fact]
     public async Task AScriptEdit_InvalidatesTheCachedSpeechForThatDocument()
     {

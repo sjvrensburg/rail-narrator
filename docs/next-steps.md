@@ -43,6 +43,12 @@ Since PR #10:
 
 In rough priority order:
 
+- **Kokoro is slower than real time on the current laptop** (RTF 1.7, `status.md` open defects),
+  so reading pauses every few passages. Try an fp32 or int8 Kokoro export (needs a download, so
+  ask first), and check ONNX Runtime's thread settings in the provider.
+- **A resize resets the zoom to fit-width** (opening the script panel, resizing the window). Keep
+  the reader's magnification and only re-fit when the zoom was "fit".
+
 - **Saving a restored position as a passage id.** When the plan changes (new layout model, a
   version bump), the saved id can point at a different passage. Store a page plus text-offset
   anchor and map it onto the new plan.

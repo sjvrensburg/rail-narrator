@@ -91,13 +91,13 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         Pause = new RelayCommand(() => _services.Coordinator.PauseAsync(), () => _playback.State == PlaybackState.Playing, OnCommandError);
         // One button: play, pause, or — while a start is still waiting for its audio — cancel that
         // start. Pausing then would not stop it: the start would play when the audio arrived.
-        PlayPause = new RelayCommand(() => IsPreparing || _playback.State == PlaybackState.Seeking
+        PlayPause = new RelayCommand(() => IsStarting
                 ? _services.Coordinator.StopAsync()
                 : _playback.State == PlaybackState.Playing ? _services.Coordinator.PauseAsync() : _services.Coordinator.PlayAsync(),
-            () => Plan is { SegmentCount: > 0 }, OnCommandError);
-        Next = new RelayCommand(() => _services.Coordinator.NextSegmentAsync(), () => Plan is { SegmentCount: > 0 }, OnCommandError);
-        Previous = new RelayCommand(() => _services.Coordinator.PreviousSegmentAsync(), () => Plan is { SegmentCount: > 0 }, OnCommandError);
-        Replay = new RelayCommand(() => _services.Coordinator.ReplaySegmentAsync(), () => Plan is { SegmentCount: > 0 }, OnCommandError);
+            () => Plan is { SegmentCount: > 0 }, OnCommandError, allowWhileRunning: true);
+        Next = new RelayCommand(() => _services.Coordinator.NextSegmentAsync(), () => Plan is { SegmentCount: > 0 }, OnCommandError, allowWhileRunning: true);
+        Previous = new RelayCommand(() => _services.Coordinator.PreviousSegmentAsync(), () => Plan is { SegmentCount: > 0 }, OnCommandError, allowWhileRunning: true);
+        Replay = new RelayCommand(() => _services.Coordinator.ReplaySegmentAsync(), () => Plan is { SegmentCount: > 0 }, OnCommandError, allowWhileRunning: true);
         ToggleFollow = new RelayCommand(CycleFollowMode, null, OnCommandError);
         ResumeFollow = new RelayCommand(() => _services.Coordinator.ResumeFollow(), () => FollowSuspended, OnCommandError);
         ZoomIn = new RelayCommand(() => ApplyZoom(Zoom * 1.25), null, OnCommandError);
@@ -193,8 +193,10 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public bool IsPreparing => _playback.Preparation is not null;
 
     /// <summary>The play/pause button's caption: what pressing it will do now.</summary>
-    public string PlayButtonText => _playback.Preparation is not null || _playback.State is PlaybackState.Seeking
-        ? "⏹ Cancel" : _playback.State == PlaybackState.Playing ? "⏸ Pause" : "▶ Play";
+    public string PlayButtonText => IsStarting ? "⏹ Cancel" : _playback.State == PlaybackState.Playing ? "⏸ Pause" : "▶ Play";
+
+    /// <summary>A start (Play, a seek) is under way and nothing is audible yet: pressing the button cancels it.</summary>
+    private bool IsStarting => _playback.Preparation is not null || _playback.State is PlaybackState.Seeking or PlaybackState.Preparing;
 
     /// <summary>Headline of the on-page preparing card: which passage, and what it is waiting on.</summary>
     public string? PreparationText => _playback.Preparation is { } p
