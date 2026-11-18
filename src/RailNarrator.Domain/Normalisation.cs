@@ -407,7 +407,9 @@ internal static class EnglishNumbers
         var match = System.Text.RegularExpressions.Regex.Match(text[offset..], @"^[+-]?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?");
         if (!match.Success || offset + match.Length < text.Length && (char.IsLetterOrDigit(text[offset + match.Length]) || text[offset + match.Length] == '_')) return null;
         if (IdentifierAt(text, offset) is { } identifier) return identifier;
-        if (match.Length == 4 && IsYearContext(text, offset, 4) && int.Parse(match.Value) is >= 1100 and <= 1999 and var year)
+        // Four characters are not four digits: "0.75" and "-100" match the same length.
+        if (match.Length == 4 && match.Value.All(char.IsAsciiDigit) && IsYearContext(text, offset, 4)
+            && int.Parse(match.Value, System.Globalization.CultureInfo.InvariantCulture) is >= 1100 and <= 1999 and var year)
             return (4, Year(year));
         string value = match.Value.Replace(",", "", StringComparison.Ordinal);
         string prefix = value[0] == '-' ? "minus " : value[0] == '+' ? "plus " : "";
