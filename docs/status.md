@@ -18,7 +18,7 @@ claims, and only the second one is worth relying on.
 | `RailNarrator.Infrastructure.Tests` | 9 | Cache round-trips and waveform integrity, including same-length replacement; extraction-cache keying, degraded and encrypted documents never stored, corrupt entries treated as misses |
 | `RailNarrator.Inference.Tests` | 106 | ClearSpeak-style reading of LaTeX (powers, fractions, roots, quantities, derivatives, sums, functions, cases, Unicode, text with `$…$`, malformed input); thinking-policy and out-of-tokens retry; transcription fallback; Maths interpretation: notation validator, image and thinking-switch fallbacks, one repair turn, cut-off responses refused; golden maths semantics, response validator, endpoint client |
 
-Run them with:
+Run them with (and see `testing-real-world.md` for the real models, GUI and audio):
 
 ```bash
 dotnet test RailNarrator.slnx -c Release
@@ -230,6 +230,8 @@ Not fixed yet. Each was observed in the run described above.
 - **A sideways page with no Rotate attribute loses a line under the layout model.** The
   synthetic landscape scan comes out as three captions and drops "Final line of the sideways
   body."; the model-free analyzer read all four lines. The model sees the page unrotated.
+- **Author affiliations on the first page are read.** Front-matter labels are skipped (item 36),
+  but an affiliation carries no label. Whether to skip them is open (`next-steps.md`).
 - **A restored position is a passage id.** When a document's units change (a new layout model, a
   new pipeline version), the saved id can name a different passage than the one the reader left.
 - **About 0.4 s of silence is still inserted between passages** (on top of the ~0.5 s each Kokoro
