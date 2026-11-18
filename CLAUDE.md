@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Rail Narrator is a Linux desktop app (C# / .NET 10, Avalonia 12, SkiaSharp) that reads a PDF aloud, highlights the passage being spoken in the original document, and follows the reading position. PDF rendering, layout, reading order and OCR come from [RailReaderCore](https://github.com/sjvrensburg/RailReaderCore), consumed as NuGet packages pinned to 0.89.0 — Core cannot be modified here; write an application-side adapter instead of a second PDF stack.
+Rail Narrator is a Linux desktop app (C# / .NET 10, Avalonia 12, SkiaSharp) that reads a PDF aloud, highlights the passage being spoken in the original document, and follows the reading position. PDF rendering, layout, reading order and OCR come from [RailReaderCore](https://github.com/sjvrensburg/RailReaderCore), consumed as NuGet packages pinned to 0.90.0 — Core cannot be modified here; write an application-side adapter instead of a second PDF stack.
 
 ## Commands
 
@@ -46,11 +46,11 @@ Opt-in integration tests are skipped unless their environment is set:
 
 Runtime prerequisites: `libportaudio.so.2`, and the Kokoro model at `~/.local/share/rail-narrator/models/kokoro-fp16.onnx` (see `docs/model-manifest.json`). Models are never bundled and never fetched implicitly — keep it that way.
 
-Dependency versions live only in `Directory.Packages.props` (central package management); csproj files carry `PackageReference` without versions.
+The SDK is pinned by `global.json` (10.0.100, `latestFeature`). Dependency versions live only in `Directory.Packages.props` (central package management); csproj files carry `PackageReference` without versions.
 
 ## Architecture
 
-Read `docs/next-steps.md` for the current state, the work in progress and the open product decisions; `docs/testing-real-world.md` for running the real models, GUI and audio (headless compositor, XTEST input, isolated XDG dirs, checking the sink is quiet before playing). For the design read `docs/architecture.md`; ADRs in `docs/decisions/` record the measurement behind each decision, and `docs/status.md` separates what is *verified* from what is merely *implemented*.
+Read `docs/next-steps.md` for the current state, the work in progress and the open product decisions; `docs/testing-real-world.md` for running the real models, GUI and audio (headless compositor, XTEST input, isolated XDG dirs, checking the sink is quiet before playing). For the design read `docs/architecture.md`; ADRs in `docs/decisions/` record the measurement behind each decision, and `docs/status.md` separates what is *verified* from what is merely *implemented*. `docs/word-highlighting.md` covers the MFA setup and alignment failure modes. The original product brief is `rail-narrator-coding-agent-prompt.md` (repo root), with its research baseline in `docs/Rail Narrator implementation investigation.md`; consult them for scope questions, but the ADRs and code record where the project has since deviated.
 
 ### The central idea: three representations, two separate mappings
 
