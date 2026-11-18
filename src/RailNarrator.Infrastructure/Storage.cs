@@ -107,10 +107,18 @@ public sealed record RailNarratorSettings
     public string? MathLlmApiKeyEnvVar { get; init; }
 
     /// <summary>
-    /// Ask a reasoning model to answer without thinking first: about eight times faster per maths
-    /// passage on Ornith-35B (median 1.3 s instead of 10 s), at some cost in fidelity. Off by default.
+    /// When a reasoning model may think before interpreting maths: <c>Off</c>, <c>EquationsOnly</c>
+    /// (the default: display equations and their lead-ins, where meaning matters most; sentences with
+    /// inline maths are answered directly) or <c>Always</c>. Thinking is about ten times slower per
+    /// passage on Ornith-35B and more faithful; endpoints without the switch ignore it.
     /// </summary>
+    public MathThinkingPolicy MathLlmThinking { get; init; } = MathThinkingPolicy.EquationsOnly;
+
+    /// <summary>Older setting: <c>true</c> means <see cref="MathLlmThinking"/> <c>Off</c>.</summary>
     public bool MathLlmDisableThinking { get; init; }
+
+    [JsonIgnore]
+    public MathThinkingPolicy EffectiveMathThinking => MathLlmDisableThinking ? MathThinkingPolicy.Off : MathLlmThinking;
 
     /// <summary>Vision endpoint for equation transcription, configured separately from the text LLM.</summary>
     public string? VlmBaseUrl { get; init; }
@@ -389,4 +397,12 @@ public sealed class DiskPlanStore : IPlanStore
             try { File.Delete(temp); } catch { }
         }
     }
+}
+
+/// <summary>Settings-side mirror of the interpreter's thinking policy (Infrastructure does not reference Inference).</summary>
+public enum MathThinkingPolicy
+{
+    Off,
+    EquationsOnly,
+    Always,
 }

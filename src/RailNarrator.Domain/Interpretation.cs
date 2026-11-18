@@ -17,13 +17,18 @@ public enum MathPassageKind
 /// <param name="ContextBefore">Preceding document text: where notation is defined. Untrusted data.</param>
 /// <param name="ContextAfter">Following document text. Untrusted data.</param>
 /// <param name="Language">BCP-47 language of the narration.</param>
+/// <param name="HasDisplayEquation">
+/// The passage contains a display equation — itself, or the equation a lead-in sentence introduces.
+/// An interpreter may spend more effort on these: they carry the most meaning per word.
+/// </param>
 public sealed record MathInterpretationRequest(
     MathPassageKind Kind,
     string TextLayer,
     IReadOnlyList<ReadOnlyMemory<byte>> Images,
     string ContextBefore,
     string ContextAfter,
-    string Language);
+    string Language,
+    bool HasDisplayEquation = false);
 
 /// <summary>An interpretation, or why there is none.</summary>
 /// <param name="Spoken">Words to speak in place of the passage. Null when rejected.</param>
@@ -57,6 +62,20 @@ public interface IMathInterpreter
 
     /// <summary>Never throws for a bad model response; returns a rejection.</summary>
     Task<MathInterpretationResult> InterpretAsync(MathInterpretationRequest request, CancellationToken ct = default);
+}
+
+/// <summary>
+/// Reads a passage's maths mechanically ("mathspeak": "h sub t equals alpha sub zero plus…") when it
+/// could not be interpreted. Says the notation, not its meaning; better than notation read from a
+/// garbled text layer, worse than an interpretation.
+/// </summary>
+public interface IMathReader
+{
+    /// <summary>Part of every cache key.</summary>
+    string Revision { get; }
+
+    /// <summary>The words, or null when the passage cannot be read reliably. Never throws for a bad response.</summary>
+    Task<string?> ReadAsync(MathInterpretationRequest request, CancellationToken ct = default);
 }
 
 /// <summary>A small persistent string cache. Misses and write failures are not errors.</summary>
@@ -94,14 +113,17 @@ public interface ISegmentResolver
 /// minutes.
 /// </para>
 /// <para>
-/// The fallback differs by kind. A sentence with maths keeps its verbatim reading — the prose
-/// around the notation is still worth hearing. A display equation becomes the explicit "could not
-/// be read" announcement: its text layer is not a reading of it.
+/// When the interpretation is refused, an <see cref="IMathReader"/> (if supplied) reads the
+/// passage mechanically from a transcription, labelled <see cref="ScriptProvenance.LocalRule"/>.
+/// Failing that, the fallback differs by kind. A sentence with maths keeps its verbatim reading —
+/// the prose around the notation is still worth hearing. A display equation becomes the explicit
+/// "could not be read" announcement: its text layer is not a reading of it.
 /// </para>
 /// </remarks>
 public sealed class MathInterpretationResolver : ISegmentResolver
 {
     private readonly IMathInterpreter _interpreter;
+    private readonly IMathReader? _reader;
     private readonly IExtractionSource? _crops;
     private readonly ITextCache? _cache;
     private readonly NarrationPlannerOptions _options;
@@ -116,9 +138,11 @@ public sealed class MathInterpretationResolver : ISegmentResolver
         NarrationPlannerOptions? options = null,
         int contextBeforeChars = 1500,
         int contextAfterChars = 400,
-        int cropPixelWidth = 1400)
+        int cropPixelWidth = 1400,
+        IMathReader? reader = null)
     {
         _interpreter = interpreter ?? throw new ArgumentNullException(nameof(interpreter));
+        _reader = reader;
         _crops = crops;
         _cache = cache;
         _options = options ?? NarrationPlannerOptions.Default;
@@ -140,8 +164,11 @@ public sealed class MathInterpretationResolver : ISegmentResolver
         ArgumentNullException.ThrowIfNull(segment);
         var result = await InterpretAsync(plan, segment, refresh: true, ct).ConfigureAwait(false);
         // A failed regeneration keeps what the reader already had rather than degrading it to a
-        // fallback: the earlier interpretation passed the same checks.
-        return result.Provenance == ScriptProvenance.ModelGenerated
+        // fallback: the earlier interpretation passed the same checks. A mechanical reading still
+        // beats a verbatim or announced fallback.
+        bool better = result.Provenance == ScriptProvenance.ModelGenerated
+            || (result.Provenance == ScriptProvenance.LocalRule && segment.Provenance is not (ScriptProvenance.ModelGenerated or ScriptProvenance.UserEdited));
+        return better
             ? result
             : segment with { Warnings = [.. segment.Warnings, .. result.Warnings.Where(w => !segment.Warnings.Contains(w)),
                 "Regenerating did not produce a usable answer; the previous wording is kept."] };
@@ -164,9 +191,10 @@ public sealed class MathInterpretationResolver : ISegmentResolver
         if (!await _interpreter.IsAvailableAsync(ct).ConfigureAwait(false))
             return Fallback(segment, unit, "The maths interpreter is not reachable, so this passage was not interpreted.");
 
-        var images = await CropsAsync(unit, ct).ConfigureAwait(false);
+        var (images, cropProblem) = await CropsAsync(unit, ct).ConfigureAwait(false);
         var request = new MathInterpretationRequest(kind, unit.OriginalText, images,
-            ContextBefore(plan, unitIndex), ContextAfter(plan, lastIndex), segment.Language);
+            ContextBefore(plan, unitIndex), ContextAfter(plan, lastIndex), segment.Language,
+            HasDisplayEquation: parts.Any(p => p.Kind == ReadingUnitKind.DisplayMath));
 
         string key = CacheKey.Sha256Hex(string.Join("␟", "interpret/1", _interpreter.Revision, kind.ToString(),
             request.TextLayer, request.ContextBefore, request.ContextAfter, request.Language,
@@ -174,6 +202,7 @@ public sealed class MathInterpretationResolver : ISegmentResolver
 
         string? spoken = _cache is null || refresh ? null : await _cache.TryGetAsync(key, ct).ConfigureAwait(false);
         var warnings = new List<string>();
+        if (cropProblem is not null) { warnings.Add(cropProblem); segment = segment with { Warnings = [.. segment.Warnings, cropProblem] }; }
         if (spoken is null)
         {
             MathInterpretationResult result;
@@ -182,7 +211,11 @@ public sealed class MathInterpretationResolver : ISegmentResolver
             catch (Exception ex) { result = MathInterpretationResult.Reject($"request failed: {ex.Message}"); }
 
             if (!result.Succeeded)
-                return Fallback(segment, unit, "The interpretation was rejected: " + string.Join("; ", result.Problems));
+            {
+                string reason = "The interpretation was rejected: " + string.Join("; ", result.Problems);
+                return await ReadMechanicallyAsync(segment, request, key, refresh, reason, ct).ConfigureAwait(false)
+                       ?? Fallback(segment, unit, reason);
+            }
             spoken = result.Spoken!.Trim();
             warnings.AddRange(result.Warnings);
             if (_cache is not null)
@@ -203,6 +236,37 @@ public sealed class MathInterpretationResolver : ISegmentResolver
             SourceLinks = segment.AnchorIds.Count > 0 ? [new SourceLink(new TextRange(0, spoken.Length), segment.AnchorIds)] : [],
             // Distinct: a regenerated passage already carries the provenance note.
             Warnings = segment.Warnings.Concat(warnings).Distinct().ToArray(),
+        };
+    }
+
+    /// <summary>The <see cref="IMathReader"/>'s reading, cached like an interpretation; null when there is none.</summary>
+    private async Task<NarrationSegment?> ReadMechanicallyAsync(NarrationSegment segment, MathInterpretationRequest request,
+        string interpretationKey, bool refresh, string reason, CancellationToken ct)
+    {
+        if (_reader is null) return null;
+        string key = CacheKey.Sha256Hex(string.Join("␟", "mathspeak/1", _reader.Revision, interpretationKey));
+        string? spoken = _cache is null || refresh ? null : await _cache.TryGetAsync(key, ct).ConfigureAwait(false);
+        if (spoken is null)
+        {
+            try { spoken = (await _reader.ReadAsync(request, ct).ConfigureAwait(false))?.Trim(); }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception) { spoken = null; }
+            if (string.IsNullOrEmpty(spoken)) return null;
+            if (_cache is not null)
+            {
+                try { await _cache.PutAsync(key, spoken, ct).ConfigureAwait(false); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            }
+        }
+        return segment with
+        {
+            SpokenText = spoken,
+            Provenance = ScriptProvenance.LocalRule,
+            ScriptRevision = segment.ScriptRevision + 1,
+            SourceLinks = segment.AnchorIds.Count > 0 ? [new SourceLink(new TextRange(0, spoken.Length), segment.AnchorIds)] : [],
+            Warnings = segment.Warnings.Concat([reason,
+                "Read mechanically from a transcription of the page image: it says the notation, not its meaning. Check it against the original."])
+                .Distinct().ToArray(),
         };
     }
 
@@ -257,11 +321,16 @@ public sealed class MathInterpretationResolver : ISegmentResolver
         return text.Length <= _contextAfterChars ? text : text[.._contextAfterChars];
     }
 
-    /// <summary>One crop per page the passage touches (at most two), slightly padded.</summary>
-    private async Task<IReadOnlyList<ReadOnlyMemory<byte>>> CropsAsync(ReadingUnit unit, CancellationToken ct)
+    /// <summary>
+    /// One crop per page the passage touches (at most two), slightly padded. A failed crop is not
+    /// fatal — the text layer and context remain — but it is reported: every crop once failed
+    /// silently, and interpretation quietly ran without the page image.
+    /// </summary>
+    private async Task<(IReadOnlyList<ReadOnlyMemory<byte>> Images, string? Problem)> CropsAsync(ReadingUnit unit, CancellationToken ct)
     {
-        if (_crops is null) return [];
+        if (_crops is null) return ([], null);
         var images = new List<ReadOnlyMemory<byte>>();
+        string? problem = null;
         foreach (var page in unit.Anchors.GroupBy(a => a.PageIndex).Take(2))
         {
             var rects = page.SelectMany(a => a.Rects).Where(r => !r.IsEmpty).ToList();
@@ -274,8 +343,11 @@ public sealed class MathInterpretationResolver : ISegmentResolver
                 if (png is { IsEmpty: false } bytes) images.Add(bytes);
             }
             catch (OperationCanceledException) { throw; }
-            catch (Exception) { /* no image: the interpreter still has the text layer and context */ }
+            catch (Exception ex)
+            {
+                problem = $"The page image could not be rendered ({ex.GetType().Name}: {ex.Message}); the passage was interpreted from its text layer and context only.";
+            }
         }
-        return images;
+        return (images, problem);
     }
 }

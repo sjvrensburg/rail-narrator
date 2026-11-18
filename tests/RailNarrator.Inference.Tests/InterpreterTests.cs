@@ -64,9 +64,28 @@ public sealed class InterpreterTests
     private static HttpResponseMessage Answer(string content, string finish = "stop")
         => Json(JsonSerializer.Serialize(new { choices = new[] { new { finish_reason = finish, message = new { role = "assistant", content } } } }));
 
-    private static OpenAiCompatibleMathInterpreter Make(Stub stub, bool disableThinking = false)
+    private static OpenAiCompatibleMathInterpreter Make(Stub stub, bool disableThinking = false, MathThinking? thinking = null)
         => new(new MathEndpointSettings("http://127.0.0.1:9/v1", "m", MaxRetries: 1, DisableThinking: disableThinking),
-            new HttpClient(stub) { BaseAddress = new Uri("http://127.0.0.1:9/v1/") });
+            new HttpClient(stub) { BaseAddress = new Uri("http://127.0.0.1:9/v1/") }, thinking);
+
+    private static bool AskedNotToThink(JsonDocument body)
+        => body.RootElement.TryGetProperty("chat_template_kwargs", out var k) && !k.GetProperty("enable_thinking").GetBoolean();
+
+    [Fact]
+    public async Task EquationsOnly_ThinksForEquationsAndLeadIns_NotForSentences()
+    {
+        var stub = new Stub(() => Answer(Good));
+        var interpreter = Make(stub, thinking: MathThinking.EquationsOnly);
+        var sentence = Request() with { Kind = MathPassageKind.SentenceWithMaths };
+
+        await interpreter.InterpretAsync(Request());
+        await interpreter.InterpretAsync(sentence);
+        await interpreter.InterpretAsync(sentence with { HasDisplayEquation = true });
+
+        Assert.False(AskedNotToThink(stub.Bodies[0]));
+        Assert.True(AskedNotToThink(stub.Bodies[1]));
+        Assert.False(AskedNotToThink(stub.Bodies[2]));
+    }
 
     private const string Good = "The short-run component equals a constant plus weighted past squared shocks, and past values of itself.";
 
@@ -131,10 +150,37 @@ public sealed class InterpreterTests
     {
         var stub = new Stub(() => Answer("The short-run component equals a constant plus", finish: "length"));
 
-        var result = await Make(stub).InterpretAsync(Request());
+        var result = await Make(stub, disableThinking: true).InterpretAsync(Request());
 
         Assert.False(result.Succeeded);
         Assert.Contains(result.Problems, p => p.Contains("cut off", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ThinkingThatRunsOutOfTokensIsAskedAgainWithThinkingOff()
+    {
+        var stub = new Stub(() => Answer("", finish: "length"), () => Answer(Good));
+
+        var result = await Make(stub).InterpretAsync(Request());
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(Good, result.Spoken);
+        Assert.False(stub.Bodies[0].RootElement.TryGetProperty("chat_template_kwargs", out _));
+        Assert.False(stub.Bodies[1].RootElement.GetProperty("chat_template_kwargs").GetProperty("enable_thinking").GetBoolean());
+        Assert.Contains(result.Warnings, w => w.Contains("thinking off", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task TheThinkingRetryStillCountsAsTheOnlyRepairBudget()
+    {
+        // Out of tokens thinking, then notation twice: one thinking-off answer and one repair, then refused.
+        var stub = new Stub(() => Answer("", finish: "length"),
+            () => Answer("The component h t equals alpha zero."), () => Answer("The component h t equals alpha zero."));
+
+        var result = await Make(stub).InterpretAsync(Request());
+
+        Assert.False(result.Succeeded);
+        Assert.Equal(3, stub.Bodies.Count);
     }
 
     [Fact]
@@ -159,5 +205,71 @@ public sealed class InterpreterTests
         var result = await Make(stub).InterpretAsync(Request());
 
         Assert.Equal(Good, result.Spoken);
+    }
+
+    [Fact]
+    public async Task ARefusedEquationIsTranscribedAndReadByRule()
+    {
+        var stub = new Stub(() => Answer(@"h_t = \alpha_0 + \sum_{i=1}^{q} \alpha_i \varepsilon_{t-i}^{*2}"));
+        IMathReader reader = Make(stub);
+
+        string? spoken = await reader.ReadAsync(Request());
+
+        Assert.Equal("h sub t equals alpha sub zero plus the sum from i equals one to q of alpha sub i epsilon sub t minus i, star squared", spoken);
+        var body = stub.Bodies[0].RootElement;
+        Assert.False(body.GetProperty("chat_template_kwargs").GetProperty("enable_thinking").GetBoolean());   // an easy task
+        Assert.Equal("image_url", body.GetProperty("messages")[1].GetProperty("content")[0].GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public async Task ASentenceIsTranscribedWithItsMathsDelimited()
+    {
+        var stub = new Stub(() => Answer(@"where $\phi_t = \varepsilon_t / g_t^{1/2}$ is the standardised shock."));
+        IMathReader reader = Make(stub);
+
+        string? spoken = await reader.ReadAsync(Request() with { Kind = MathPassageKind.SentenceWithMaths });
+
+        Assert.Equal("where phi sub t equals epsilon sub t over g sub t to the one half power is the standardised shock.", spoken);
+    }
+
+    [Fact]
+    public async Task NeighbouringSentencesOnTheSameLinesAreNotRead()
+    {
+        IMathReader reader = Make(new Stub(() => Answer(
+            @"to zero is discussed in Section 3. Also note that the values of $h_t$, $t = 1, \dots, T$, depend on the choice of $\delta_0$. " +
+            @"The conditional variance $h_t$ in (3) is therefore a relative entity.")));
+        var request = Request() with
+        {
+            Kind = MathPassageKind.SentenceWithMaths,
+            TextLayer = "Also note that the values of ht , t = 1, . . . , T, depend on the choice of δ0.",
+        };
+
+        Assert.Equal("Also note that the values of h sub t, t equals one, dot dot dot, T, depend on the choice of delta sub zero.",
+            await reader.ReadAsync(request));
+    }
+
+    [Fact]
+    public async Task TheTailOfThePreviousSentenceIsNotRead()
+    {
+        IMathReader reader = Make(new Stub(() => Answer(@". Let $\theta_j$ be the true value.")));
+        Assert.Equal("Let theta sub j be the true value.", await reader.ReadAsync(Request() with { Kind = MathPassageKind.SentenceWithMaths }));
+    }
+
+    [Theory]
+    [InlineData("where $\\phi_t$ is $x")]            // unclosed: not half read
+    [InlineData("The answer = 3 < 4")]                  // notation outside the delimiters
+    public async Task ATranscriptionThatLeavesNotationIsNotRead(string transcription)
+    {
+        IMathReader reader = Make(new Stub(() => Answer(transcription)));
+        Assert.Null(await reader.ReadAsync(Request() with { Kind = MathPassageKind.SentenceWithMaths }));
+    }
+
+    [Fact]
+    public async Task WithoutAnImageNothingIsTranscribed()
+    {
+        var stub = new Stub(() => Answer("x"));
+        IMathReader reader = Make(stub);
+        Assert.Null(await reader.ReadAsync(Request(images: 0)));
+        Assert.Empty(stub.Bodies);
     }
 }

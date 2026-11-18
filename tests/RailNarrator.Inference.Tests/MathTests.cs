@@ -80,7 +80,8 @@ public sealed class GoldenMathSemanticsTests
         Assert.Contains("beta hat", spoken, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("equals", spoken, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("transpose", spoken, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("minus one", spoken, StringComparison.OrdinalIgnoreCase);
+        // The inverse, ClearSpeak-style, and applying to the whole bracketed product.
+        Assert.Contains("the quantity X transpose X, end quantity, to the negative one power", spoken, StringComparison.Ordinal);
         Assert.DoesNotContain("\\", spoken);
         // The brief is explicit: calling this an ordinary least-squares estimator is only legitimate
         // when supplied context supports the identification. A rule-based reader has no such context,

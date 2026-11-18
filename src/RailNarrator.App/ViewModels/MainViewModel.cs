@@ -609,7 +609,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         var segment = Plan?.Segment(segmentId);
         // Interpreted sentences are reviewable too: their words came from a model.
         bool reviewable = segment is { IsMaths: true }
-            || segment?.Provenance is ScriptProvenance.ModelGenerated or ScriptProvenance.PendingInterpretation;
+            || segment?.Provenance is ScriptProvenance.ModelGenerated or ScriptProvenance.PendingInterpretation or ScriptProvenance.LocalRule;
         if (segment is null || !reviewable) { MathsReview = null; return; }
         var unit = segment.ReadingUnitIds.Select(id => Plan?.Unit(id)).FirstOrDefault(u => u is not null);
         MathsReview = new MathsReview(

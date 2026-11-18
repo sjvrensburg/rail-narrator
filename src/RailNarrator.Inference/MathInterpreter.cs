@@ -121,10 +121,33 @@ public static partial class SpokenMathsValidator
 /// <remarks>
 /// Every response is validated; a response with notation gets one repair turn, as in the narrate
 /// skill, and is then refused. A response cut off at the token limit is a failure, not a shorter
-/// answer. An endpoint that rejects images is asked again with text only, and remembered as
+/// answer — except that a reasoning model which ran out while still thinking is asked once more
+/// with thinking off (on the GARCH paper, 37 of 144 thinking answers ran out at 4000 tokens). An endpoint that rejects images is asked again with text only, and remembered as
 /// text-only so later passages do not pay for the failed attempt.
 /// </remarks>
-public sealed class OpenAiCompatibleMathInterpreter : IMathInterpreter, IDisposable
+/// <summary>When a reasoning model is allowed to think before answering.</summary>
+public enum MathThinking
+{
+    /// <summary>Never: fastest (about 1.5 s a passage on Ornith-35B), at some cost in fidelity.</summary>
+    Off,
+
+    /// <summary>
+    /// For display equations (and the sentences leading into them) only; sentences with inline
+    /// maths are answered directly. On the GARCH paper this keeps interpretation well ahead of the
+    /// narration, where thinking on everything (about 23 s a passage) only just kept pace.
+    /// </summary>
+    EquationsOnly,
+
+    /// <summary>Always.</summary>
+    Always,
+}
+
+/// <remarks>
+/// Also an <see cref="IMathReader"/>: when an interpretation is refused, the same endpoint
+/// transcribes the passage image to LaTeX (an easier task, answered without thinking) and
+/// <see cref="LocalLatexSpeaker"/> reads it ClearSpeak-style.
+/// </remarks>
+public sealed partial class OpenAiCompatibleMathInterpreter : IMathInterpreter, IMathReader, IDisposable
 {
     private readonly MathEndpointSettings _settings;
     private readonly HttpClient _http;
@@ -132,10 +155,13 @@ public sealed class OpenAiCompatibleMathInterpreter : IMathInterpreter, IDisposa
     private bool? _available;
     private bool _imagesRejected;
     private bool _thinkingFieldRejected;
+    private readonly MathThinking _thinking;
 
-    public OpenAiCompatibleMathInterpreter(MathEndpointSettings settings, HttpClient? httpClient = null)
+    /// <param name="thinking">When the model may think; by default <see cref="MathEndpointSettings.DisableThinking"/> decides (never or always).</param>
+    public OpenAiCompatibleMathInterpreter(MathEndpointSettings settings, HttpClient? httpClient = null, MathThinking? thinking = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
+        _thinking = thinking ?? (settings.DisableThinking ? MathThinking.Off : MathThinking.Always);
         if (httpClient is not null) { _http = httpClient; _ownsClient = false; }
         else { _http = new HttpClient { Timeout = settings.Timeout }; _ownsClient = true; }
         if (_http.BaseAddress is null)
@@ -145,6 +171,112 @@ public sealed class OpenAiCompatibleMathInterpreter : IMathInterpreter, IDisposa
     }
 
     public string Revision => $"{MathInterpretationPrompt.Version}|{_settings.BaseUrl.TrimEnd('/')}|{_settings.Model}";
+
+    string IMathReader.Revision => $"{TranscriptionPromptVersion}|{LocalLatexSpeaker.Version}|{_settings.BaseUrl.TrimEnd('/')}|{_settings.Model}";
+
+    private const string TranscriptionPromptVersion = "math-transcribe/3";
+
+    private const string TranscriptionSystem =
+        "You transcribe mathematics from an image of a document into LaTeX, exactly as printed. " +
+        "Do not explain, correct, complete or simplify anything. Output only the transcription.";
+
+    /// <summary>
+    /// The passage transcribed from its image and read by rule. Null without an image (the text
+    /// layer alone is too garbled to transcribe faithfully), or when the transcription cannot be
+    /// read without leaving notation behind.
+    /// </summary>
+    public async Task<string?> ReadAsync(MathInterpretationRequest request, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (request.Images.Count == 0 || _imagesRejected) return null;
+        bool equation = request.Kind == MathPassageKind.DisplayEquation;
+        var user = new JsonArray();
+        foreach (var image in request.Images)
+            user.Add(new JsonObject
+            {
+                ["type"] = "image_url",
+                ["image_url"] = new JsonObject { ["url"] = "data:image/png;base64," + Convert.ToBase64String(image.Span) },
+            });
+        user.Add(new JsonObject
+        {
+            ["type"] = "text",
+            ["text"] = (equation
+                    ? "Transcribe the equation in the image as LaTeX, with no $ delimiters and without its equation number."
+                    : "Transcribe the passage in the image as plain text, exactly as printed, with every mathematical expression, " +
+                      "symbol or variable written as LaTeX inside $…$ (a displayed equation inside $$…$$). Leave out equation numbers. " +
+                      "The image is cropped to the passage's lines, so it can start or end with words of the neighbouring sentences: " +
+                      "transcribe only the passage the text layer below holds, from its first word to its last.") +
+                "\n\nThe PDF's text layer for it, garbled where there is maths, as a hint only:\n<<<\n" + request.TextLayer + "\n>>>",
+        });
+        JsonArray messages =
+        [
+            new JsonObject { ["role"] = "system", ["content"] = TranscriptionSystem },
+            new JsonObject { ["role"] = "user", ["content"] = user },
+        ];
+        var (content, finish, _, error) = await ChatAsync(messages, noThinking: true, ct).ConfigureAwait(false);
+        if (error is not null || finish == "length" || string.IsNullOrWhiteSpace(content)) return null;
+
+        string transcription = Clean(content);
+        if (transcription.StartsWith("```", StringComparison.Ordinal))
+            transcription = transcription.Trim('`').Replace("latex", "", StringComparison.OrdinalIgnoreCase).Trim();
+        if (!equation) transcription = OnlyThePassage(transcription, request.TextLayer);
+        string? spoken = equation ? LocalLatexSpeaker.Speak(transcription) : LocalLatexSpeaker.SpeakMixed(transcription);
+        // The tail of the previous sentence, if the model kept it: ". Set x…".
+        spoken = spoken?.TrimStart('.', ',', ';', ':', ' ');
+        if (string.IsNullOrWhiteSpace(spoken) || LeftoverNotation().IsMatch(spoken)) return null;
+        // A runaway transcription is not a reading of this passage.
+        if (spoken.Length > 4 * request.TextLayer.Length + 400) return null;
+        return spoken;
+    }
+
+    /// <summary>
+    /// A sentence's crop holds whole lines, so the model also transcribes the ends of the sentences
+    /// before and after it, whatever it is told. Keep the transcribed sentences whose ordinary
+    /// words are in the passage's own text layer (the text layer garbles maths, not prose), and a
+    /// sentence of maths alone only between two kept ones.
+    /// </summary>
+    internal static string OnlyThePassage(string transcription, string textLayer)
+    {
+        var known = ProseWord().Matches(textLayer).Select(m => m.Value.ToLowerInvariant()).ToHashSet(StringComparer.Ordinal);
+        if (known.Count == 0) return transcription;
+        var sentences = SplitSentences(transcription);
+        var verdict = sentences.Select(sentence =>
+        {
+            var words = ProseWord().Matches(MathSpan().Replace(sentence, " ")).Select(m => m.Value.ToLowerInvariant()).ToList();
+            return words.Count == 0 ? (bool?)null : words.Count(known.Contains) * 2 >= words.Count;
+        }).ToList();
+        int first = verdict.FindIndex(v => v == true), last = verdict.FindLastIndex(v => v == true);
+        if (first < 0) return transcription;   // nothing recognisable: leave it to the other guards
+        return string.Join(" ", sentences.Skip(first).Take(last - first + 1).Where((_, i) => verdict[first + i] != false));
+    }
+
+    private static List<string> SplitSentences(string text)
+    {
+        var sentences = new List<string>();
+        int start = 0;
+        bool inMaths = false;
+        for (int i = 0; i < text.Length; i++)
+        {
+            if (text[i] == '$') inMaths = !inMaths;
+            else if (!inMaths && text[i] is '.' or '?' or '!' && i + 2 < text.Length && text[i + 1] == ' ' && char.IsUpper(text[i + 2]))
+            {
+                sentences.Add(text[start..(i + 1)].Trim());
+                start = i + 2;
+            }
+        }
+        if (start < text.Length && text[start..].Trim() is { Length: > 0 } rest) sentences.Add(rest);
+        return sentences;
+    }
+
+    [GeneratedRegex(@"\$\$?[^$]*\$\$?")]
+    private static partial Regex MathSpan();
+
+    [GeneratedRegex(@"\b[A-Za-z]{3,}\b")]
+    private static partial Regex ProseWord();
+
+    /// <summary>Anything a speech engine would read as notation rather than words.</summary>
+    [GeneratedRegex(@"[\\$^_{}=<>|∑∏∫∂∞≤≥≠≈∈×·±→∀∃∇\u0370-\u03FF]")]
+    private static partial Regex LeftoverNotation();
 
     public async Task<bool> IsAvailableAsync(CancellationToken ct = default)
     {
@@ -170,20 +302,36 @@ public sealed class OpenAiCompatibleMathInterpreter : IMathInterpreter, IDisposa
         // The budget counts answers (and failed requests), not the protocol fallbacks below: an
         // endpoint that refuses images or the thinking switch must still get its answer and repair.
         int answers = 0;
+        bool noThinking = _thinking switch
+        {
+            MathThinking.Off => true,
+            MathThinking.EquationsOnly => !(request.Kind == MathPassageKind.DisplayEquation || request.HasDisplayEquation),
+            _ => false,
+        };
         for (int guard = 0; answers <= Math.Max(1, _settings.MaxRetries) && guard < 8; guard++)
         {
             ct.ThrowIfCancellationRequested();
-            var (content, finish, status, error) = await ChatAsync(messages, ct).ConfigureAwait(false);
+            var (content, finish, status, error) = await ChatAsync(messages, noThinking, ct).ConfigureAwait(false);
             bool protocolFallback = status == HttpStatusCode.BadRequest
-                && ((_settings.DisableThinking && !_thinkingFieldRejected) || withImages);
-            if (!protocolFallback) answers++;
+                && ((noThinking && !_thinkingFieldRejected) || withImages);
+            // A reasoning model that spent the whole budget thinking has not answered yet: ask it
+            // once more with thinking off rather than give the passage up (or wait twice as long).
+            bool thoughtTooLong = finish == "length" && !noThinking && !_thinkingFieldRejected && error is null;
+            if (!protocolFallback && !thoughtTooLong) answers++;
 
-            if (status == HttpStatusCode.BadRequest && _settings.DisableThinking && !_thinkingFieldRejected
+            if (thoughtTooLong)
+            {
+                noThinking = true;
+                warnings.Add("The model used its whole token budget thinking; the passage was answered with thinking off.");
+                continue;
+            }
+            if (status == HttpStatusCode.BadRequest && noThinking && !_thinkingFieldRejected
                 && error is not null && (error.Contains("chat_template_kwargs", StringComparison.OrdinalIgnoreCase)
                     || error.Contains("enable_thinking", StringComparison.OrdinalIgnoreCase)
                     || error.Contains("Unrecognized request argument", StringComparison.OrdinalIgnoreCase)))
             {
                 _thinkingFieldRejected = true;   // not a llama.cpp/vLLM server; let it think
+                noThinking = false;
                 continue;
             }
             if (status == HttpStatusCode.BadRequest && withImages)
@@ -238,7 +386,7 @@ public sealed class OpenAiCompatibleMathInterpreter : IMathInterpreter, IDisposa
         ];
     }
 
-    private async Task<(string? Content, string? Finish, HttpStatusCode? Status, string? Error)> ChatAsync(JsonArray messages, CancellationToken ct)
+    private async Task<(string? Content, string? Finish, HttpStatusCode? Status, string? Error)> ChatAsync(JsonArray messages, bool noThinking, CancellationToken ct)
     {
         var body = new JsonObject
         {
@@ -248,7 +396,7 @@ public sealed class OpenAiCompatibleMathInterpreter : IMathInterpreter, IDisposa
             ["max_tokens"] = _settings.MaxTokens,
             ["stream"] = false,
         };
-        if (_settings.DisableThinking && !_thinkingFieldRejected)
+        if (noThinking && !_thinkingFieldRejected)
             body["chat_template_kwargs"] = new JsonObject { ["enable_thinking"] = false };
         try
         {

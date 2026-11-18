@@ -79,6 +79,12 @@ public interface IAudioTransport
 /// synthesis lookahead, because a local model takes several seconds per passage and a run of
 /// equations would otherwise stall playback.
 /// </param>
+/// <param name="PreRollSeconds">
+/// On Play, wait until the passages ready ahead of the reading position (no maths still waiting
+/// for interpretation) would take this long to speak — so a run of equations at the start is
+/// interpreted before reading begins, not one stall at a time. Zero turns it off.
+/// </param>
+/// <param name="PreRollTimeoutSeconds">The longest Play waits for that before starting anyway.</param>
 public sealed record NarrationCoordinatorOptions(
     int LookaheadSegments = 4,
     int MaxConcurrentSynthesis = 1,
@@ -87,8 +93,13 @@ public sealed record NarrationCoordinatorOptions(
     double PlaybackRate = 1.0,
     FollowMode FollowMode = FollowMode.KeepVisible,
     bool RequestTimings = true,
-    int InterpretAheadSegments = 40)
+    int InterpretAheadSegments = 40,
+    double PreRollSeconds = 60,
+    double PreRollTimeoutSeconds = 20)
 {
+    /// <summary>Speaking rate used to estimate how long a passage takes, from its length (Kokoro at 1×).</summary>
+    public const double EstimatedCharactersPerSecond = 15;
+
     public static NarrationCoordinatorOptions Default { get; } = new();
 }
 
@@ -273,8 +284,53 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         }
         Publish(PlaybackState.Preparing, "Preparing speech");
         StartPreparation(gen);
+        await PreRollAsync(gen, ct).ConfigureAwait(false);
+        if (gen != Generation) return;
         if (!await EnsureSegmentReadyAsync(_segmentIndex, gen, ct).ConfigureAwait(false)) return;
         await StartCurrentSegmentAsync(gen, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Seconds of narration from the reading position before the first passage still waiting for
+    /// interpretation, estimated from its length; infinity when none is waiting within the window.
+    /// </summary>
+    private double ReadySecondsAhead()
+    {
+        var plan = _plan;
+        if (plan is null) return double.PositiveInfinity;
+        int from;
+        lock (_gate) from = Math.Max(0, _segmentIndex);
+        double rate = _options.PlaybackRate <= 0 ? 1 : _options.PlaybackRate;
+        double seconds = 0;
+        int end = Math.Min(plan.SegmentCount, from + Math.Max(1, _options.InterpretAheadSegments));
+        for (int i = from; i < end; i++)
+        {
+            var segment = plan.Segments[i];
+            if (segment.Provenance == ScriptProvenance.PendingInterpretation) return seconds;
+            seconds += segment.SpokenText.Length / NarrationCoordinatorOptions.EstimatedCharactersPerSecond / rate;
+        }
+        return double.PositiveInfinity;
+    }
+
+    /// <summary>
+    /// Waits, bounded, for interpretation to get ahead of the reading position (see
+    /// <see cref="NarrationCoordinatorOptions.PreRollSeconds"/>). Returns at once when nothing is
+    /// pending — the usual case once a document's maths is cached.
+    /// </summary>
+    private async Task PreRollAsync(long generation, CancellationToken ct)
+    {
+        if (_resolver is null || _options.PreRollSeconds <= 0) return;
+        // Wall time, not the injected clock: a bound on how long the reader waits.
+        long started = System.Diagnostics.Stopwatch.GetTimestamp();
+        while (generation == Generation && !_disposed)
+        {
+            double ready = ReadySecondsAhead();
+            if (ready >= _options.PreRollSeconds) return;
+            double waited = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalSeconds;
+            if (waited >= _options.PreRollTimeoutSeconds) return;
+            Publish(PlaybackState.Buffering, $"Interpreting maths before reading ({ready:F0} of {_options.PreRollSeconds:F0} s ready)");
+            await Task.Delay(200, ct).ConfigureAwait(false);
+        }
     }
 
     public async Task PauseAsync(CancellationToken ct = default)

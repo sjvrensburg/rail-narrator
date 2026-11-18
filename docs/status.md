@@ -7,16 +7,16 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 321 passing, 3 opt-in skips, 0 warnings
+## Verified by automated tests — 380 passing, 3 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
-| `RailNarrator.Domain.Tests` | 166 | Front-matter metadata skipped (body sentences that start the same way kept), A lead-in sentence and its equation interpreted as one passage, Citation markers left out (and brackets that are content kept), regenerate re-asks the model, Maths left pending with an honest fallback, interpreted once with surrounding definitions and cached, spoken by the coordinator; Layout roles (model formulas trusted over geometry, display lines merged, headings kept apart, inline maths kept in its sentence, tables announced, publisher cover sheets skipped), years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
-| `RailNarrator.Pdf.Tests` | 15 (+1 opt-in) | **Real PDFs** through the real RailReaderCore pipeline, including a cached snapshot building the same plan as a fresh one; opt-in, the real PP-DocLayoutV3 model through the adapter |
+| `RailNarrator.Domain.Tests` | 174 | Play waits for the maths ahead (and starts anyway after the cap), a refused interpretation read mechanically from a transcription and labelled, a failed page crop reported, Front-matter metadata skipped (body sentences that start the same way kept), A lead-in sentence and its equation interpreted as one passage, Citation markers left out (and brackets that are content kept), regenerate re-asks the model, Maths left pending with an honest fallback, interpreted once with surrounding definitions and cached, spoken by the coordinator; Layout roles (model formulas trusted over geometry, display lines merged, headings kept apart, inline maths kept in its sentence, tables announced, publisher cover sheets skipped), years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
+| `RailNarrator.Pdf.Tests` | 16 (+1 opt-in) | A passage crop is a PNG of its ink; **Real PDFs** through the real RailReaderCore pipeline, including a cached snapshot building the same plan as a fresh one; opt-in, the real PP-DocLayoutV3 model through the adapter |
 | `RailNarrator.Speech.Tests` | 36 | PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
 | `RailNarrator.Audio.Tests` | 39 | Resampler (polyphase path equal to the direct sinc filter on four rate pairs), time-stretcher (fast grain search equal to the direct search at three rates), playback engine against a controllable fake device, engine lock ordering, coordinator-plus-engine transition stress |
 | `RailNarrator.Infrastructure.Tests` | 9 | Cache round-trips and waveform integrity, including same-length replacement; extraction-cache keying, degraded and encrypted documents never stored, corrupt entries treated as misses |
-| `RailNarrator.Inference.Tests` | 56 | Maths interpretation: notation validator, image and thinking-switch fallbacks, one repair turn, cut-off responses refused; golden maths semantics, response validator, endpoint client |
+| `RailNarrator.Inference.Tests` | 106 | ClearSpeak-style reading of LaTeX (powers, fractions, roots, quantities, derivatives, sums, functions, cases, Unicode, text with `$…$`, malformed input); thinking-policy and out-of-tokens retry; transcription fallback; Maths interpretation: notation validator, image and thinking-switch fallbacks, one repair turn, cut-off responses refused; golden maths semantics, response validator, endpoint client |
 
 Run them with:
 
@@ -28,7 +28,8 @@ The default run needs no GPU, network, model file or sound card. Two opt-in
 integration tests are skipped unless their dependencies are explicitly enabled. The Audio suite
 runs stable across repeated invocations; an earlier flake (a test that drained the
 device before the writer thread had finished queuing) was fixed by waiting for the
-completion event instead of a fixed delay.
+completion event instead of a fixed delay. One Audio test failed once in a full-solution run while the local LLM was busy on
+the same machine and passed in three reruns; it was not identified.
 
 ## Verified by running the real thing
 
@@ -202,7 +203,7 @@ the two items marked as measured before.
 | **Audible playback by a human ear** | The signal reaching the output device was recorded and matches the synthesised clips, but nobody has listened, and the Bluetooth leg after the sink was not captured | Play a document through speakers and confirm speech is intelligible and correctly paced |
 | **Audible-to-visible delay** | Highlights agree with the device's own DAC timestamps; whether those timestamps are right for a given device is unmeasured | Loopback microphone plus display capture, at several speeds and on wired and Bluetooth outputs |
 | **Maths interpretation across documents** | Measured on one statistics paper with one model (Ornith-1.5-35B-A3B, see item 32) | Run other fields' papers (physics, pure maths, ML) and a text-only endpoint; review a sample of interpretations against the originals for meaning errors |
-| **VLM equation transcription** | No vision endpoint configured | Configure one and check a real equation crop round-trips |
+| **Mechanical readings against the page** | The transcription fallback (item 39) ran on the GARCH paper, and its readings were checked for notation, not proof-read symbol by symbol against the page | Compare a sample of rule readings with the printed equations; a dedicated transcription model (a math OCR) was not tried |
 | **Scanned-document OCR at 300 dpi** | A 131 ppi scan with handwriting was run and reads as sentences; the handwriting is recognised as stray words | Check a clean 300 dpi scan for coverage, warnings and reading order |
 | **Clean-machine install** | The archive was built and run here, not on a fresh system | Install on a stock Fedora/Debian with only `libportaudio2` added |
 | **Long-document endurance** | Runs of three to seven minutes of a 27-page paper, 1.5–1.7 GB resident; played clips are now released, but a whole document has not been played through | Play a 40-page paper to the end: peak RSS, preparation lag versus playback, cache growth |
@@ -407,13 +408,13 @@ threads meeting.
     the annotated thesis scan, OCR'd handwriting ("lact plact", "rewoucd") is no longer read.
 32. **Maths is interpreted, not read.** With `MathMode` Interpret (now the default) and an LLM
     endpoint configured, each display equation and each sentence with maths in it is sent to the
-    model — page image, garbled text layer, 1,500 characters before it (where notation is
+    model — page image (see item 38: until then the image never arrived), garbled text layer, 1,500 characters before it (where notation is
     defined) and 400 after — and the narrator says what it means. The rules are the author's
     narrate skill: never voice notation, use the paper's names for quantities, keep a sentence's
     own wording; output with symbols, Greek letters or variable residue ("h t") gets one repair
     turn and is then refused. Interpretation runs during playback, up to 40 passages ahead of the
     reading position, and is cached on disk; the plan holds an honest fallback until then.
-    Measured on the GARCH paper with Ornith-1.5-35B-A3B on `:8088` (multimodal, local): 14 of 14
+    Measured, text-only as it turned out, on the GARCH paper with Ornith-1.5-35B-A3B on `:8088` (multimodal, local): 14 of 14
     passages interpreted correctly with thinking on (median 10.1 s, max 21.5 s) — e.g. equation
     (3) became "the short-run component of the variance equals a constant plus the sum of the
     previous squared standardized innovations, each multiplied by a weight, plus … an additional
@@ -457,3 +458,43 @@ threads meeting.
     whole. On the GARCH paper this separated "…, j = 1, …, p." from the next sentence and a
     figure's axis label ("SPD/USD") from its caption; on the thesis, a list item from the
     paragraph after it.
+37. **Thinking ran out of tokens on a quarter of the passages.** On the GARCH paper's first 144
+    pending passages with thinking on, 37 used the whole 4,000-token budget deliberating and
+    returned no answer — not a loop, just long reasoning. A thinking answer cut off at the token
+    limit is now asked again once with thinking off (this does not use the repair turn), and the
+    new default `MathLlmThinking: EquationsOnly` thinks only for display equations and the
+    sentences that lead into them; a sentence with brief inline maths is answered directly. On the
+    first 100 passages (text only): thinking on everything 80 of 100 in 3,146 s, thinking off
+    88 of 100 in 171 s, equations-only 92 of 100 in 2,318 s. Sentences take ~16 s with thinking and
+    ~1.5 s without; equations and lead-ins ~39 s and ~2.3 s. The legacy `MathLlmDisableThinking`
+    still means Off.
+38. **The model never saw the page.** Rendering a passage's crop always threw — PDFium's 3-byte
+    RGB pixmap was installed as a 4-byte Skia format — and the resolver dropped the exception, so
+    every interpretation measured until then (items 32 and 35 included) came from the text layer
+    and surrounding text alone. The crop is now copied into an RGBA buffer and encoded as PNG
+    (a test checks the PNG holds the passage's ink), and a crop that fails is a warning on the
+    passage instead of silence.
+39. **Maths the model cannot interpret is read as notation, by rule, not announced.** When an
+    interpretation is refused, the same model transcribes the crop (thinking off: LaTeX for an
+    equation, text with `$…$` for a sentence) and a rewritten `LocalLatexSpeaker` reads it in
+    ClearSpeak style: "x squared", "z to the n-th power", "the quantity h sub t g sub t, end
+    quantity, to the one half power", "the fraction with numerator …, and denominator …", "the
+    partial derivative of ell … with respect to theta sub one", "converges in distribution to".
+    The old reader produced "minusi", "open parenthesish" and leftover braces. The passage is
+    labelled "says the notation, not its meaning" and appears in the maths review panel; a
+    transcription that still leaves notation, or is far longer than the passage, is not read and
+    the earlier fallback stands. The whole GARCH paper (224 pending passages) with page images,
+    equations-only thinking and this fallback: 180 interpreted, 43 read by rule, 1 announced;
+    22 answered with thinking off after running out of tokens; median 4.6 s, max 82.9 s, 3,700 s
+    of model time against roughly 85 minutes of narration. Sentences: 106 interpreted in 3.0 s
+    on average, 29 read by rule in 8.7 s; equations 14 in 19 s, 5 by rule; lead-ins 51 in 39 s,
+    9 by rule in 66 s. Meaning errors remain with the image: the order of the transition
+    polynomial (K) is twice called "the number of regimes". The full run found two reader bugs,
+    fixed: `\text{…}` lost its spaces ("bethetruevalueof") and `\pmb` was unknown; a sentence
+    crop holds whole lines, and the model transcribed the neighbouring sentences on them even when
+    told not to (two of seven re-run passages), so transcribed sentences whose ordinary words are
+    not in the passage's text layer are now dropped before reading.
+40. **Play buffers before it starts.** On Play the coordinator waits until about 60 s of
+    narration ahead is ready (estimated at 15 characters a second, divided by the speed) or 20 s
+    have passed, showing "Interpreting maths before reading (n of 60 s ready)"; with nothing
+    pending, or a warm cache, it starts at once.

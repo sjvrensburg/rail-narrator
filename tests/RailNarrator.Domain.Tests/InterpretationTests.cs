@@ -133,6 +133,162 @@ public sealed class InterpretationTests
         Assert.Equal(Interpret.AnnouncementTemplate, equation.SpokenText);
     }
 
+    private sealed class FakeReader(string? words) : IMathReader
+    {
+        public int Calls;
+        public string Revision => "reader/1";
+        public Task<string?> ReadAsync(MathInterpretationRequest request, CancellationToken ct = default)
+        {
+            Interlocked.Increment(ref Calls);
+            return Task.FromResult(words);
+        }
+    }
+
+    [Fact]
+    public async Task ARefusedInterpretationIsReadMechanically_LabelledAndCached()
+    {
+        var plan = await PlanAsync(Interpret);
+        var interpreter = new FakeInterpreter(_ => MathInterpretationResult.Reject("It still contains notation."));
+        var reader = new FakeReader("sigma sub t squared equals h sub t g sub t");
+        var cache = new MemoryCache();
+
+        var equation = await new MathInterpretationResolver(interpreter, cache: cache, options: Interpret, reader: reader).ResolveAsync(plan, plan.Segments[2]);
+        var again = await new MathInterpretationResolver(interpreter, cache: cache, options: Interpret, reader: reader).ResolveAsync(plan, plan.Segments[2]);
+
+        Assert.Equal(ScriptProvenance.LocalRule, equation.Provenance);
+        Assert.Equal("sigma sub t squared equals h sub t g sub t", equation.SpokenText);
+        Assert.Contains(equation.Warnings, w => w.Contains("rejected", StringComparison.Ordinal));
+        Assert.Contains(equation.Warnings, w => w.Contains("not its meaning", StringComparison.Ordinal));
+        Assert.Equal(equation.SpokenText.Length, Assert.Single(equation.SourceLinks).SpokenRange.Length);
+        Assert.Equal(1, reader.Calls);   // the second resolve came from the cache
+        Assert.Equal(equation.SpokenText, again.SpokenText);
+    }
+
+    [Fact]
+    public async Task WhenTheReaderCannotReadItEither_TheOldFallbackStands()
+    {
+        var plan = await PlanAsync(Interpret);
+        var interpreter = new FakeInterpreter(_ => MathInterpretationResult.Reject("It still contains notation."));
+        var resolver = new MathInterpretationResolver(interpreter, options: Interpret, reader: new FakeReader(null));
+
+        Assert.Equal(ScriptProvenance.SourceVerbatim, (await resolver.ResolveAsync(plan, plan.Segments[1])).Provenance);
+        Assert.Equal(ScriptProvenance.FailureAnnouncement, (await resolver.ResolveAsync(plan, plan.Segments[2])).Provenance);
+    }
+
+    [Fact]
+    public async Task ASuccessfulInterpretationNeverAsksTheReader()
+    {
+        var plan = await PlanAsync(Interpret);
+        var reader = new FakeReader("x sub t");
+        await new MathInterpretationResolver(FakeInterpreter.Saying("The variance splits in two."), options: Interpret, reader: reader)
+            .ResolveAsync(plan, plan.Segments[2]);
+        Assert.Equal(0, reader.Calls);
+    }
+
+    private sealed class BrokenCrops : IExtractionSource
+    {
+        public Task<ExtractionSnapshot> ExtractAsync(ExtractionRequest request, IProgress<ExtractionProgress>? progress = null, CancellationToken ct = default)
+            => throw new NotSupportedException();
+        public Task<ReadOnlyMemory<byte>?> RenderCropPngAsync(ExtractionIdentity extraction, int pageIndex, PageRect region, int targetPixelWidth, CancellationToken ct = default)
+            => throw new ArgumentNullException("image");
+    }
+
+    [Fact]
+    public async Task AFailedCropIsReported_NotSilentlyDropped()
+    {
+        var plan = await PlanAsync(Interpret);
+        var interpreter = FakeInterpreter.Saying("The variance splits in two.");
+        var resolved = await new MathInterpretationResolver(interpreter, crops: new BrokenCrops(), options: Interpret).ResolveAsync(plan, plan.Segments[2]);
+
+        Assert.Equal(ScriptProvenance.ModelGenerated, resolved.Provenance);
+        Assert.Empty(interpreter.Requests[0].Images);
+        Assert.Contains(resolved.Warnings, w => w.Contains("page image could not be rendered", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task TheRequestSaysWhetherThePassageHoldsADisplayEquation()
+    {
+        var plan = await PlanAsync(Interpret);
+        var interpreter = FakeInterpreter.Saying("The variance splits in two.");
+        var resolver = new MathInterpretationResolver(interpreter, options: Interpret);
+        await resolver.ResolveAsync(plan, plan.Segments[1]);
+        await resolver.ResolveAsync(plan, plan.Segments[2]);
+        Assert.False(interpreter.Requests[0].HasDisplayEquation);
+        Assert.True(interpreter.Requests[1].HasDisplayEquation);
+    }
+
+    /// <summary>A resolver whose interpretations wait for the test to release them.</summary>
+    private sealed class GatedResolver(string words) : ISegmentResolver
+    {
+        public TaskCompletionSource Gate { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task<NarrationSegment> ResolveAsync(NarrationPlan plan, NarrationSegment segment, CancellationToken ct = default)
+        {
+            if (segment.Provenance != ScriptProvenance.PendingInterpretation) return segment;
+            await Gate.Task.WaitAsync(ct);
+            return segment with { SpokenText = words, Provenance = ScriptProvenance.ModelGenerated, ScriptRevision = segment.ScriptRevision + 1,
+                SourceLinks = [new SourceLink(new TextRange(0, words.Length), segment.AnchorIds)] };
+        }
+
+        public Task<NarrationSegment> RefreshAsync(NarrationPlan plan, NarrationSegment segment, CancellationToken ct = default)
+            => ResolveAsync(plan, segment, ct);
+    }
+
+    [Fact]
+    public async Task PlayWaitsForTheMathsAhead_ThenReads()
+    {
+        var plan = await PlanAsync(Interpret);
+        var transport = new FakeAudioTransport();
+        var resolver = new GatedResolver("The variance splits in two.");
+        await using var coordinator = new NarrationCoordinator(new FakeTtsProvider(), transport,
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 3, PreRollSeconds: 30, PreRollTimeoutSeconds: 30), resolver: resolver);
+        await coordinator.LoadPlanAsync(plan);
+
+        var play = coordinator.PlayAsync();
+        await WaitUntil(() => coordinator.Snapshot.State == PlaybackState.Buffering, "the coordinator to buffer");
+        await Task.Delay(300);
+        Assert.Equal(0, transport.PlayCount);   // the first sentence (five seconds) is not enough lead
+        Assert.Contains("Interpreting maths", coordinator.Snapshot.Message ?? "", StringComparison.Ordinal);
+
+        resolver.Gate.SetResult();
+        await play;
+        Assert.Equal(1, transport.PlayCount);
+    }
+
+    [Fact]
+    public async Task PlayStartsAnywayWhenTheMathsTakesTooLong()
+    {
+        var plan = await PlanAsync(Interpret);
+        var transport = new FakeAudioTransport();
+        var resolver = new GatedResolver("never");
+        await using var coordinator = new NarrationCoordinator(new FakeTtsProvider(), transport,
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 1, PreRollSeconds: 30, PreRollTimeoutSeconds: 0.4), resolver: resolver);
+        await coordinator.LoadPlanAsync(plan);
+
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        await coordinator.PlayAsync().WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(1, transport.PlayCount);   // the first, ready, sentence plays
+        Assert.InRange(started.Elapsed.TotalSeconds, 0.35, 5);
+    }
+
+    [Fact]
+    public async Task WithNothingPendingPlayDoesNotBuffer()
+    {
+        var plan = await PlanAsync(Interpret with { InterpretMaths = false });
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(new FakeTtsProvider(), transport,
+            options: new NarrationCoordinatorOptions(PreRollSeconds: 60), resolver: new GatedResolver("unused"));
+        var states = new List<PlaybackState>();
+        coordinator.SnapshotChanged += s => { lock (states) states.Add(s.State); };
+        await coordinator.LoadPlanAsync(plan);
+
+        await coordinator.PlayAsync().WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(1, transport.PlayCount);
+        lock (states) Assert.DoesNotContain(PlaybackState.Buffering, states);
+    }
+
     [Fact]
     public async Task TheCoordinatorSpeaksTheInterpretation_AndPublishesIt()
     {
