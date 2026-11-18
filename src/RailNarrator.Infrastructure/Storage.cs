@@ -95,6 +95,7 @@ public sealed record RailNarratorSettings
     public string? MfaExecutable { get; init; }
     public string? MfaDictionaryPath { get; init; }
     public string? MfaAcousticModelPath { get; init; }
+    public string? MfaG2pModelPath { get; init; }
     public string MfaRuntimeRevision { get; init; } = "3.3.9";
 
     public MathMode MathMode { get; init; } = MathMode.Interpret;

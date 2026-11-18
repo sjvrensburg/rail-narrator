@@ -7,13 +7,13 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 390 passing, 5 opt-in skips, 0 warnings
+## Verified by automated tests — 414 passing, 6 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
-| `RailNarrator.Domain.Tests` | 180 | Decimals and signed numbers after a year cue ("from 0.20", "by 0.75") read as numbers, not handed to the year reading; Play waits for the maths ahead (and starts anyway after the cap), a refused interpretation read mechanically from a transcription and labelled, a failed page crop reported, Front-matter metadata skipped (body sentences that start the same way kept), A lead-in sentence and its equation interpreted as one passage, Citation markers left out (and brackets that are content kept), regenerate re-asks the model, Maths left pending with an honest fallback, interpreted once with surrounding definitions and cached, spoken by the coordinator; Layout roles (model formulas trusted over geometry, display lines merged, headings kept apart, inline maths kept in its sentence, tables announced, publisher cover sheets skipped), years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
+| `RailNarrator.Domain.Tests` | 204 | Abbreviations expanded only as whole words ("Chap.", "overlap.", "p.adjust" untouched); maths italic letters (U+1D400 block, ℎ) mark their sentence as maths and are spoken as plain letters and Greek names, mapped back to both UTF-16 units; silent marks not counted as words; a zoom re-checks the camera at once unless following is suspended; Decimals and signed numbers after a year cue ("from 0.20", "by 0.75") read as numbers, not handed to the year reading; Play waits for the maths ahead (and starts anyway after the cap), a refused interpretation read mechanically from a transcription and labelled, a failed page crop reported, Front-matter metadata skipped (body sentences that start the same way kept), A lead-in sentence and its equation interpreted as one passage, Citation markers left out (and brackets that are content kept), regenerate re-asks the model, Maths left pending with an honest fallback, interpreted once with surrounding definitions and cached, spoken by the coordinator; Layout roles (model formulas trusted over geometry, display lines merged, headings kept apart, inline maths kept in its sentence, tables announced, publisher cover sheets skipped), years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
 | `RailNarrator.Pdf.Tests` | 20 (+3 opt-in) | Layout analysis that fails to start, or fails mid-document, finishes on the CPU fallback from the page that failed and says so once, and the source then reports it so the snapshot is not cached under the GPU key; opt-in, the `Cpu` setting never uses the GPU, and (`RN_WEBGPU_INTEGRATION=1`) the GPU gives the same blocks, kinds, reading units and geometry within 0.1 pt as the CPU; A passage crop is a PNG of its ink; **Real PDFs** through the real RailReaderCore pipeline, including a cached snapshot building the same plan as a fresh one; opt-in, the real PP-DocLayoutV3 model through the adapter |
-| `RailNarrator.Speech.Tests` | 36 | PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
+| `RailNarrator.Speech.Tests` | 36 (+2 opt-in) | Opt-in, real Kokoro speech holding acronyms and words the dictionary lacks aligned word by word; PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
 | `RailNarrator.Audio.Tests` | 39 | Resampler (polyphase path equal to the direct sinc filter on four rate pairs), time-stretcher (fast grain search equal to the direct search at three rates), playback engine against a controllable fake device, engine lock ordering, coordinator-plus-engine transition stress |
 | `RailNarrator.Infrastructure.Tests` | 9 | Cache round-trips and waveform integrity, including same-length replacement; extraction-cache keying, degraded and encrypted documents never stored, corrupt entries treated as misses |
 | `RailNarrator.Inference.Tests` | 106 | ClearSpeak-style reading of LaTeX (powers, fractions, roots, quantities, derivatives, sums, functions, cases, Unicode, text with `$…$`, malformed input); thinking-policy and out-of-tokens retry; transcription fallback; Maths interpretation: notation validator, image and thinking-switch fallbacks, one repair turn, cut-off responses refused; golden maths semantics, response validator, endpoint client |
@@ -211,6 +211,23 @@ used. Details in ADR-0006.
 - With the Vulkan drivers hidden, `Auto` fell back to the CPU, said why ("No supported adapters"),
   and extracted normally.
 - The self-contained publish includes `libonnxruntime_providers_webgpu.so` (15.8 MB).
+
+### Word highlighting on a real chapter
+
+Measured 18 November 2026 on the Ubuntu laptop described above, with the 24-page forecasting
+chapter that showed some sentences highlighted word by word and others whole.
+
+- Every cached clip from the reader's session that was highlighted whole (8 of 10) had been
+  refused for the same reason: a word missing from the pronunciation dictionary. Over the
+  chapter, 160 of 354 prose sentences (45%) held such a word.
+- With generated pronunciations (ADR-0004 amendment), 40 sentences were sampled from those still
+  holding a missing word, then synthesised by Kokoro and aligned through the adapter: 38 aligned
+  word by word, and 2 fell back on "2a" and "ggplot2".
+- Before the fix, three sentences holding maths italic letters could not be synthesised at all
+  (Kokoro's phonemiser threw). All 71 pending maths sentences in the chapter can now be spoken in
+  their fallback reading.
+- Not measured: how accurate the boundaries of generated words are, and whether the view follows
+  the word at high zoom in the window. The camera code path is tested, but the GUI was not driven.
 
 ## Not verified — and what it would take
 
@@ -522,3 +539,22 @@ threads meeting.
     `int.Parse` and the narration plan threw. A 24-page forecasting chapter that RailReader2 opens
     fine failed to load. The year reading now requires four digits. Six cases are tested; the
     chapter plans to 607 source-linked segments.
+42. **Some sentences were highlighted word by word, others whole.** The alignment worker refused any
+    clip holding a word missing from its pronunciation dictionary. That was 45% of a technical
+    chapter's sentences: acronyms, technical terms, names, possessives. Such words now get a
+    pronunciation (acronyms spelled from the dictionary's letter names, the rest from MFA's G2P
+    model) and are still forced-aligned. 38 of 40 sampled sentences now align.
+43. **"p." expanded inside other words.** The abbreviation table matched anywhere, so "[17, Chap. 3]"
+    was spoken "Chapage three", "overlap." became "overlapage" and "p.adjust()" became "page
+    adjust()". An entry that begins or ends with a letter now matches only as a whole word.
+44. **Accent marks counted as words.** A maths font's lone circumflex (U+02C6) or variation
+    selector (U+FE01) was a token that no dictionary has and no voice says. Tokens now need a
+    letter or a digit.
+45. **Sentences with maths italic letters were not spoken.** pdfTeX sets maths italics in the
+    Mathematical Alphanumeric Symbols block, which Kokoro's phonemiser rejected, and the sentence
+    was not even marked as maths. Such letters now mark the sentence as maths, and its fallback
+    reading says "C and sigma" for "𝐶 and 𝜎".
+46. **Zooming in stopped the view following the word.** The mouse wheel suspended following as if
+    the reader had panned away, and the zoom buttons scaled about the page's corner, so the word
+    went off screen until the next cue. Zooming now keeps following, scales about the pointer or
+    the middle of the view, and re-checks the camera at once.

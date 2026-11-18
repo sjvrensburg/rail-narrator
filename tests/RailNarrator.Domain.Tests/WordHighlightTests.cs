@@ -14,6 +14,24 @@ public sealed class WordHighlightTests
         return await new NarrationPlanner().BuildPlanAsync(snapshot, units, NarrationFilterSettings.Default);
     }
 
+    /// <summary>
+    /// Accent marks from maths fonts (U+02C6) and variation selectors (U+FE01) reach the script on
+    /// their own. They are not words: nobody says them and no pronunciation dictionary has them, so
+    /// counting them made every sentence holding one fall back to sentence highlighting.
+    /// </summary>
+    [Theory]
+    [InlineData("is \u02C6 \uFE01", new[] { "is" })]
+    [InlineData("rule: \u02C6\uFE01(x", new[] { "rule", "x" })]
+    [InlineData("caf\u00E9 na\u0131ve don\u2019t", new[] { "caf\u00E9", "na\u0131ve", "don\u2019t" })]
+    [InlineData("ggplot2 and 1c", new[] { "ggplot2", "and", "1c" })]
+    public void TokensAreWordsWithALetterOrDigit(string escaped, string[] expected)
+    {
+        static string Unescape(string s) => System.Text.RegularExpressions.Regex.Unescape(s);
+        var words = SpokenWord.Tokenize(Unescape(escaped));
+        Assert.Equal(expected.Select(Unescape), words.Select(w => w.Text));
+        Assert.Equal(Enumerable.Range(0, words.Count), words.Select(w => w.Index));
+    }
+
     [Fact]
     public async Task RepeatedWordsHaveDifferentGeometry()
     {

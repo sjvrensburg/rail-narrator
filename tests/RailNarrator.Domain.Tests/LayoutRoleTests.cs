@@ -141,6 +141,27 @@ public sealed class LayoutRoleTests
         Assert.False(units[1].ContainsMaths);
     }
 
+    /// <summary>
+    /// pdfTeX sets maths italics as Mathematical Alphanumeric Symbols (U+1D400–U+1D7FF, two UTF-16
+    /// units each) and h as the letterlike U+210E. A sentence holding them is maths, and goes to the
+    /// interpreter, like one holding a plain α.
+    /// </summary>
+    [Theory]
+    [InlineData("Several procedures keep the FWER at or below \U0001D6FC.")]
+    [InlineData("The hyperparameters \U0001D436 and \U0001D70E must not be chosen with the test data.")]
+    [InlineData("Here \U0001D707\u210E is the average clear-sky index at hour of day \u210E.")]
+    public void MathsItalicLettersMarkTheirSentenceAsMaths(string escaped)
+    {
+        var snapshot = new LayoutPage()
+            .Block(BlockKind.Text, System.Text.RegularExpressions.Regex.Unescape(escaped), "The next sentence is ordinary prose.")
+            .Snapshot();
+
+        var units = Units(snapshot);
+
+        Assert.True(units[0].ContainsMaths);
+        Assert.False(units[^1].ContainsMaths);
+    }
+
     [Fact]
     public void ASpacedEllipsisDoesNotEndASentence()
     {

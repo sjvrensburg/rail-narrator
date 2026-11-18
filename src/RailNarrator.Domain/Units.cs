@@ -954,8 +954,14 @@ public sealed class ReadingUnitBuilder
     /// </summary>
     internal static bool LooksMathematical(ReadOnlySpan<char> text)
     {
-        foreach (char c in text)
+        for (int i = 0; i < text.Length; i++)
         {
+            char c = text[i];
+            // Maths italics (U+1D400–U+1D7FF arrive as surrogate pairs) and letterlike symbols such as ℎ.
+            if (char.IsHighSurrogate(c) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1])
+                && MathsLetters.IsStyled(char.ConvertToUtf32(c, text[i + 1])))
+                return true;
+            if (MathsLetters.IsStyled(c)) return true;
             if (c is '=' or '<' or '>' or '≤' or '≥' or '≠' or '∼' or '≈' or '≡' or '∈' or '∉' or '⊂' or '⊆'
                 or '∑' or '∏' or '∫' or '√' or '∞' or '±' or '×' or '∂' or '∇' or '→' or '↦')
                 return true;

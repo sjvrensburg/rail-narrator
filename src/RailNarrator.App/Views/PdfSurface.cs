@@ -73,7 +73,11 @@ public sealed class PdfSurface : Control
         viewModel.CameraRequested += OnCameraRequested;
         viewModel.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName == nameof(MainViewModel.Zoom)) _zoom = viewModel.Zoom;
+            // A zoom from the toolbar or keyboard: keep the middle of the view where it is, then let
+            // follow place the word being read at the new magnification. Zooms that start here
+            // (wheel, fit) have already set _zoom, so they do not come through twice.
+            if (e.PropertyName == nameof(MainViewModel.Zoom) && Math.Abs(viewModel.Zoom - _zoom) > 1e-9)
+                ZoomAbout(viewModel.Zoom, Bounds.Width / 2, Bounds.Height / 2);
             InvalidateVisual();
         };
         _zoom = viewModel.Zoom;
@@ -163,6 +167,21 @@ public sealed class PdfSurface : Control
         _offsetY = 0;
         if (_viewModel is not null) _viewModel.Zoom = _zoom;
         InvalidateVisual();
+    }
+
+    /// <summary>
+    /// Changes magnification keeping the page point under (<paramref name="x"/>, <paramref name="y"/>)
+    /// where it is, then re-checks follow. Zooming is not browsing: it does not suspend following, so
+    /// at high magnification the view keeps up with the word being read.
+    /// </summary>
+    private void ZoomAbout(double zoom, double x, double y)
+    {
+        var (pageX, pageY) = new PageTransform(_zoom, _offsetX, _offsetY).ToPage(x, y);
+        double next = Math.Clamp(zoom, 0.25, 8.0);
+        _offsetX = x - pageX * next;
+        _offsetY = y - pageY * next;
+        Zoom = next;
+        _viewModel?.Coordinator.RefollowCurrentCue();
     }
 
     private void CentreOn(PageRect rect)
@@ -393,15 +412,10 @@ public sealed class PdfSurface : Control
         base.OnPointerWheelChanged(e);
         if (Math.Abs(e.Delta.Y) < 0.01) return;
         var point = e.GetPosition(this);
-        var (pageX, pageY) = new PageTransform(_zoom, _offsetX, _offsetY).ToPage(point.X, point.Y);
-
-        // Zoom about the pointer so the text under the cursor stays under it and the reader's place is
-        // not lost. The new zoom becomes the preferred zoom rather than being undone by follow mode.
-        double next = Math.Clamp(_zoom * (e.Delta.Y > 0 ? 1.15 : 1 / 1.15), 0.25, 8.0);
-        _offsetX = point.X - pageX * next;
-        _offsetY = point.Y - pageY * next;
-        Zoom = next;
-        _viewModel?.NotifyManualNavigation();
+        // Zoom about the pointer so the text under the cursor stays under it. The new zoom is kept
+        // (follow pans, it never zooms), and following carries on: it used to be suspended here, so
+        // after zooming in the view no longer followed the word being read.
+        ZoomAbout(_zoom * (e.Delta.Y > 0 ? 1.15 : 1 / 1.15), point.X, point.Y);
     }
 
     protected override void OnKeyDown(KeyEventArgs e)

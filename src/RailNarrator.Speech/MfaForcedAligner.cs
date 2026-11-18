@@ -5,8 +5,13 @@ using RailNarrator.Domain;
 namespace RailNarrator.Speech;
 
 /// <summary>All resources are local paths. Alignment never downloads models or sends audio off-box.</summary>
+/// <param name="G2pModelPath">
+/// Optional MFA G2P model, in the dictionary's phone set, that proposes pronunciations for words the
+/// dictionary lacks. Without it such a clip is aligned only if its unknown words are all-capital
+/// acronyms (spelled from the dictionary's letter names), and is otherwise highlighted whole.
+/// </param>
 public sealed record MfaAlignerSettings(string Executable, string DictionaryPath, string AcousticModelPath,
-    string WorkDirectory, string RuntimeRevision = "3.3.9", int TimeoutSeconds = 120);
+    string WorkDirectory, string RuntimeRevision = "3.3.9", int TimeoutSeconds = 120, string? G2pModelPath = null);
 
 /// <summary>A resident local MFA/Kalpy worker, serialized to protect its model and lexicon state.</summary>
 public sealed class MfaForcedAligner : IForcedAligner, IAsyncDisposable
@@ -24,11 +29,19 @@ public sealed class MfaForcedAligner : IForcedAligner, IAsyncDisposable
     public MfaForcedAligner(MfaAlignerSettings settings)
     {
         _settings = settings;
-        _revision = new Lazy<string>(() => $"mfa/{settings.RuntimeRevision}/kalpy-0.10.5/worker-2:"
-            + CacheKey.Sha256Hex(FileFingerprint(settings.DictionaryPath) + FileFingerprint(settings.AcousticModelPath)));
+        // worker-3: pronunciations generated for words the dictionary lacks, and silent marks no
+        // longer counted as words. The G2P model is part of the revision because it decides which
+        // clips align at all.
+        _revision = new Lazy<string>(() => $"mfa/{settings.RuntimeRevision}/kalpy-0.10.5/worker-3:"
+            + CacheKey.Sha256Hex(FileFingerprint(settings.DictionaryPath) + FileFingerprint(settings.AcousticModelPath)
+                + (G2pPath(settings) is { } g2p ? "g2p:" + FileFingerprint(g2p) : "no-g2p")));
     }
 
     private static string FileFingerprint(string path) => File.Exists(path) ? CacheKey.Sha256HexOfFile(path) : "missing:" + path;
+
+    /// <summary>The G2P model when one is configured and present; a missing file means none.</summary>
+    private static string? G2pPath(MfaAlignerSettings settings)
+        => settings.G2pModelPath is { Length: > 0 } path && File.Exists(path) ? Path.GetFullPath(path) : null;
     public string Revision => _revision.Value;
     public Task<bool> IsAvailableAsync(CancellationToken ct = default)
     {
@@ -59,7 +72,15 @@ public sealed class MfaForcedAligner : IForcedAligner, IAsyncDisposable
             try
             {
                 await EnsureWorkerAsync(timeout.Token).ConfigureAwait(false);
-                string request = JsonSerializer.Serialize(new { wav, words = SpokenWord.Tokenize(script).Select(w => SpokenWord.MatchKey(w.Text)).ToArray() });
+                var tokens = SpokenWord.Tokenize(script);
+                // The worker matches on the key; the written form tells it which unknown words are
+                // acronyms the voice spells out.
+                string request = JsonSerializer.Serialize(new
+                {
+                    wav,
+                    words = tokens.Select(w => SpokenWord.MatchKey(w.Text)).ToArray(),
+                    forms = tokens.Select(w => w.Text).ToArray(),
+                });
                 await _worker!.StandardInput.WriteLineAsync(request.AsMemory(), timeout.Token).ConfigureAwait(false);
                 await _worker.StandardInput.FlushAsync(timeout.Token).ConfigureAwait(false);
                 json = await ReadReplyAsync(timeout.Token, request: true).ConfigureAwait(false);
@@ -102,7 +123,8 @@ public sealed class MfaForcedAligner : IForcedAligner, IAsyncDisposable
             RedirectStandardError = true, CreateNoWindow = true, WorkingDirectory = _workerDirectory,
         };
         foreach (string arg in new[] { "-u", script, Path.GetFullPath(_settings.DictionaryPath), Path.GetFullPath(_settings.AcousticModelPath),
-            Path.Combine(Path.GetFullPath(_settings.WorkDirectory), "lexicon", CacheKey.Sha256Hex(Revision)) }) start.ArgumentList.Add(arg);
+            Path.Combine(Path.GetFullPath(_settings.WorkDirectory), "lexicon", CacheKey.Sha256Hex(Revision)),
+            G2pPath(_settings) ?? "" }) start.ArgumentList.Add(arg);
         start.Environment["MFA_ROOT_DIR"] = Path.Combine(_workerDirectory, "mfa");
         start.Environment["PATH"] = bin + Path.PathSeparator + Environment.GetEnvironmentVariable("PATH");
         start.Environment["OPENBLAS_NUM_THREADS"] = "1";
@@ -196,6 +218,26 @@ public sealed class MfaForcedAligner : IForcedAligner, IAsyncDisposable
         if (words.Count != expected.Count || words.Count == 0)
             throw new InvalidDataException("Alignment did not cover every spoken word; using sentence highlighting.");
         // MFA does not export calibrated word confidence. Do not invent probabilities.
-        return new WordAlignment(words, []);
+        return new WordAlignment(words, GeneratedPronunciationNotes(document.RootElement));
+    }
+
+    /// <summary>
+    /// Says which words were aligned against a generated pronunciation rather than one from the
+    /// dictionary, so the timing status does not claim more than the evidence.
+    /// </summary>
+    private static IReadOnlyList<string> GeneratedPronunciationNotes(JsonElement root)
+    {
+        if (!root.TryGetProperty("generated", out var generated) || generated.ValueKind != JsonValueKind.Object) return [];
+        var spelled = new List<string>();
+        var guessed = new List<string>();
+        foreach (var word in generated.EnumerateObject())
+        {
+            var sources = word.Value.EnumerateArray().Select(c => c[1].GetString()).ToHashSet();
+            (sources.Contains("spelled") ? spelled : guessed).Add(word.Name);
+        }
+        var notes = new List<string>();
+        if (spelled.Count > 0) notes.Add($"Not in the pronunciation dictionary, aligned as letters (or a generated pronunciation): {string.Join(", ", spelled)}.");
+        if (guessed.Count > 0) notes.Add($"Not in the pronunciation dictionary, aligned against a generated pronunciation: {string.Join(", ", guessed)}.");
+        return notes;
     }
 }

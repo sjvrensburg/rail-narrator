@@ -54,3 +54,40 @@ implicitly, and missing resources never prevent ordinary narration. See
 No uniform or character-weighted interpolation is used as a substitute for timing
 evidence. Animation-frame rendering reads the media clock; camera following is
 throttled independently so it does not limit word-highlight refresh.
+
+## Amendment 2026-11-18: pronunciations for words the dictionary lacks
+
+**Measured.** On a 24-page pdfTeX forecasting chapter, 160 of 354 prose sentences (45%)
+held at least one token missing from `english_uk_mfa`, and the worker refused each of them,
+so they were highlighted whole. In use this looked inconsistent: some sentences were
+highlighted word by word, others whole. The missing tokens were acronyms (svr, rmse, pv,
+nwp, ghi), technical words (predictors, irradiance, climatology, reanalysis), names
+(Diebold, Giacomini), possessives (tomorrow's, Holm's), and text bugs that are now fixed:
+"p." expanded inside "Chap." and "overlap.", and accent marks from maths fonts counted as
+words.
+
+**Decision.** A word the dictionary lacks gets candidate pronunciations before alignment,
+the way MFA's own `align_one` handles unknown words (`add_pronunciation` on the loaded
+lexicon, then rebuild the graph compiler, which copies the lexicon when it is built):
+
+- an all-capitals token of 2–6 letters is also tried spelled out from the dictionary's
+  own letter names (r → ɑː, m → ɛ m). Kokoro reads such acronyms as letters: "RMSE" took
+  0.87 s and "NWP" 0.77 s in a real clip;
+- the optional `english_uk_mfa` G2P model (11 MB, same phone set, downloaded by the setup
+  script) proposes one pronunciation from the spelling.
+
+When there are several candidates, the aligner chooses between them acoustically. A word
+with no candidate still fails the clip, now with a reason that names it ("No pronunciation
+for: ggplot2"). `<unk>` is still a mismatch. This does not weaken the evidence rule: every
+interval still comes from forced alignment against the audio, and the timing notes name the
+words that were aligned against a generated pronunciation. The G2P model's hash is part of
+the alignment revision (`worker-3`).
+
+**Verified.** In the opt-in test `RealKokoroAudioWithWordsTheDictionaryLacks_AlignsEveryWord`,
+"The RMSE of the SVR forecasts of irradiance from NWP predictors is low." aligns all 13
+words. On the chapter, 40 sentences were sampled from those holding a missing word, then
+synthesised by Kokoro and aligned through the adapter: 38 aligned word by word, and 2 fell
+back on letter–digit tokens ("2a", "ggplot2").
+
+**Not verified.** That the boundaries of generated words are as accurate as those of
+dictionary words. As before, no millisecond accuracy is claimed for any word.

@@ -346,6 +346,19 @@ public static class TextNormaliser
                 i += number.Length;
                 continue;
             }
+            if (MathsLetters.At(input, i) is { } letter)
+            {
+                // A name next to another letter or digit needs a space to stay a word of its own
+                // ("μh" is "mu h", not "muh").
+                string spoken = (sb.Length > 0 && char.IsLetterOrDigit(sb[^1]) && letter.IsName ? " " : "")
+                    + letter.Spoken
+                    + (i + letter.Length < input.Length && char.IsLetterOrDigit(input[i + letter.Length])
+                       && (letter.IsName || MathsLetters.At(input, i + letter.Length) is not null) ? " " : "");
+                mappings.Add(new TextMapping(new TextRange(sb.Length, spoken.Length), new TextRange(i, letter.Length)));
+                sb.Append(spoken);
+                i += letter.Length;
+                continue;
+            }
             mappings.Add(new TextMapping(new TextRange(sb.Length, 1), new TextRange(i, 1)));
             sb.Append(input[i]);
             i++;
@@ -392,6 +405,58 @@ public static class TextNormaliser
         }
         return new TransformedText(second.Text, composed, first.SourceText);
     }
+}
+
+/// <summary>
+/// Letters styled as maths, spoken as the letters they are: Mathematical Alphanumeric Symbols
+/// (U+1D400–U+1D7FF, which pdfTeX uses for maths italics), letterlike symbols such as ℎ (U+210E),
+/// and Greek letters, which are read by name.
+/// </summary>
+/// <remarks>
+/// Kokoro's phonemiser throws on the U+1D400 block, so a sentence holding one could not be spoken at
+/// all; it reads plain Greek letters by name, so writing the name changes nothing that is heard and
+/// gives the aligner a word it can find. A styled letter keeps its source link to both UTF-16 units.
+/// </remarks>
+internal static class MathsLetters
+{
+    private static readonly string[] Greek =
+    [
+        "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta", "iota", "kappa", "lambda", "mu",
+        "nu", "xi", "omicron", "pi", "rho", "sigma", "sigma", "tau", "upsilon", "phi", "chi", "psi", "omega",
+    ];
+
+    /// <summary>True for a code point that is a letter or digit styled for maths.</summary>
+    public static bool IsStyled(int codePoint)
+        => codePoint is >= 0x1D400 and <= 0x1D7FF || codePoint is 0x210E or 0x2113 or 0x2102 or 0x2115 or 0x211A or 0x211D or 0x2124;
+
+    public static (int Length, string Spoken, bool IsName)? At(string text, int offset)
+    {
+        int length = 1, codePoint = text[offset];
+        if (char.IsHighSurrogate(text[offset]))
+        {
+            if (offset + 1 >= text.Length || !char.IsLowSurrogate(text[offset + 1])) return null;
+            codePoint = char.ConvertToUtf32(text[offset], text[offset + 1]);
+            length = 2;
+        }
+        string plain = IsStyled(codePoint)
+            ? char.ConvertFromUtf32(codePoint).Normalize(System.Text.NormalizationForm.FormKC)
+            : char.ConvertFromUtf32(codePoint);
+        // Greek variant forms (ϵ, ϑ, ϕ, ϱ, ϖ) fold to their ordinary letters too.
+        if (plain.Length == 1 && plain[0] is 'ϵ' or 'ϑ' or 'ϕ' or 'ϱ' or 'ϖ' or 'ϰ')
+            plain = plain.Normalize(System.Text.NormalizationForm.FormKC);
+        if (plain.Length == 1 && GreekName(plain[0]) is { } name) return (length, name, true);
+        if (!IsStyled(codePoint) || plain.Length == 0 || plain == char.ConvertFromUtf32(codePoint)) return null;
+        return (length, plain, false);
+    }
+
+    private static string? GreekName(char c) => c switch
+    {
+        >= 'α' and <= 'ω' => Greek[c - 'α'],
+        >= 'Α' and <= 'Ω' when c != '\u03A2' => Capitalise(Greek[c - 'Α']),
+        _ => null,
+    };
+
+    private static string Capitalise(string s) => char.ToUpperInvariant(s[0]) + s[1..];
 }
 
 /// <summary>English prose numbers are expanded before synthesis, so aligner and TTS see the same words.</summary>
@@ -587,14 +652,34 @@ public static class SpeechExpansions
     }
 
     /// <summary>Longest match at an offset, so "e.g." wins over "e" and "§§" over "§".</summary>
+    /// <remarks>
+    /// An entry that begins or ends with a letter or digit is a word, and matches only as a whole
+    /// word: "p." is not the end of "Chap." or "overlap.", nor the start of "p.adjust", and "SVR" is
+    /// not the start of "SVRs". Symbols ("%", "§", "°C") match anywhere.
+    /// </remarks>
     public static (string Replacement, int Length)? LongestMatchAt(string s, int offset, IReadOnlyDictionary<string, string> table)
     {
         int maxLen = Math.Min(12, s.Length - offset);
         for (int len = maxLen; len >= 1; len--)
         {
             var candidate = s.AsSpan(offset, len).ToString();
-            if (table.TryGetValue(candidate, out var replacement)) return (replacement, len);
+            if (table.TryGetValue(candidate, out var replacement) && IsWholeWord(s, offset, candidate))
+                return (replacement, len);
         }
         return null;
+    }
+
+    private static bool IsWholeWord(string s, int offset, string key)
+    {
+        int end = offset + key.Length;
+        if (char.IsLetterOrDigit(key[0]) && offset > 0 && char.IsLetterOrDigit(s[offset - 1])) return false;
+        if (end < s.Length)
+        {
+            char next = s[end];
+            if (char.IsLetterOrDigit(key[^1]) && char.IsLetterOrDigit(next)) return false;
+            // An abbreviation's full stop followed by a letter is part of a name ("p.adjust").
+            if (key[^1] == '.' && char.IsLetter(key[0]) && char.IsLetter(next)) return false;
+        }
+        return true;
     }
 }

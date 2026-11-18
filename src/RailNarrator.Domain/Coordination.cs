@@ -435,6 +435,13 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         PublishSnapshotOnly();
     }
 
+    /// <summary>
+    /// Re-checks the camera against the current cue now, for a change of view that does not leave the
+    /// reading position (a zoom). Leaves a suspension from panning in place, and does not wait for the
+    /// follow throttle or for the next cue.
+    /// </summary>
+    public void RefollowCurrentCue() => RaiseFollowForCurrentCue();
+
     /// <summary>Restores following explicitly, on the user's request.</summary>
     public void ResumeFollow()
     {

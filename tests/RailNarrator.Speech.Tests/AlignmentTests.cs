@@ -78,6 +78,41 @@ public sealed class AlignmentTests(ITestOutputHelper output)
         output.WriteLine($"Review artifacts: {root}");
     }
 
+    /// <summary>
+    /// Opt-in (also needs <c>RN_MFA_G2P</c>): words the pronunciation dictionary lacks no longer
+    /// cost the clip its word timing. 45% of a real forecasting chapter's sentences held at least
+    /// one ("RMSE", "SVR", "irradiance", "predictors"), and each was highlighted whole.
+    /// </summary>
+    [MfaG2pIntegrationFact]
+    public async Task RealKokoroAudioWithWordsTheDictionaryLacks_AlignsEveryWord()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "rn-mfa-g2p-integration");
+        await using var aligner = new MfaForcedAligner(new MfaAlignerSettings(
+            Environment.GetEnvironmentVariable("RN_MFA_EXECUTABLE")!,
+            Environment.GetEnvironmentVariable("RN_MFA_DICTIONARY")!,
+            Environment.GetEnvironmentVariable("RN_MFA_MODEL")!, root,
+            G2pModelPath: Environment.GetEnvironmentVariable("RN_MFA_G2P")));
+        await using var tts = new KokoroTtsProvider(new KokoroProviderSettings(Environment.GetEnvironmentVariable("RAIL_NARRATOR_KOKORO_MODEL")!));
+        const string script = "The RMSE of the SVR forecasts of irradiance from NWP predictors is low.";
+        var speech = await tts.SynthesizeAsync(new TtsSynthesisRequest(script, "af_heart", "en-US", Format));
+
+        var result = await aligner.AlignAsync(speech.Pcm, speech.Format, script);
+
+        var tokens = SpokenWord.Tokenize(script);
+        Assert.Equal(tokens.Count, result.Words.Count);
+        for (int i = 0; i < tokens.Count; i++)
+        {
+            var w = result.Words[i];
+            Assert.Equal(tokens[i].Range, w.SpokenRange);
+            Assert.InRange(w.EndSample, w.StartSample + 1, speech.FrameCount);
+            if (i > 0) Assert.True(w.StartSample >= result.Words[i - 1].EndSample);
+            output.WriteLine($"{tokens[i].Text,-12} {speech.Format.ToSeconds(w.StartSample):F3}–{speech.Format.ToSeconds(w.EndSample):F3}s");
+        }
+        Assert.Contains(result.Warnings, n => n.Contains("rmse", StringComparison.Ordinal) && n.Contains("letters", StringComparison.Ordinal));
+        Assert.Contains(result.Warnings, n => n.Contains("irradiance", StringComparison.Ordinal) && n.Contains("generated", StringComparison.Ordinal));
+        foreach (string note in result.Warnings) output.WriteLine(note);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -130,5 +165,15 @@ public sealed class MfaIntegrationFactAttribute : FactAttribute
         if (new[] { "RN_MFA_EXECUTABLE", "RN_MFA_DICTIONARY", "RN_MFA_MODEL", "RAIL_NARRATOR_KOKORO_MODEL" }
             .Any(v => !File.Exists(Environment.GetEnvironmentVariable(v))))
             Skip = "Set RN_MFA_EXECUTABLE, RN_MFA_DICTIONARY, RN_MFA_MODEL and RAIL_NARRATOR_KOKORO_MODEL for real speech alignment.";
+    }
+}
+
+public sealed class MfaG2pIntegrationFactAttribute : FactAttribute
+{
+    public MfaG2pIntegrationFactAttribute()
+    {
+        if (new[] { "RN_MFA_EXECUTABLE", "RN_MFA_DICTIONARY", "RN_MFA_MODEL", "RN_MFA_G2P", "RAIL_NARRATOR_KOKORO_MODEL" }
+            .Any(v => !File.Exists(Environment.GetEnvironmentVariable(v))))
+            Skip = "Set RN_MFA_EXECUTABLE, RN_MFA_DICTIONARY, RN_MFA_MODEL, RN_MFA_G2P and RAIL_NARRATOR_KOKORO_MODEL for real speech alignment with generated pronunciations.";
     }
 }

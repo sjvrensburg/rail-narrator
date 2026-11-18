@@ -12,8 +12,13 @@ export MFA_ROOT_DIR="$alignment_root/downloads"
 export PATH="$alignment_root/runtime/bin:$PATH"
 "$alignment_root/runtime/bin/mfa" model download acoustic english_mfa
 "$alignment_root/runtime/bin/mfa" model download dictionary english_uk_mfa
-mkdir -p "$alignment_root/models/acoustic" "$alignment_root/models/dictionary"
+# Pronunciations for words the dictionary lacks (technical terms, names, acronyms), generated in
+# the dictionary's own phone set. Without it a sentence holding one such word is highlighted whole.
+"$alignment_root/runtime/bin/mfa" model download g2p english_uk_mfa
+mkdir -p "$alignment_root/models/acoustic" "$alignment_root/models/dictionary" "$alignment_root/models/g2p"
 cp "$MFA_ROOT_DIR/pretrained_models/acoustic/english_mfa.zip" "$alignment_root/models/acoustic/"
 cp "$MFA_ROOT_DIR/pretrained_models/dictionary/english_uk_mfa.dict" "$alignment_root/models/dictionary/"
-sha256sum "$alignment_root/models/acoustic/english_mfa.zip" "$alignment_root/models/dictionary/english_uk_mfa.dict" > "$alignment_root/models/SHA256SUMS"
+cp "$MFA_ROOT_DIR/pretrained_models/g2p/english_uk_mfa.zip" "$alignment_root/models/g2p/"
+sha256sum "$alignment_root/models/acoustic/english_mfa.zip" "$alignment_root/models/dictionary/english_uk_mfa.dict" \
+    "$alignment_root/models/g2p/english_uk_mfa.zip" > "$alignment_root/models/SHA256SUMS"
 printf 'Word alignment installed in %s. Restart Rail Narrator to enable it.\n' "$alignment_root"
