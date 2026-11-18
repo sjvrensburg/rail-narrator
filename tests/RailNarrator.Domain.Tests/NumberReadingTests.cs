@@ -38,6 +38,21 @@ public sealed class NumberReadingTests
     public void CountsStayCardinals(string text, string expected)
         => Assert.Equal(expected, Spoken(text));
 
+    /// <summary>
+    /// Four characters after a year cue are not always four digits: a decimal or a signed number
+    /// must be read as a number, not handed to the year reading (which used to throw and fail the
+    /// whole plan).
+    /// </summary>
+    [Theory]
+    [InlineData("rose from 0.20 to 0.22", "rose from zero point two zero to zero point two two")]
+    [InlineData("reduced by 0.75 overall", "reduced by zero point seven five overall")]
+    [InlineData("in 1.25 hours", "in one point two five hours")]
+    [InlineData("(Smith, 1.5)", "(Smith, one point five)")]
+    [InlineData("from -100 to +150", "from minus one hundred to plus one hundred fifty")]
+    [InlineData("since +1.5 degrees", "since plus one point five degrees")]
+    public void DecimalsAndSignedNumbersInYearContexts_AreReadAsNumbers(string text, string expected)
+        => Assert.Equal(expected, Spoken(text));
+
     [Theory]
     [InlineData("ISSN 1532-4168", "ISSN one five three two four one six eight")]
     [InlineData("ISSN: 0378-426X.", "ISSN: zero three seven eight four two six ex.")]
