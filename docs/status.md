@@ -7,7 +7,7 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 456 passing, 7 opt-in skips, 0 warnings
+## Verified by automated tests — 464 passing, 7 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
@@ -280,9 +280,13 @@ Not fixed yet. Each was observed in the run described above.
   (i7-12700H): RTF 0.75 at best and 1–2 typically; fp32, int8 and thread counts were all tried
   (ADR-0007). With the converted model installed it runs on the laptop's GPU instead (item 60);
   without it, reading still pauses every few passages there.
-- **Opening a four-page document took about 47 s before narration preparation began** with the
-  layout model on the GPU under Xvfb, whether Kokoro then ran on the GPU or the CPU. Not yet
-  investigated; ADR-0006 measured 11.7 s for 24 pages on the same laptop, so something here is off.
+- **Start-up still blocks for about 14 s before the window appears, and "Ready" waits for Kokoro**
+  (about 15 s on the CPU) after extraction (item 61). The layout probe (6-7 s on the GPU) and
+  Kokoro's initialisation could both run in the background.
+- **A page with almost no text is OCR'd as well, at 562 DPI on the CPU: about 20 s a page** on the
+  i7-12700H (the two one-line pages of the `crosspage` fixture took 28 s). The rule
+  (`CoverageLooksSparse`: under 0.5 % ink and under 60 characters) exists to catch scans with a stray
+  text layer; whether to keep it, lower its DPI or check the page's ink first is open.
 - **A resize of the reading area resets the zoom to fit-width.** Opening the script panel changed
   235 % to 173 %; at 400 % or 800 % it would discard the reader's magnification.
   Before it, about 0.4 s was inserted at every boundary (on top of the ~0.5 s each Kokoro clip
@@ -681,3 +685,19 @@ threads meeting.
     the window (layout model also on the GPU, audio on a null sink) all 16 passages of a four-page
     document played to the end with no "Synthesising speech" wait. Only the NVIDIA card was
     measured; Intel and AMD integrated GPUs are untested.
+61. **Opening a document was slow** (about 48 s for a four-page fixture in the window). Measured
+    step by step with the application's own composition root:
+    - every page was rendered at 8192 px (156 MB) because `AnalysisRenderSize` (1920, a size in
+      pixels) was read as a DPI: 0.4-1.6 s a page to render, plus line detection over it. It is now
+      sized in pixels; `ExtractorVersions.Current` is `extraction/2` so old snapshots are rebuilt;
+    - the layout model's GPU session (about 6 s to build) was built at start-up to probe the device,
+      thrown away, and built again for every document. Start-up's analyzer is now kept and lent to
+      every extraction (`SharedAnalyzer`; one that failed is discarded and rebuilt);
+    - the OCR engine (0.5-1.7 s) was built for every document; it is now built on the first page
+      that needs it.
+    Blocks, roles, line geometry and the narration script are identical to before on all six
+    synthetic fixtures. With the GPU and a warm driver shader cache, a first document now extracts
+    in 3.8 s and later ones in 0.7-2.7 s, against 10-15.5 s; in the window, "Reading the document"
+    to the last page went from about 19 s to about 4 s. NVIDIA's driver caches compiled shaders under
+    `$XDG_CACHE_HOME/nvidia`: with an empty cache (as in an isolated test run) the first inference
+    takes 8 s instead of 2 s, so test runs with fresh XDG directories overstate first-open time.

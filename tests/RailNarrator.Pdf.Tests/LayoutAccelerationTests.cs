@@ -171,6 +171,122 @@ public sealed class LayoutAccelerationTests
     }
 }
 
+/// <summary>
+/// One layout analyzer for the process: building a GPU session cost about 6 s and its first inference
+/// another 2 s, and every document used to pay both again.
+/// </summary>
+public sealed class SharedAnalyzerTests
+{
+    private sealed class CountingAnalyzer(ILayoutAnalyzer inner) : ILayoutAnalyzer
+    {
+        public bool Disposed { get; private set; }
+        public LayoutModelCapabilities Capabilities => inner.Capabilities;
+        public PageAnalysis RunAnalysis(byte[] rgbBytes, int pxW, int pxH, double pageW, double pageH,
+            IReadOnlyList<CharBox>? charBoxes = null, CancellationToken ct = default)
+            => inner.RunAnalysis(rgbBytes, pxW, pxH, pageW, pageH, charBoxes, ct);
+        public void Dispose() { Disposed = true; inner.Dispose(); }
+    }
+
+    private static readonly ExtractionOptions Options = new(
+        "text-layout", OcrPolicy.Off, 1024, DeskewLines: false, ExtractorVersions.Current);
+
+    private static async Task ExtractAsync(ExtractionBackend backend)
+    {
+        string path = SyntheticPdf.WriteSingleColumn(SyntheticPdf.TempPath("shared"), ["A short page to analyse."]);
+        using var source = new RailReaderExtractionSource();
+        source.WithBackend(backend);
+        await source.ExtractAsync(new ExtractionRequest(path, null, null, Options, NarrationFilterSettings.Default));
+    }
+
+    [Fact]
+    public async Task ConsecutiveExtractions_ShareOneAnalyzer_AndDoNotDisposeIt()
+    {
+        var built = new List<CountingAnalyzer>();
+        var modelFree = ExtractionBackend.ModelFree();
+        var shared = new SharedAnalyzer(null, () => { var a = new CountingAnalyzer(modelFree.AnalyzerFactory()); built.Add(a); return a; });
+        var backend = modelFree with { AnalyzerFactory = shared.Rent };
+
+        await ExtractAsync(backend);
+        await ExtractAsync(backend);
+        await ExtractAsync(backend);
+
+        Assert.Single(built);
+        Assert.False(built[0].Disposed);
+        Assert.Equal(1, shared.Builds);
+    }
+
+    [Fact]
+    public async Task TheStartUpAnalyzer_IsTheFirstOneLent()
+    {
+        var modelFree = ExtractionBackend.ModelFree();
+        var probe = new CountingAnalyzer(modelFree.AnalyzerFactory());
+        var shared = new SharedAnalyzer(probe, () => throw new InvalidOperationException("must not build"));
+
+        await ExtractAsync(modelFree with { AnalyzerFactory = shared.Rent });
+
+        Assert.Equal(0, shared.Builds);
+        Assert.False(probe.Disposed);
+    }
+
+    /// <summary>A failed analyzer is released, not lent again: the next document gets a fresh one.</summary>
+    [Fact]
+    public async Task AnAnalyzerThatFailed_IsDiscarded_AndTheNextExtractionBuildsAFreshOne()
+    {
+        var modelFree = ExtractionBackend.ModelFree();
+        var failing = new FailingAnalyzerForSharing();
+        int builds = 0;
+        var shared = new SharedAnalyzer(failing, () => { builds++; return modelFree.AnalyzerFactory(); });
+        var backend = modelFree with
+        {
+            AnalyzerFactory = shared.Rent,
+            Device = new LayoutDevice("webgpu", "Test GPU"),
+            FallbackAnalyzerFactory = modelFree.AnalyzerFactory,
+        };
+
+        await ExtractAsync(backend);   // fails over to the fallback
+        Assert.True(failing.Disposed);
+        await ExtractAsync(backend);   // builds a new shared analyzer
+        Assert.Equal(1, builds);
+    }
+
+    [Fact]
+    public void ASecondRentWhileTheFirstIsOut_GetsAPrivateAnalyzer()
+    {
+        var modelFree = ExtractionBackend.ModelFree();
+        var shared = new SharedAnalyzer(null, () => modelFree.AnalyzerFactory());
+
+        using var first = shared.Rent();
+        using var second = shared.Rent();
+
+        Assert.IsType<SharedAnalyzer.Lease>(first);
+        Assert.IsNotType<SharedAnalyzer.Lease>(second);
+        Assert.Equal(2, shared.Builds);
+    }
+
+    /// <summary>
+    /// The analysis raster's longest side is the setting, in pixels. Read as a DPI it asked for
+    /// 21 120 px on a Letter page and was clamped to 8192: a 156 MB raster on every page.
+    /// </summary>
+    [Theory]
+    [InlineData(1920, 1920)]
+    [InlineData(1024, 1024)]
+    [InlineData(0, 1024)]
+    [InlineData(20000, 8192)]
+    public void TheAnalysisRaster_IsSizedInPixels(int setting, int expected)
+        => Assert.Equal(expected, RailReaderExtractionSource.AnalysisRasterSize(Options with { AnalysisRenderSize = setting }));
+
+    private sealed class FailingAnalyzerForSharing : ILayoutAnalyzer
+    {
+        private readonly ILayoutAnalyzer _shape = ExtractionBackend.ModelFree().AnalyzerFactory();
+        public bool Disposed { get; private set; }
+        public LayoutModelCapabilities Capabilities => _shape.Capabilities;
+        public PageAnalysis RunAnalysis(byte[] rgbBytes, int pxW, int pxH, double pageW, double pageH,
+            IReadOnlyList<CharBox>? charBoxes = null, CancellationToken ct = default)
+            => throw new InvalidOperationException("device lost");
+        public void Dispose() { Disposed = true; _shape.Dispose(); }
+    }
+}
+
 public sealed class WebGpuFactAttribute : FactAttribute
 {
     public WebGpuFactAttribute()

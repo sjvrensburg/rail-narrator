@@ -46,8 +46,9 @@ In rough priority order:
 - **Kokoro on an Intel or AMD integrated GPU.** ADR-0007 measured only the NVIDIA card. Run the
   opt-in `OnTheGpu_KokoroGivesTheCpusAudio` test and the smoke tool's `speak --gpu-model` on one;
   the output check falls back to the CPU if it gives NaN or silence, but the speed is unknown.
-- **The 47 s document open with the layout model on the GPU** (`status.md` open defects): ADR-0006
-  measured 24 pages in 11.7 s on the same laptop.
+- **Start-up and "Ready" still block on two initialisations** (`status.md` item 61): build the
+  layout probe and initialise Kokoro in the background, so the window appears at once and Kokoro
+  loads while the document is being extracted.
 - **Kokoro's CPU thread default.** 4–6 threads were about 10 % faster than the provider's 8 on the
   i7-12700H; re-measure on the reference machine before changing it.
 - **A resize resets the zoom to fit-width** (opening the script panel, resizing the window). Keep
@@ -73,6 +74,10 @@ Considered and not built: a banner saying whether the passages on a page being b
 ready. The preparing card covers the case that mattered (a start that has to wait).
 
 ## Decisions needed from you
+
+0. **Sparse pages and OCR.** A page with under 0.5 % ink and under 60 characters is OCR'd as well, at
+   562 DPI on the CPU, about 20 s a page here, to catch scans with a stray text layer. Keep it, lower
+   the DPI, or OCR only when the page has ink outside its text?
 
 1. **How should equations be read by default?** The interpreter still makes meaning errors
    even with the page image (the order of the transition polynomial was twice called "the
