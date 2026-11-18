@@ -82,6 +82,9 @@ run, so compare tallies, not single passages.
   app played). Keep the mover loop as a backup, and note that a stream started with
   `dotnet …/rail-narrator.dll` is named `PipeWire ALSA [dotnet]`, not `[rail-narrator]`, so match
   both names.
+- **Fresh XDG directories make the GPU look slow.** NVIDIA's driver caches compiled shaders under
+  `$XDG_CACHE_HOME/nvidia`; with an empty cache the layout model's first inference takes about 8 s
+  instead of 2 s. For timings, copy that directory into the isolated cache first.
 - **`PULSE_SINK` does not redirect this app.** PortAudio opens PipeWire's ALSA device, whose streams
   are named `PipeWire ALSA [rail-narrator]` and carry no process id, and it ignored `PULSE_SINK`: a
   test run played to the user's default headset. Create a null sink

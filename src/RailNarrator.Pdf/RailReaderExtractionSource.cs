@@ -69,16 +69,18 @@ public sealed record ExtractionBackend(
             : null;
         probe ??= LayoutAnalyzerConstruction.OnCpu(modelPath);
         var caps = probe.Capabilities;
-        probe.Dispose();
 
         Func<ILayoutAnalyzer> onCpu = () => LayoutAnalyzerConstruction.OnCpu(modelPath);
-        Func<ILayoutAnalyzer> factory = device.IsGpu
+        Func<ILayoutAnalyzer> build = device.IsGpu
             ? () => LayoutAnalyzerConstruction.TryOnGpu(modelPath, out var d)
                 ?? throw new InvalidOperationException(d.FallbackReason)
             : onCpu;
+        // The probe is kept and lent to every extraction rather than rebuilt for each: a GPU session
+        // costs about 8 s to build and warm up. See SharedAnalyzer.
+        var shared = new SharedAnalyzer(probe, build);
         return new ExtractionBackend(
             $"pp-doclayout-v3:{Path.GetFileName(modelPath)}",
-            factory,
+            shared.Rent,
             caps,
             // V3 provides its own reading order; XY-cut would discard a signal the model was trained
             // to produce. Core's AnalysisWorker makes the same choice.
@@ -156,9 +158,14 @@ public sealed class RailReaderExtractionSource : IExtractionSource, IDisposable
 
             using var analyzer = AnalyzerSlot.Create(backend);
             var resolver = backend.ResolverFactory?.Invoke();
+            // Built on the first page that needs recognition, not up front: three ONNX models costing
+            // 0.5-1.7 s that a document with a text layer on every page never uses.
             IOcrService? ocr = null;
-            try
+            bool ocrTried = false;
+            IOcrService? Ocr()
             {
+                if (ocrTried) return ocr;
+                ocrTried = true;
                 if (request.Options.Ocr != OcrPolicy.Off && backend.OcrFactory is { } ocrFactory)
                 {
                     try { ocr = ocrFactory(); }
@@ -168,12 +175,15 @@ public sealed class RailReaderExtractionSource : IExtractionSource, IDisposable
                         _ocrError = $"OCR is unavailable: {ex.Message}";
                     }
                 }
-
+                return ocr;
+            }
+            try
+            {
                 foreach (int pageIndex in requested)
                 {
                     ct.ThrowIfCancellationRequested();
                     if (pageIndex < 0 || pageIndex >= pdf.PageCount) continue;
-                    pages.Add(ExtractPage(pdf, pageIndex, viewRotation, request, backend, analyzer, resolver, ocr, frame));
+                    pages.Add(ExtractPage(pdf, pageIndex, viewRotation, request, backend, analyzer, resolver, Ocr, frame));
                     progress?.Report(new ExtractionProgress(++done, requested.Count,
                         pageIndex == requested[0] ? "Analysing layout" : "Extracting text and geometry"));
                 }
@@ -218,7 +228,7 @@ public sealed class RailReaderExtractionSource : IExtractionSource, IDisposable
     private PageExtraction ExtractPage(
         IPdfService pdf, int pageIndex, int viewRotation, ExtractionRequest request,
         ExtractionBackend backend, AnalyzerSlot analyzer, IReadingOrderResolver? resolver,
-        IOcrService? ocr, CoordinateFrameId frame)
+        Func<IOcrService?> getOcr, CoordinateFrameId frame)
     {
         var (pageW, pageH) = pdf.GetPageSize(pageIndex, viewRotation);
         var warnings = new List<string>();
@@ -234,6 +244,7 @@ public sealed class RailReaderExtractionSource : IExtractionSource, IDisposable
 
         if (!nativeUsable)
         {
+            var ocr = request.Options.Ocr == OcrPolicy.Off ? null : getOcr();
             if (ocr is not null && request.Options.Ocr == OcrPolicy.Full)
             {
                 var mode = request.Options.Ocr == OcrPolicy.LinesOnly ? OcrMode.Lines : OcrMode.Full;
@@ -258,7 +269,7 @@ public sealed class RailReaderExtractionSource : IExtractionSource, IDisposable
                 warnings.Add("This page has no usable text layer and recognition is turned off.");
             }
         }
-        else if (CoverageLooksSparse(native, pageW, pageH) && ocr is not null && request.Options.Ocr == OcrPolicy.Full)
+        else if (request.Options.Ocr == OcrPolicy.Full && CoverageLooksSparse(native, pageW, pageH) && getOcr() is { } ocr)
         {
             // A page can carry a few real characters and still be a scan. Sparse native text must not
             // suppress the recognition the page needs.
@@ -277,7 +288,7 @@ public sealed class RailReaderExtractionSource : IExtractionSource, IDisposable
         }
 
         // --- layout ---------------------------------------------------------------------
-        int targetSize = (int)Math.Clamp(Math.Round(Math.Max(pageW, pageH) / 72.0 * AnalysisDpiFor(request.Options)), 1, 8192);
+        int targetSize = AnalysisRasterSize(request.Options);
         var (rgb, pxW, pxH) = pdf.RenderPagePixmap(pageIndex, targetSize, viewRotation);
         float scaleX = pxW > 0 ? (float)(pageW / pxW) : 1f;
         float scaleY = pxH > 0 ? (float)(pageH / pxH) : 1f;
@@ -333,7 +344,18 @@ public sealed class RailReaderExtractionSource : IExtractionSource, IDisposable
 
     private static int OcrDpiFor(ExtractionOptions options) => options.AnalysisRenderSize > 0 ? Math.Max(150, options.AnalysisRenderSize * 300 / 1024) : 300;
 
-    private static int AnalysisDpiFor(ExtractionOptions options) => options.AnalysisRenderSize > 0 ? options.AnalysisRenderSize : 1024;
+    /// <summary>
+    /// The longest side, in pixels, of the raster that line detection and orientation work on.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ExtractionOptions.AnalysisRenderSize"/> is a size in pixels. It was read as a DPI,
+    /// so a Letter page asked for 11 in × 1920 = 21 120 px and was clamped to 8192: a 156 MB raster
+    /// costing 0.4–1.6 s to render on every page, plus line detection over it, against 0.03–0.1 s at
+    /// 1920. On a page with a text layer, lines come from the glyph boxes and the raster is only a
+    /// fallback and the orientation check; scans get their lines from OCR, which renders its own.
+    /// </remarks>
+    public static int AnalysisRasterSize(ExtractionOptions options)
+        => options.AnalysisRenderSize > 0 ? Math.Clamp(options.AnalysisRenderSize, 256, 8192) : 1024;
 
     private static int CountMeaningfulChars(PageText text)
     {

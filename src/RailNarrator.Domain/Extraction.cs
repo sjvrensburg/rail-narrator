@@ -215,7 +215,7 @@ public enum OcrPolicy
 public static class ExtractorVersions
 {
     /// <summary>Bump when extraction output changes shape or meaning for the same input.</summary>
-    public const string Current = "extraction/1";
+    public const string Current = "extraction/2";   // 2: analysis raster sized in pixels, not read as a DPI
 }
 
 /// <summary>
