@@ -229,8 +229,8 @@
       </Grid>
     </Border>
 
-    <!-- Reading area. The card over it appears only while a start is waiting for audio: what is
-         being prepared and for how long, where the reader is looking, not only in the status bar.
+    <!-- Reading area. The first card over it appears only while a start is waiting for audio: what
+         is being prepared and for how long, where the reader is looking, not only in the status bar.
          It does not take input, so the page can still be browsed or clicked underneath. -->
     <Panel>
       <views:PdfSurface Name="Surface" Focusable="True" />
@@ -246,6 +246,34 @@
           <TextBlock Text="Not playing yet: reading starts as soon as the audio is ready."
                      Foreground="#B0FFFFFF" FontSize="11" TextAlignment="Center" />
         </StackPanel>
+      </Border>
+
+      <!-- Opening a document. A veil over whatever was on screen (the previous document, or nothing)
+           and a card in the middle of the reading area saying which file is being opened, what is
+           being done to it and how far that has got. The veil takes the pointer, so a click cannot
+           start the previous document reading underneath. The stage is a live region, so a screen
+           reader announces each change. -->
+      <Border Name="LoadingVeil" IsVisible="{Binding IsLoading}" Background="#B3101418">
+        <Border Name="LoadingCard" HorizontalAlignment="Center" VerticalAlignment="Center"
+                Padding="32,26" CornerRadius="12" MinWidth="460" MaxWidth="640" Margin="24"
+                Background="#F21B2430" BorderBrush="#2F80ED" BorderThickness="2"
+                BoxShadow="0 8 32 0 #80000000">
+          <StackPanel Spacing="12">
+            <TextBlock Text="OPENING DOCUMENT" Foreground="#8AB4F8" FontSize="12" FontWeight="SemiBold"
+                       LetterSpacing="1.5" />
+            <TextBlock Text="{Binding LoadingTitle}" Foreground="White" FontSize="22" FontWeight="SemiBold"
+                       TextTrimming="CharacterEllipsis" MaxLines="2" TextWrapping="Wrap" />
+            <TextBlock Name="LoadingStageText" Text="{Binding LoadingStage}" Foreground="White" FontSize="17"
+                       TextWrapping="Wrap" Margin="0,8,0,0"
+                       AutomationProperties.LiveSetting="Polite" />
+            <ProgressBar Name="LoadingBar" Height="10" MinWidth="400" CornerRadius="5" Foreground="#2F80ED"
+                         Minimum="0" Maximum="1" Value="{Binding LoadingProgress}"
+                         IsIndeterminate="{Binding LoadingIndeterminate}" />
+            <TextBlock Text="{Binding LoadingDetail}" Foreground="#C0FFFFFF" FontSize="14" MinHeight="20" />
+            <TextBlock Text="The pages are analysed once and remembered: this document opens faster next time."
+                       Foreground="#90FFFFFF" FontSize="12" TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
       </Border>
     </Panel>
   </DockPanel>

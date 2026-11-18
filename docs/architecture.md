@@ -103,6 +103,38 @@ falls back to whole-sentence highlighting. Equations remain coarse. The UI sampl
 the media clock on animation frames and rejects queued cues from older generations.
 Camera following has an independent 120 ms throttle.
 
+## The reading surface
+
+Painting the page never renders it and never calls PDFium. Core serialises every PDFium
+call in the process behind one lock, and extraction, OCR and the equation crops made for
+the maths interpreter all take it. A page rendered inside the paint therefore cost the UI
+thread a whole render per page turn (10 ms for a page of text, 50 to 110 ms for a scanned
+page, 1.7 s for a page of vector drawing, all measured) plus the wait for whoever held the
+lock.
+
+`PageRasterSource` (in `RailNarrator.Pdf`) owns the document for display and one worker
+thread. The surface tells it which rasters it wants, most urgent first: the page shown at
+the present zoom and colour filter, then 72 dpi previews of the two pages either side. A
+new request replaces the old one, and a render the reader has paged past is cancelled
+between bands (Core's tiled renderer takes the lock one band at a time) or, where it cannot
+be cancelled, dropped when it finishes. The colour filter and the copy into a compositor
+bitmap happen on the worker too. The paint draws the best raster it holds for the page: the
+sharp one, else the page at another zoom or its preview, else blank paper in the filter's
+colour, with the highlights over it either way. Page sizes are read once at open, off the
+UI thread, and answered from memory.
+
+Opening a document is the same shape. `MainViewModel.LoadDocumentAsync` runs the file
+hash, extraction, reading order, planning and the speech model's start-up on the thread
+pool and only awaits and reports them, so the loading card over the reading area keeps
+moving.
+
+Where the camera goes is the coordinator's decision (`FollowTarget`), made from the media
+clock. A word is shown on the page it is printed on. A cue with no timing inside it (a
+sentence with maths, an equation, an interpreted lead-in and its equation) can cross a page
+break, and nothing measured says when the reading crosses it; the camera frames the page
+that holds most of the passage, by highlighted area, and holds (`SourceMap.FramingPage`).
+That is a fact about the page, not a guess about the audio (ADR-0004).
+
 ## Extraction
 
 `RailReaderExtractionSource` drives Core's analyzer, reading-order resolver,

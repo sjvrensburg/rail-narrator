@@ -30,8 +30,12 @@ namespace RailNarrator.App.Views;
 /// not reading.
 /// </para>
 /// <para>
-/// The page raster is cached and copied into a <see cref="WriteableBitmap"/>; only the zoom ladder and
-/// page changes force a re-render, so panning and highlighting cost a blit rather than a PDF render.
+/// Painting never renders a page and never calls PDFium. Rasters come from a
+/// <see cref="PageRasterSource"/> worker; the paint draws the best one it has for the page (the exact
+/// one, else the page at another zoom, else a low-resolution preview fetched ahead for the
+/// neighbouring pages, else blank paper) and the sharp raster replaces it when it arrives. The page
+/// used to be rendered inside the paint, so every page turn stalled the window for the length of a
+/// render plus however long another thread held PDFium's lock.
 /// </para>
 /// </remarks>
 public sealed class PdfSurface : Control
@@ -39,11 +43,33 @@ public sealed class PdfSurface : Control
     /// <summary>Where a passage chosen by hand is placed vertically: the follow camera's reading height.</summary>
     private static readonly double FollowVerticalBias = FollowOptions.Default.VerticalBias;
 
-    private IPdfService? _pdf;
-    private SkiaRenderedPage? _renderedPage;
-    private int _renderedPageIndex = -1;
-    private int _renderedDpi;
-    private WriteableBitmap? _bitmap;
+    /// <summary>Resolution of the previews kept for the pages around the one shown.</summary>
+    private const int PreviewDpi = 72;
+
+    /// <summary>Previews are fetched for this many pages either side, nearest first, next page before previous.</summary>
+    private static readonly int[] PreviewOffsets = [1, -1, 2, -2];
+
+    /// <summary>Previews further than this from the page shown are dropped.</summary>
+    private const int PreviewKeepRadius = 4;
+
+    /// <summary>
+    /// A page with nothing to show gets its preview before its sharp raster, as long as previews of
+    /// this document render within this time. Paging quickly then shows each page going by instead
+    /// of blank paper. Where a preview costs as much as the page itself (a page of dense vector
+    /// drawing), rendering it first would only delay the sharp page.
+    /// </summary>
+    private static readonly TimeSpan QuickPreview = TimeSpan.FromMilliseconds(100);
+
+    private TimeSpan _previewRenderTime;
+
+    private PageRasterSource? _source;
+    private int _openGeneration;
+    // Every raster held, by what it is a raster of. Touched on the UI thread only.
+    private readonly Dictionary<PageRasterKey, WriteableBitmap> _rasters = [];
+    private readonly Dictionary<PageRasterKey, string> _failed = [];
+    private PageRasterKey[] _requested = [];
+    // When the page shown was turned to, for the opt-in log of how long it took to become sharp.
+    private long _pageShownAt;
     private double _zoom = 1.0;
     private double _offsetX, _offsetY;
     private Point _dragStart;
@@ -58,7 +84,6 @@ public sealed class PdfSurface : Control
     /// <summary>How far past a wide page's left or right edge the view may go, as a fraction of its width.</summary>
     private const double HorizontalOverscroll = 0.5;
 
-    private static readonly Lazy<ColourEffectShaders> Shaders = new(() => new ColourEffectShaders());
     private ColourEffect _colourEffect = ColourEffect.None;
     private float _colourEffectIntensity = 1f;
 
@@ -78,6 +103,7 @@ public sealed class PdfSurface : Control
         ClipToBounds = true;
 
         AttachedToVisualTree += (_, _) => RequestFrame();
+        DetachedFromVisualTree += (_, _) => CloseDocument();
     }
 
     /// <summary>Attaches the view model: subscribes to cue and camera events and starts the frame loop.</summary>
@@ -122,6 +148,8 @@ public sealed class PdfSurface : Control
             // The compositor's frame time, not a clock read here: see CameraGlide.
             double dt = _lastFrameTime is { } last ? (time - last).TotalSeconds : 0;
             _lastFrameTime = time;
+            // Opt-in diagnostics: a frame this late is a stall the reader can see.
+            if (dt > FollowLog.FrameGapSeconds) FollowLog.Note($"frame gap {dt * 1000:F0} ms");
             // While audio plays the camera follows the media clock every frame, travelling between
             // measured word positions at the measured pace; FollowRequested covers the rest (a
             // resume, a zoom, a seek while paused).
@@ -139,21 +167,42 @@ public sealed class PdfSurface : Control
         else Dispatcher.UIThread.Post(InvalidateVisual);
     }
 
-    /// <summary>Opens a document for display, releasing any previous one.</summary>
-    public void OpenDocument(string path, IPdfServiceFactory? factory = null)
+    /// <summary>
+    /// Opens a document for display, releasing any previous one. The file is read and its pages
+    /// measured off the UI thread; the previous document stays on screen until this one is ready.
+    /// </summary>
+    public async Task OpenDocumentAsync(string path, IPdfServiceFactory? factory = null)
     {
-        ReleasePage();
-        (_pdf as IDisposable)?.Dispose();
-        _pdf = (factory ?? new SkiaPdfServiceFactory()).CreatePdfService(path);
+        int generation = ++_openGeneration;
+        var source = await PageRasterSource.OpenAsync(path, factory: factory).ConfigureAwait(true);
+        if (generation != _openGeneration) { source.Dispose(); return; }   // a later open overtook this one
+
+        CloseDocument();
+        _source = source;
+        // Raised on the rasteriser's thread: the copy for the compositor is made there too.
+        source.Ready += raster => OnRasterReady(source, raster);
+        source.Failed += (key, ex) => Dispatcher.UIThread.Post(() => OnRasterFailed(source, key, ex.Message));
         CurrentPage = 0;
         FitToWidth();
         PageChanged?.Invoke(CurrentPage, PageCount);
         InvalidateVisual();
     }
 
+    /// <summary>Releases the document and every raster of it.</summary>
+    public void CloseDocument()
+    {
+        _source?.Dispose();
+        _source = null;
+        foreach (var bitmap in _rasters.Values) bitmap.Dispose();
+        _rasters.Clear();
+        _failed.Clear();
+        _requested = [];
+        _previewRenderTime = TimeSpan.Zero;
+    }
+
     public int CurrentPage { get; private set; }
 
-    public int PageCount => _pdf?.PageCount ?? 0;
+    public int PageCount => _source?.PageCount ?? 0;
 
     public double Zoom
     {
@@ -172,11 +221,11 @@ public sealed class PdfSurface : Control
 
     public void GoToPage(int page, PageRect? focus = null)
     {
-        if (_pdf is null || page < 0 || page >= _pdf.PageCount) return;
+        if (_source is null || page < 0 || page >= _source.PageCount) return;
         if (page != CurrentPage)
         {
-            ReleasePage();
             CurrentPage = page;
+            _pageShownAt = System.Diagnostics.Stopwatch.GetTimestamp();
             ClampOffsets();   // the new page may be a different size
             PageChanged?.Invoke(CurrentPage, PageCount);
         }
@@ -194,13 +243,13 @@ public sealed class PdfSurface : Control
     /// </summary>
     public void TurnPage(int direction)
     {
-        if (_pdf is null) return;
+        if (_source is null) return;
         CancelGlide();
         int target = CurrentPage + Math.Sign(direction);
-        if (target < 0 || target >= _pdf.PageCount) return;
+        if (target < 0 || target >= _source.PageCount) return;
         _viewModel?.NotifyManualNavigation();
         GoToPage(target);
-        var (_, h) = _pdf.GetPageSize(CurrentPage);
+        var (_, h) = _source.PageSize(CurrentPage);
         _offsetY = direction > 0 ? 0 : Bounds.Height - h * _zoom;
         ClampOffsets();
         InvalidateVisual();
@@ -209,8 +258,8 @@ public sealed class PdfSurface : Control
     /// <summary>Fits the page width to the control and records that as the reader's zoom.</summary>
     public void FitToWidth()
     {
-        if (_pdf is null || Bounds.Width <= 0) return;
-        var (w, _) = _pdf.GetPageSize(CurrentPage);
+        if (_source is null || Bounds.Width <= 0) return;
+        var (w, _) = _source.PageSize(CurrentPage);
         if (w <= 0) return;
         CancelGlide();
         _zoom = Math.Clamp(Bounds.Width / w, 0.25, 8.0);
@@ -248,8 +297,8 @@ public sealed class PdfSurface : Control
 
     private (double X, double Y) ClampedOffsets(double x, double y)
     {
-        if (_pdf is null) return (x, y);
-        var (w, h) = _pdf.GetPageSize(CurrentPage);
+        if (_source is null) return (x, y);
+        var (w, h) = _source.PageSize(CurrentPage);
         double scaledW = w * _zoom, scaledH = h * _zoom;
         // A page wider than the view may be scrolled past its edges by up to half the view, so the
         // follow camera can bring a line's start in from the left edge and stop with its end near the
@@ -277,7 +326,7 @@ public sealed class PdfSurface : Control
 
     private void OnCameraRequested(FollowTarget target)
     {
-        if (target.CueRects.Count == 0 || _pdf is null) return;
+        if (target.CueRects.Count == 0 || _source is null) return;
         // Reading moved to another page: show it, then place the cue on it at once. There is nothing
         // to glide from: the old page's position means nothing on the new one.
         bool newPage = target.PageIndex != CurrentPage;
@@ -335,14 +384,26 @@ public sealed class PdfSurface : Control
         if (segmentId == _shownPreparingSegmentId) return;
         _shownPreparingSegmentId = segmentId;
         if (segmentId is null || _viewModel is not { } vm || vm.FollowMode == FollowMode.Off) return;
+        if (vm.FollowSuspended) vm.Coordinator.ResumeFollow();
+        ShowPassage(segmentId);
+    }
+
+    /// <summary>
+    /// Brings a passage into view when it is not already: the page it will be read on, with its
+    /// start at the reading height. Used for a passage being prepared and for the passage a reopened
+    /// document will resume from. Does nothing when following is off.
+    /// </summary>
+    public void ShowPassage(string segmentId)
+    {
+        if (_viewModel is not { } vm || vm.FollowMode == FollowMode.Off || _source is null) return;
         if (vm.Coordinator.Scheduler?.SourceMap is not { } map || map.Segment(segmentId) is not { } segment) return;
-        var pages = map.PagesFor(segment.AnchorIds);
-        if (pages.Count == 0) return;
-        int page = pages[0];
+        // The page the camera will hold while it is read: where it starts when its words can be
+        // timed, else the page holding most of it (SourceMap.FramingPage).
+        bool wholePassage = !NarrationCoordinator.SpeaksItsSourceWordForWord(segment);
+        if (map.FramingPage(segment.AnchorIds, wholePassage) is not { } page) return;
         var rects = map.HighlightRects(segment.AnchorIds, page);
         if (rects.Count == 0) return;
 
-        if (vm.FollowSuspended) vm.Coordinator.ResumeFollow();
         // Already in view (a click on the page being read): leave the camera where it is.
         var visible = new PageTransform(_zoom, _offsetX, _offsetY).ToPageRect(0, 0, Bounds.Width, Bounds.Height);
         if (page == CurrentPage && rects.All(r => r.Left >= visible.Left && r.Right <= visible.Right
@@ -382,34 +443,17 @@ public sealed class PdfSurface : Control
         return ladder[^1];
     }
 
-    private void EnsureRenderedPage()
-    {
-        if (_pdf is null) return;
-        int dpi = TargetDpi();
-        if (_renderedPage is not null && _renderedPageIndex == CurrentPage && _renderedDpi == dpi) return;
+    private float FilterStrength => _colourEffect == ColourEffect.None ? 0f : _colourEffectIntensity;
 
-        ReleasePage();
-        // Rendering runs on the UI thread because the PDFium backend is not thread-safe. Extraction,
-        // analysis, OCR, inference and synthesis all run off it.
-        _renderedPage = _pdf.RenderPage(CurrentPage, dpi) as SkiaRenderedPage;
-        _renderedPageIndex = CurrentPage;
-        _renderedDpi = dpi;
-        _bitmap = null;   // force a re-upload of the new raster
-    }
+    /// <summary>The raster the page shown should be drawn from at the present zoom and filter.</summary>
+    private PageRasterKey SharpKey(int page) => new(page, TargetDpi(), _colourEffect, FilterStrength);
 
-    private void ReleasePage()
-    {
-        _renderedPage?.Dispose();
-        _renderedPage = null;
-        _renderedPageIndex = -1;
-        _bitmap?.Dispose();
-        _bitmap = null;
-    }
+    private PageRasterKey PreviewKey(int page) => new(page, PreviewDpi, _colourEffect, FilterStrength);
 
     /// <summary>
     /// Applies one of RailReader's colour filters (high contrast, high visibility, amber, invert) to
-    /// the page. Filtered once per raster, when it is copied for the compositor, so panning costs
-    /// nothing extra.
+    /// the page. The rasteriser filters each raster once, on its own thread; until the filtered page
+    /// arrives the page stays as it was.
     /// </summary>
     public void SetColourEffect(ColourEffect effect, double intensity)
     {
@@ -417,81 +461,191 @@ public sealed class PdfSurface : Control
         if (effect == _colourEffect && Math.Abs(i - _colourEffectIntensity) < 0.001f) return;
         _colourEffect = effect;
         _colourEffectIntensity = i;
-        _bitmap?.Dispose();
-        _bitmap = null;   // re-upload through the new filter
+        InvalidateVisual();   // the paint asks for the page through the new filter
+    }
+
+    /// <summary>
+    /// The best raster held for the page shown: the sharp one, else that page through the same
+    /// filter at the highest resolution held (another zoom, or its preview), else that page through
+    /// another filter. Null when there is nothing of the page yet.
+    /// </summary>
+    private (PageRasterKey Key, WriteableBitmap Bitmap)? BestRaster()
+    {
+        var sharp = SharpKey(CurrentPage);
+        if (_rasters.TryGetValue(sharp, out var exact)) return (sharp, exact);
+        (PageRasterKey Key, WriteableBitmap Bitmap)? best = null;
+        int bestScore = -1;
+        foreach (var (key, bitmap) in _rasters)
+        {
+            if (key.PageIndex != CurrentPage) continue;
+            bool sameFilter = key.Effect == sharp.Effect && key.Intensity == sharp.Intensity;
+            int score = (sameFilter ? 1_000_000 : 0) + key.Dpi;
+            if (score > bestScore) { best = (key, bitmap); bestScore = score; }
+        }
+        return best;
+    }
+
+    /// <summary>
+    /// Drops the rasters that are no longer worth their memory and tells the rasteriser what is
+    /// missing: the page shown first, then previews of its neighbours. Called from the paint, which
+    /// is where the page, zoom, filter and what has arrived are all known; it is a few dictionary
+    /// lookups, and it only talks to the rasteriser when the list changes.
+    /// </summary>
+    private void PrepareRasters()
+    {
+        if (_source is not { } source) return;
+        var sharp = SharpKey(CurrentPage);
+
+        // Kept: the sharp page; a stand-in for it until it arrives; previews near the page shown.
+        PageRasterKey? standIn = _rasters.ContainsKey(sharp) ? null : BestRaster()?.Key;
+        List<PageRasterKey>? drop = null;
+        foreach (var key in _rasters.Keys)
+        {
+            if (key == sharp || key == standIn) continue;
+            bool nearbyPreview = key.Dpi == PreviewDpi && key.Effect == sharp.Effect && key.Intensity == sharp.Intensity
+                && Math.Abs(key.PageIndex - CurrentPage) <= PreviewKeepRadius;
+            if (!nearbyPreview) (drop ??= []).Add(key);
+        }
+        if (drop is not null)
+            foreach (var key in drop)
+                if (_rasters.Remove(key, out var bitmap)) bitmap.Dispose();
+
+        var wanted = new List<PageRasterKey>(2 + PreviewOffsets.Length);
+        if (!_rasters.ContainsKey(sharp) && !_failed.ContainsKey(sharp))
+        {
+            // Nothing of this page to draw at all (it was jumped to, or paged to faster than its
+            // preview could be fetched): something to look at first, when that is cheap.
+            var ownPreview = PreviewKey(CurrentPage);
+            if (standIn is null && ownPreview != sharp && _previewRenderTime <= QuickPreview && !_failed.ContainsKey(ownPreview))
+                wanted.Add(ownPreview);
+            wanted.Add(sharp);
+        }
+        foreach (int offset in PreviewOffsets)
+        {
+            int page = CurrentPage + offset;
+            if (page < 0 || page >= source.PageCount) continue;
+            var preview = PreviewKey(page);
+            if (!_rasters.ContainsKey(preview) && !_failed.ContainsKey(preview)) wanted.Add(preview);
+        }
+        if (wanted.SequenceEqual(_requested)) return;
+        _requested = [.. wanted];
+        source.Request(_requested);
+    }
+
+    /// <summary>
+    /// A raster has been rendered. Runs on the rasteriser's thread: the pixels are copied into a
+    /// bitmap for the compositor here, and only the hand-over is posted to the UI thread.
+    /// </summary>
+    private void OnRasterReady(PageRasterSource source, PageRaster raster)
+    {
+        var key = raster.Key;
+        var renderTime = raster.RenderTime;
+        WriteableBitmap bitmap;
+        try
+        {
+            bitmap = ToWriteableBitmap(raster.Bitmap);
+        }
+        catch (Exception ex)
+        {
+            Dispatcher.UIThread.Post(() => OnRasterFailed(source, key, ex.Message));
+            return;
+        }
+        finally
+        {
+            raster.Dispose();
+        }
+
+        Dispatcher.UIThread.Post(() =>
+        {
+            // Rendered for a document that has since been closed.
+            if (!ReferenceEquals(source, _source)) { bitmap.Dispose(); return; }
+            if (key.Dpi == PreviewDpi) _previewRenderTime = renderTime;
+            if (_pageShownAt != 0 && key == SharpKey(CurrentPage))
+            {
+                // Opt-in diagnostics: what the reader saw in the meantime, and for how long.
+                string standIn = BestRaster() is { } shown ? $"a {shown.Key.Dpi} dpi stand-in" : "blank paper";
+                FollowLog.Note($"page {key.PageIndex + 1} sharp at {key.Dpi} dpi " +
+                    $"{System.Diagnostics.Stopwatch.GetElapsedTime(_pageShownAt).TotalMilliseconds:F0} ms after it was turned to, {standIn} until then");
+                _pageShownAt = 0;
+            }
+            if (_rasters.Remove(key, out var previous)) previous.Dispose();
+            _rasters[key] = bitmap;
+            InvalidateVisual();
+        });
+    }
+
+    private void OnRasterFailed(PageRasterSource source, PageRasterKey key, string message)
+    {
+        if (!ReferenceEquals(source, _source)) return;
+        // Remembered so the paint does not ask for it again on every frame.
+        _failed[key] = message;
         InvalidateVisual();
     }
 
-    /// <summary>Copies the Skia raster into a bitmap the compositor can blit.</summary>
-    private unsafe WriteableBitmap? EnsureBitmap()
+    /// <summary>Copies a Skia raster into a bitmap the compositor can blit. Safe off the UI thread.</summary>
+    private static unsafe WriteableBitmap ToWriteableBitmap(SkiaSharp.SKBitmap skia)
     {
-        var skia = _renderedPage?.Bitmap;
-        if (skia is null || skia.Width <= 0 || skia.Height <= 0) return null;
-        if (_bitmap is not null && _bitmap.PixelSize.Width == skia.Width && _bitmap.PixelSize.Height == skia.Height)
-            return _bitmap;
-
-        // A PDF render is BGRA8888; anything else would need a channel swap, which shows up as red and
-        // blue reversed rather than as an error.
-        if (skia.BytesPerPixel != 4) return null;
-
-        _bitmap?.Dispose();
-        _bitmap = new WriteableBitmap(new PixelSize(skia.Width, skia.Height), new Vector(96, 96),
+        var bitmap = new WriteableBitmap(new PixelSize(skia.Width, skia.Height), new Vector(96, 96),
             PixelFormat.Bgra8888, AlphaFormat.Premul);
-
-        // The colour filter is drawn into a copy, so the cached raster stays unfiltered and a change
-        // of filter needs no PDF render.
-        SkiaSharp.SKBitmap? filtered = null;
-        if (_colourEffect != ColourEffect.None && Shaders.Value.CreatePaint(_colourEffect, _colourEffectIntensity) is { } paint)
+        try
         {
-            using (paint)
-            {
-                filtered = new SkiaSharp.SKBitmap(skia.Info);
-                using var canvas = new SkiaSharp.SKCanvas(filtered);
-                canvas.DrawBitmap(skia, 0, 0, paint);
-            }
-            skia = filtered;
-        }
-
-        using (filtered)
-        using (var buffer = _bitmap.Lock())
-        {
+            using var buffer = bitmap.Lock();
             int rowBytes = skia.Width * 4;
             byte* src = (byte*)skia.GetPixels();
             byte* dst = (byte*)buffer.Address;
             for (int y = 0; y < skia.Height; y++)
                 Buffer.MemoryCopy(src + (long)y * skia.RowBytes, dst + (long)y * buffer.RowBytes, rowBytes, rowBytes);
+            return bitmap;
         }
-        return _bitmap;
+        catch
+        {
+            bitmap.Dispose();
+            throw;
+        }
     }
 
     public override void Render(DrawingContext context)
     {
         var bounds = new Rect(0, 0, Bounds.Width, Bounds.Height);
         context.FillRectangle(Brushes.Black, bounds);
-        if (_pdf is null || Bounds.Width <= 0) return;
+        if (_source is not { } source || Bounds.Width <= 0) return;
 
         try
         {
-            EnsureRenderedPage();
-            var bitmap = EnsureBitmap();
-            var (pageW, pageH) = _pdf.GetPageSize(CurrentPage);
+            PrepareRasters();
+            var (pageW, pageH) = source.PageSize(CurrentPage);
 
-            if (bitmap is not null && pageW > 0 && pageH > 0)
+            if (pageW > 0 && pageH > 0)
             {
                 var destination = new Rect(_offsetX, _offsetY, pageW * _zoom, pageH * _zoom);
-                context.DrawImage(bitmap, new Rect(0, 0, bitmap.PixelSize.Width, bitmap.PixelSize.Height), destination);
+                if (BestRaster() is { } raster)
+                {
+                    var size = raster.Bitmap.PixelSize;
+                    context.DrawImage(raster.Bitmap, new Rect(0, 0, size.Width, size.Height), destination);
+                }
+                else
+                {
+                    // Nothing of this page has been rendered yet: blank paper in the filter's
+                    // colour, so the page's place and the highlight on it are there at once.
+                    var paper = PageRasterSource.PaperColour(_colourEffect, FilterStrength);
+                    context.FillRectangle(new SolidColorBrush(Color.FromRgb(paper.Red, paper.Green, paper.Blue)), destination);
+                }
             }
             DrawHighlights(context);
             DrawPreparing(context);
+            if (_failed.TryGetValue(SharpKey(CurrentPage), out string? failure)) DrawRenderError(context, failure);
         }
         catch (Exception ex)
         {
             // A rendering failure must not take the window down with it.
-            context.DrawText(new FormattedText($"Render error: {ex.Message}",
-                System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
-                new Typeface("DejaVu Sans"), 13, Brushes.OrangeRed), new Point(8, 8));
+            DrawRenderError(context, ex.Message);
         }
     }
+
+    private static void DrawRenderError(DrawingContext context, string message)
+        => context.DrawText(new FormattedText($"Render error: {message}",
+            System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+            new Typeface("DejaVu Sans"), 13, Brushes.OrangeRed), new Point(8, 8));
 
     private void DrawHighlights(DrawingContext context)
     {
@@ -564,7 +718,7 @@ public sealed class PdfSurface : Control
         var point = e.GetPosition(this);
         var properties = e.GetCurrentPoint(this).Properties;
 
-        if (properties.IsLeftButtonPressed && _viewModel?.Plan is { } plan && _pdf is not null)
+        if (properties.IsLeftButtonPressed && _viewModel?.Plan is { } plan && _source is not null)
         {
             // Click to read: hit-test the original PDF and start at the containing unit. A click on
             // blank space does nothing rather than choosing an arbitrary passage.
@@ -611,6 +765,17 @@ public sealed class PdfSurface : Control
         e.Pointer.Capture(null);
     }
 
+    /// <summary>
+    /// The pointer was taken away mid-drag (the window lost focus, a menu opened, a compositor
+    /// gesture). No release follows, and a drag left "in progress" would pan the page with every
+    /// later pointer move and keep following paused for as long as the pointer moved.
+    /// </summary>
+    protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
+    {
+        base.OnPointerCaptureLost(e);
+        _dragging = false;
+    }
+
     protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
     {
         base.OnPointerWheelChanged(e);
@@ -634,14 +799,14 @@ public sealed class PdfSurface : Control
     /// </summary>
     private void ScrollBy(double notchesX, double notchesY)
     {
-        if (_pdf is null) return;
+        if (_source is null) return;
         const double Step = 80;
         CancelGlide();
         _viewModel?.NotifyManualNavigation();
-        var (w, h) = _pdf.GetPageSize(CurrentPage);
+        var (_, h) = _source.PageSize(CurrentPage);
         double minY = Math.Min(0, Bounds.Height - h * _zoom);
         bool atBottom = _offsetY <= minY + 0.5, atTop = _offsetY >= -0.5;
-        if (notchesY < 0 && atBottom && CurrentPage + 1 < _pdf.PageCount) { TurnPage(+1); return; }
+        if (notchesY < 0 && atBottom && CurrentPage + 1 < _source.PageCount) { TurnPage(+1); return; }
         if (notchesY > 0 && atTop && CurrentPage > 0) { TurnPage(-1); return; }
         _offsetX += notchesX * Step;
         _offsetY += notchesY * Step;
@@ -673,13 +838,30 @@ public sealed class PdfSurface : Control
 /// <summary>
 /// Opt-in camera diagnostics: with <c>RN_FOLLOW_LOG=1</c> every follow request is appended to
 /// <c>$XDG_STATE_HOME/rail-narrator/logs/follow.log</c> with the cue, the visible region, the
-/// control size, zoom and offsets, and the decision. Off by default; nothing is logged otherwise.
+/// control size, zoom and offsets, and the decision; so is every frame that arrives more than
+/// <see cref="FrameGapSeconds"/> after the one before it ("frame gap 83 ms"), which is what a stall
+/// of the window looks like from inside. Off by default; nothing is logged otherwise.
 /// </summary>
 internal static class FollowLog
 {
     private static readonly string? Path = Environment.GetEnvironmentVariable("RN_FOLLOW_LOG") == "1"
         ? System.IO.Path.Combine(RailNarrator.Infrastructure.XdgPaths.State, "logs", "follow.log")
         : null;
+
+    /// <summary>A frame later than this is logged: three frames missed at 60 Hz.</summary>
+    public const double FrameGapSeconds = 0.05;
+
+    public static void Note(string text)
+    {
+        if (Path is null) return;
+        try
+        {
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(Path)!);
+            File.AppendAllText(Path, $"{DateTime.Now:HH:mm:ss.fff} {text}\n");
+        }
+        catch (IOException) { }
+        catch (UnauthorizedAccessException) { }
+    }
 
     public static void Write(int page, IReadOnlyList<PageRect> rects, PageRect visible, FollowDecision decision,
         Rect bounds, double zoom, (double X, double Y) before, (double X, double Y) after)

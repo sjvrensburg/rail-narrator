@@ -426,6 +426,91 @@ public sealed class NarrationCoordinatorTests
     }
 
     /// <summary>
+    /// An interpreted lead-in and its equation are one passage with no timing inside it. When its
+    /// first words are at the foot of one page and the equation is overleaf, the camera shows the
+    /// page with the equation, not the last line of the page before, for as long as it is read.
+    /// </summary>
+    [Fact]
+    public async Task APassageAcrossAPageBreak_WithNoWordTiming_IsFollowedOnThePageHoldingMostOfIt()
+    {
+        var tts = new FakeTtsProvider();
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(tts, transport);
+        var follows = new List<FollowTarget>();
+        coordinator.FollowRequested += (_, target) => { lock (follows) follows.Add(target); };
+
+        var foot = SyntheticNarration.Anchor("foot", 2, new PageRect(312, 650, 456, 658));
+        var head = SyntheticNarration.Anchor("head", 3, new PageRect(48, 53, 168, 60));
+        var equation = SyntheticNarration.Anchor("eq", 3, new PageRect(170, 68, 332, 97));
+        var leadIn = new ReadingUnit("u0", ReadingUnitKind.Prose, [foot, head],
+            "It is a linear combination of bounded transition functions defined as", null, "", "", [], 2);
+        var maths = SyntheticNarration.MathsUnit("u1", "g_t", equation);
+        const string spoken = "It is a weighted sum of bounded transition functions, g of t.";
+        var plan = SyntheticNarration.Plan([leadIn, maths]) with
+        {
+            Segments =
+            [
+                new NarrationSegment("s00000", ["u0", "u1"], ReadingUnitKind.Prose, spoken, "en-GB",
+                    [new SourceLink(TextRange.OfString(spoken), ["foot", "head", "eq"])],
+                    MathMode.Interpret, ScriptProvenance.ModelGenerated, [], 1),
+            ],
+        };
+
+        await coordinator.LoadPlanAsync(plan);
+        await coordinator.PlayAsync();
+        await WaitUntil(() => transport.PlayCount > 0, what: "playback to start");
+
+        var now = coordinator.CurrentFollowTarget();
+        Assert.NotNull(now);
+        Assert.Equal(3, now!.PageIndex);
+        Assert.All(now.CueRects, r => Assert.True(r.Top < 100, "only the rectangles on the framed page"));
+        await WaitUntil(() => { lock (follows) return follows.Count > 0; }, what: "a follow request");
+        lock (follows) Assert.All(follows, t => Assert.Equal(3, t.PageIndex));
+    }
+
+    /// <summary>
+    /// Browsing pauses the camera. Asking to read from a passage (Next, Previous, a click, the script
+    /// list) or pressing Play from a stop is a request to see that reading, so following resumes at
+    /// once instead of leaving the view where it was until the pause times out. A new document does
+    /// not inherit the pause either.
+    /// </summary>
+    [Fact]
+    public async Task ASeek_AFreshStart_AndANewDocument_EndAPauseInFollowing()
+    {
+        var tts = new FakeTtsProvider();
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(tts, transport);
+        var follows = new List<string>();
+        coordinator.FollowRequested += (cue, _) => { lock (follows) follows.Add(cue.SegmentId); };
+
+        var plan = PlanWith(4);
+        await coordinator.LoadPlanAsync(plan);
+        await coordinator.PlayAsync();
+        await WaitUntil(() => transport.PlayCount > 0, what: "playback to start");
+
+        coordinator.SuspendFollow();
+        await coordinator.NextSegmentAsync();
+        Assert.False(coordinator.FollowSuspended);
+        Assert.False(coordinator.Snapshot.FollowSuspended);
+        await WaitUntil(() => { lock (follows) return follows.Contains(plan.Segments[1].Id); }, what: "the camera to follow the seek");
+
+        await coordinator.StopAsync();
+        coordinator.SuspendFollow();
+        await coordinator.PlayAsync();
+        Assert.False(coordinator.FollowSuspended);
+
+        // Pausing and resuming is not a request to move the view: a reader who paused to look at a
+        // figure and presses Play keeps looking at it until the pause in following times out.
+        await coordinator.PauseAsync();
+        coordinator.SuspendFollow();
+        await coordinator.PlayAsync();
+        Assert.True(coordinator.FollowSuspended);
+
+        await coordinator.LoadPlanAsync(PlanWith(2));
+        Assert.False(coordinator.FollowSuspended);
+    }
+
+    /// <summary>
     /// Gapless: once the next passage is prepared it is handed to the transport to follow the current
     /// one, and when the transport moves on to it the reading position advances without loading or
     /// starting anything — the audio is already playing. Then the passage after that is queued.

@@ -89,7 +89,7 @@ $S all --kokoro-model <path>         # whole chain, printed pass/fail summary
 | Project | Responsibility | Depends on |
 |---|---|---|
 | `RailNarrator.Domain` | Anchors, reading units, plans, source maps, cue scheduling, playback state, follow policy, caching keys | *nothing* |
-| `RailNarrator.Pdf` | RailReaderCore adapter: extraction snapshots, coordinate transforms, hit-testing, overlays | Core, SkiaSharp |
+| `RailNarrator.Pdf` | RailReaderCore adapter: extraction snapshots, page rasters rendered off the UI thread, coordinate transforms, hit-testing, overlays | Core, SkiaSharp |
 | `RailNarrator.Speech` | Kokoro and ZONOS3 adapters, local MFA word alignment, PCM/WAV codecs | Domain, KokoroSharp |
 | `RailNarrator.Audio` | Output device, resampling, pitch-preserving speed, media clock | Domain |
 | `RailNarrator.Inference` | Maths interpretation (page image + context → words), transcription, verbalisation, validation, local rule reader | Domain, Core.Vlm |

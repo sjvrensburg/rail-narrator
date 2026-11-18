@@ -7,15 +7,15 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 484 passing, 9 opt-in skips, 0 warnings
+## Verified by automated tests — 502 passing, 9 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
-| `RailNarrator.Domain.Tests` | 220 | One gliding follow mode: the reading line held at the reading height (the line's, not the word's, so the view does not bob), a line wider than the view panned between aligned words at their measured pace, starting with the line's start 20 % in from the left and ending with its end near the middle, a new line reached by a quicker carriage-return glide, the frame-loop follow target present only while playing and following; highlight boxes given one height per line across the paragraph, the other column not taken as part of the line, a sentence or equation cue without word timing framed at its start and held (never panned at a guessed rate), a page change cut rather than glided, the glide eased without overshoot at 20–144 fps, keeping its speed when retargeted and bounded after a stalled frame; a seek to an unprepared passage reports its stage (interpreting, loading, synthesising, timing words) and elapsed time and clears when it plays, a prepared passage starts with no wait reported; Abbreviations expanded only as whole words ("Chap.", "overlap.", "p.adjust" untouched); maths italic letters (U+1D400 block, ℎ) mark their sentence as maths and are spoken as plain letters and Greek names, mapped back to both UTF-16 units; silent marks not counted as words; a zoom re-checks the camera at once unless following is suspended; Decimals and signed numbers after a year cue ("from 0.20", "by 0.75") read as numbers, not handed to the year reading; Play waits for the maths ahead (and starts anyway after the cap), a refused interpretation read mechanically from a transcription and labelled, a failed page crop reported, Front-matter metadata skipped (body sentences that start the same way kept), A lead-in sentence and its equation interpreted as one passage, Citation markers left out (and brackets that are content kept), regenerate re-asks the model, Maths left pending with an honest fallback, interpreted once with surrounding definitions and cached, spoken by the coordinator; Layout roles (model formulas trusted over geometry, display lines merged, headings kept apart, inline maths kept in its sentence, tables announced, publisher cover sheets skipped), years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
-| `RailNarrator.Pdf.Tests` | 20 (+3 opt-in) | Layout analysis that fails to start, or fails mid-document, finishes on the CPU fallback from the page that failed and says so once, and the source then reports it so the snapshot is not cached under the GPU key; opt-in, the `Cpu` setting never uses the GPU, and (`RN_WEBGPU_INTEGRATION=1`) the GPU gives the same blocks, kinds, reading units and geometry within 0.1 pt as the CPU; A passage crop is a PNG of its ink; **Real PDFs** through the real RailReaderCore pipeline, including a cached snapshot building the same plan as a fresh one; opt-in, the real PP-DocLayoutV3 model through the adapter |
-| `RailNarrator.Speech.Tests` | 36 (+2 opt-in) | Opt-in, real Kokoro speech holding acronyms and words the dictionary lacks aligned word by word; PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
-| `RailNarrator.Audio.Tests` | 39 | Resampler (polyphase path equal to the direct sinc filter on four rate pairs), time-stretcher (fast grain search equal to the direct search at three rates), playback engine against a controllable fake device, engine lock ordering, coordinator-plus-engine transition stress |
-| `RailNarrator.Infrastructure.Tests` | 9 | Cache round-trips and waveform integrity, including same-length replacement; extraction-cache keying, degraded and encrypted documents never stored, corrupt entries treated as misses |
+| `RailNarrator.Domain.Tests` | 242 | A cue with no timing inside it that crosses a page break framed on the page holding most of it (a word on the page it is printed on, an equal split on the earlier page, a page with no geometry never), a seek, a start from a stop and a new document ending a pause in following while a resume from Pause leaves it; One gliding follow mode: the reading line held at the reading height (the line's, not the word's, so the view does not bob), a line wider than the view panned between aligned words at their measured pace, starting with the line's start 20 % in from the left and ending with its end near the middle, a new line reached by a quicker carriage-return glide, the frame-loop follow target present only while playing and following; highlight boxes given one height per line across the paragraph, the other column not taken as part of the line, a sentence or equation cue without word timing framed at its start and held (never panned at a guessed rate), a page change cut rather than glided, the glide eased without overshoot at 20–144 fps, keeping its speed when retargeted and bounded after a stalled frame; a seek to an unprepared passage reports its stage (interpreting, loading, synthesising, timing words) and elapsed time and clears when it plays, a prepared passage starts with no wait reported; Abbreviations expanded only as whole words ("Chap.", "overlap.", "p.adjust" untouched); maths italic letters (U+1D400 block, ℎ) mark their sentence as maths and are spoken as plain letters and Greek names, mapped back to both UTF-16 units; silent marks not counted as words; a zoom re-checks the camera at once unless following is suspended; Decimals and signed numbers after a year cue ("from 0.20", "by 0.75") read as numbers, not handed to the year reading; Play waits for the maths ahead (and starts anyway after the cap), a refused interpretation read mechanically from a transcription and labelled, a failed page crop reported, Front-matter metadata skipped (body sentences that start the same way kept), A lead-in sentence and its equation interpreted as one passage, Citation markers left out (and brackets that are content kept), regenerate re-asks the model, Maths left pending with an honest fallback, interpreted once with surrounding definitions and cached, spoken by the coordinator; Layout roles (model formulas trusted over geometry, display lines merged, headings kept apart, inline maths kept in its sentence, tables announced, publisher cover sheets skipped), years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
+| `RailNarrator.Pdf.Tests` | 41 (+5 opt-in) | Page rasters for the reading surface rendered on a worker: page sizes read at open, rasters delivered in the order asked and once each, a render the reader has paged past abandoned (and one that cannot be cancelled dropped, not handed over), a render still wanted carried on, a page that cannot be rendered reported once, colour filters applied there and blank paper's colour matching each filter's own; Layout analysis that fails to start, or fails mid-document, finishes on the CPU fallback from the page that failed and says so once, and the source then reports it so the snapshot is not cached under the GPU key; opt-in, the `Cpu` setting never uses the GPU, and (`RN_WEBGPU_INTEGRATION=1`) the GPU gives the same blocks, kinds, reading units and geometry within 0.1 pt as the CPU; A passage crop is a PNG of its ink; **Real PDFs** through the real RailReaderCore pipeline, including a cached snapshot building the same plan as a fresh one; opt-in, the real PP-DocLayoutV3 model through the adapter |
+| `RailNarrator.Speech.Tests` | 48 (+3 opt-in) | Opt-in, real Kokoro speech holding acronyms and words the dictionary lacks aligned word by word; PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
+| `RailNarrator.Audio.Tests` | 43 (+1 opt-in) | Resampler (polyphase path equal to the direct sinc filter on four rate pairs), time-stretcher (fast grain search equal to the direct search at three rates), playback engine against a controllable fake device, engine lock ordering, coordinator-plus-engine transition stress |
+| `RailNarrator.Infrastructure.Tests` | 22 | Cache round-trips and waveform integrity, including same-length replacement; extraction-cache keying, degraded and encrypted documents never stored, corrupt entries treated as misses |
 | `RailNarrator.Inference.Tests` | 106 | ClearSpeak-style reading of LaTeX (powers, fractions, roots, quantities, derivatives, sums, functions, cases, Unicode, text with `$…$`, malformed input); thinking-policy and out-of-tokens retry; transcription fallback; Maths interpretation: notation validator, image and thinking-switch fallbacks, one repair turn, cut-off responses refused; golden maths semantics, response validator, endpoint client |
 
 Run them with (and see `testing-real-world.md` for the real models, GUI and audio):
@@ -280,15 +280,27 @@ Not fixed yet. Each was observed in the run described above.
   (i7-12700H): RTF 0.75 at best and 1–2 typically; fp32, int8 and thread counts were all tried
   (ADR-0007). With the converted model installed it runs on the laptop's GPU instead (item 60);
   without it, reading still pauses every few passages there.
-- **Start-up still blocks for about 14 s before the window appears, and "Ready" waits for Kokoro**
-  (about 15 s on the CPU) after extraction (item 61). The layout probe (6-7 s on the GPU) and
-  Kokoro's initialisation could both run in the background.
+- **Start-up still blocks for about 14 s before the window appears** (item 61): the layout probe
+  (6-7 s on the GPU) runs before the window is shown and could run in the background. Kokoro's
+  initialisation no longer waits for extraction to finish: it starts beside it (item 65), so
+  "Ready" waits for whichever is slower, not for both in turn. The 15 s CPU figure for Kokoro on
+  the i7-12700H has not been re-measured since.
 - **A page with almost no text is OCR'd as well, at 562 DPI on the CPU: about 20 s a page** on the
   i7-12700H (the two one-line pages of the `crosspage` fixture took 28 s). The rule
   (`CoverageLooksSparse`: under 0.5 % ink and under 60 characters) exists to catch scans with a stray
   text layer; whether to keep it, lower its DPI or check the page's ink first is open.
 - **A resize of the reading area resets the zoom to fit-width.** Opening the script panel changed
-  235 % to 173 %; at 400 % or 800 % it would discard the reader's magnification.
+  235 % to 173 %; at 400 % or 800 % it would discard the reader's magnification. The toolbar
+  growing by a row does it too (the colour filter's strength slider made the reading area 18 px
+  shorter in the run for item 63).
+- **Fit-width is worked out from the page shown when the document opens.** On the GARCH article the
+  publisher's cover sheet is 634 pt wide and the article's pages 504 pt, so every page after the
+  first fills only 79 % of the window's width.
+- **An equation crop renders its whole page, at up to 8192 px.** The crop is scaled so the passage
+  is 1400 px wide, and the whole page is rasterised at that scale under PDFium's lock: 32-49 ms
+  for a passage 300-450 pt wide and 134 ms for an 80 pt-wide equation on the reference machine;
+  by arithmetic the latter is a 5734 x 8192 raster and a 140 MB array. It no longer delays the
+  window (item 63) but it is work and memory spent on pixels that are thrown away.
   Before it, about 0.4 s was inserted at every boundary (on top of the ~0.5 s each Kokoro clip
   ends with): output latency, ~320–335 ms from a write to the first presented frame on this
   machine, paid because the next clip was written only once the previous one had drained. With
@@ -710,3 +722,50 @@ threads meeting.
     (`ReferenceSections`); on three of the papers it caught 60, 21 and 41 blocks, and no script
     read a bibliography. Opt-in tests: Heron INT8 through the adapter (left column first), Heron
     FP32 on the GPU matching the CPU.
+63. **Turning pages stalled the window.** The page was rendered inside the paint, on the UI thread,
+    holding Core's process-wide PDFium lock. Measured in the window with an opt-in log of late
+    frames (`RN_FOLLOW_LOG=1`, "frame gap"): on a 10-page scanned thesis chapter at fit-width, 26 of
+    28 quick page turns each gave a frame 62-83 ms late (render 54 ms on average, 68 ms at most),
+    on the reference machine with nothing else running. A render of the same page costs 10 ms for
+    the GARCH article's text pages and 1.7 s for a page of architectural drawing, and it also
+    queued behind whatever held the lock (an equation crop for the interpreter: 32-134 ms). Pages
+    are now rendered by `PageRasterSource` on a worker thread, filtered and copied for the
+    compositor there, and the paint only draws what has arrived: the sharp page, else a 72 dpi
+    preview fetched ahead for the two pages either side, else blank paper in the filter's colour.
+    A render the reader has paged past is cancelled or dropped. Same document, same keys: 0 late
+    frames over 31 page turns. In a further run of 18 turns each page was sharp 40-70 ms after it
+    was turned to, with its preview shown until then; three pages reached faster than their
+    previews could be fetched were blank for those 50-60 ms, and a page with nothing to show now
+    has its own preview rendered first (how soon that arrives was not timed separately). With the
+    Invert filter on, the interpreter running and narration playing, 7 quick page turns gave 0
+    late frames and the pages stopped on were sharp 118-120 ms later, shown from previews until
+    then. Not measured: a HiDPI display, and the i7-12700H laptop.
+64. **The view stayed on the page before while the next page was read.** A lead-in and the
+    equation it introduces are one interpreted passage with no timing inside it, and the camera
+    framed such a passage on the first page it touches. On the GARCH article, "It is a linear
+    combination of bounded | transition functions defined as" with equation (4) has seven words at
+    the foot of page 3 and the rest on page 4: the view sat at the foot of page 3 for the 15 s the
+    equation was explained and moved to page 4 only when the next passage began (follow log, with
+    the interpreter on). A cue with no timing inside it is now framed on the page that holds most
+    of it, by highlighted area (`SourceMap.FramingPage`); in the same run the view moves to page 4
+    as the passage starts. A word-aligned sentence across the same kind of break already turned
+    the page at the right word and still does. Also: Next, Previous, Replay, a click on a passage
+    and Play from a stop now end a pause in following at once (measured: the view returned to the
+    reading 45 ms after Next, against up to the 6 s auto-resume before); a new document does not
+    inherit the pause (both in the coordinator's tests); and a reopened document shows the
+    passage it resumes from, not page 1. A drag whose pointer capture is lost now ends, where it
+    would have left the page following the pointer and following paused; that was read in the
+    code, not observed. Of the
+    article's 534 passages with the interpreter on, 6 cross a page break and 3 of those have no
+    word timing; documents with more display maths at page breaks have not been counted.
+65. **Opening a document showed one line in the status bar, and the window froze as it finished.**
+    A card in the middle of the reading area now names the file, says what is being done ("Reading
+    the pages", "Finding the reading order", "Preparing narration", "Starting the voice"), counts
+    pages or passages on a progress bar and shows the time taken; a veil covers the previous
+    document, which no longer responds to clicks, Play or Next while it is being replaced, and the
+    pointer shows busy. The file hash, reading order, planning and Kokoro's start-up ran on the UI
+    thread between awaits: frames 1681 ms and 790 ms late at the end of each load on the reference
+    machine. They run on the thread pool, Kokoro's start-up beside the extraction; the same load
+    now has one frame 59-63 ms late. Seen in the window for fresh and cached opens of the GARCH
+    article and a fresh open of the thesis chapter; not tried with a failing open, or through the
+    file picker.

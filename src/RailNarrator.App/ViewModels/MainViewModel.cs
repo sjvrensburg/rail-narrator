@@ -92,17 +92,17 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         _services.Coordinator.FollowRequested += OnFollowRequested;
 
         OpenDocument = new RelayCommand(() => OpenDocumentAsync(TopLevelProvider?.Invoke()), () => !Busy, OnCommandError);
-        Play = new RelayCommand(() => _services.Coordinator.PlayAsync(), () => Plan is { SegmentCount: > 0 }, OnCommandError);
+        Play = new RelayCommand(() => _services.Coordinator.PlayAsync(), CanRead, OnCommandError);
         Pause = new RelayCommand(() => _services.Coordinator.PauseAsync(), () => _playback.State == PlaybackState.Playing, OnCommandError);
         // One button: play, pause, or — while a start is still waiting for its audio — cancel that
         // start. Pausing then would not stop it: the start would play when the audio arrived.
         PlayPause = new RelayCommand(() => IsStarting
                 ? _services.Coordinator.StopAsync()
                 : _playback.State == PlaybackState.Playing ? _services.Coordinator.PauseAsync() : _services.Coordinator.PlayAsync(),
-            () => Plan is { SegmentCount: > 0 }, OnCommandError, allowWhileRunning: true);
-        Next = new RelayCommand(() => _services.Coordinator.NextSegmentAsync(), () => Plan is { SegmentCount: > 0 }, OnCommandError, allowWhileRunning: true);
-        Previous = new RelayCommand(() => _services.Coordinator.PreviousSegmentAsync(), () => Plan is { SegmentCount: > 0 }, OnCommandError, allowWhileRunning: true);
-        Replay = new RelayCommand(() => _services.Coordinator.ReplaySegmentAsync(), () => Plan is { SegmentCount: > 0 }, OnCommandError, allowWhileRunning: true);
+            CanRead, OnCommandError, allowWhileRunning: true);
+        Next = new RelayCommand(() => _services.Coordinator.NextSegmentAsync(), CanRead, OnCommandError, allowWhileRunning: true);
+        Previous = new RelayCommand(() => _services.Coordinator.PreviousSegmentAsync(), CanRead, OnCommandError, allowWhileRunning: true);
+        Replay = new RelayCommand(() => _services.Coordinator.ReplaySegmentAsync(), CanRead, OnCommandError, allowWhileRunning: true);
         ToggleFollow = new RelayCommand(CycleFollowMode, null, OnCommandError);
         ResumeFollow = new RelayCommand(() => _services.Coordinator.ResumeFollow(), () => FollowSuspended, OnCommandError);
         ZoomIn = new RelayCommand(() => ApplyZoom(Zoom * 1.25), null, OnCommandError);
@@ -118,6 +118,13 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         RegenerateMaths = new RelayCommand(() => RegenerateMathsAsync(), () => MathsReview is { CanRegenerate: true }, OnCommandError);
         ApplyMathsEdit = new RelayCommand(() => ApplyMathsEditAsync(), () => !Busy, OnCommandError);
     }
+
+    /// <summary>
+    /// There is a document to read and another is not being opened over it. While one is loading the
+    /// old document is still on screen with its narration stopped; Play, Next or a press of Space
+    /// must not start it again underneath the document replacing it.
+    /// </summary>
+    private bool CanRead() => !IsLoading && Plan is { SegmentCount: > 0 };
 
     /// <summary>Raised when the PDF surface must repaint (a new highlight, a page change).</summary>
     public event Action? InvalidateSurface;
@@ -197,6 +204,86 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     /// <summary>True while a start the reader asked for is waiting on a passage's audio.</summary>
     public bool IsPreparing => _playback.Preparation is not null;
+
+    // ---- opening a document ---------------------------------------------------------------
+    // What the card over the reading area shows while a document is opened. A status-bar line was
+    // the only sign of a load that takes from seconds (a cached paper) to minutes (a scan to OCR),
+    // under an otherwise empty or unchanged window.
+
+    private bool _isLoading;
+    private string _loadingTitle = "";
+    private string _loadingStage = "";
+    private string _loadingDetail = "";
+    private double _loadingProgress;
+    private bool _loadingIndeterminate = true;
+    private long _loadingStarted;
+    private DispatcherTimer? _loadingClock;
+
+    /// <summary>True from the moment a document is chosen until it is ready to read or has failed.</summary>
+    public bool IsLoading
+    {
+        get => _isLoading;
+        private set { if (Set(ref _isLoading, value)) RefreshCommands(); }
+    }
+
+    /// <summary>The file being opened, by name.</summary>
+    public string LoadingTitle { get => _loadingTitle; private set => Set(ref _loadingTitle, value); }
+
+    /// <summary>What is being done to it now, in words: "Reading the pages".</summary>
+    public string LoadingStage { get => _loadingStage; private set => Set(ref _loadingStage, value); }
+
+    /// <summary>How far that has got and how long the load has taken: "Page 17 of 27 · 12 s".</summary>
+    public string LoadingDetail { get => _loadingDetail; private set => Set(ref _loadingDetail, value); }
+
+    /// <summary>Progress through the current stage, 0 to 1, when it can be counted.</summary>
+    public double LoadingProgress { get => _loadingProgress; private set => Set(ref _loadingProgress, value); }
+
+    /// <summary>True for a stage with nothing to count.</summary>
+    public bool LoadingIndeterminate { get => _loadingIndeterminate; private set => Set(ref _loadingIndeterminate, value); }
+
+    private string _loadingCount = "";
+
+    private void BeginLoading(string path)
+    {
+        LoadingTitle = Path.GetFileName(path);
+        _loadingStarted = System.Diagnostics.Stopwatch.GetTimestamp();
+        ReportLoading("Opening the document");
+        IsLoading = true;
+        // The elapsed time ticks on its own: a stage with nothing to count (a model starting up)
+        // would otherwise show a card that never changes.
+        _loadingClock ??= new DispatcherTimer(TimeSpan.FromSeconds(1), DispatcherPriority.Background, (_, _) => RefreshLoadingDetail());
+        _loadingClock.Start();
+    }
+
+    /// <summary>Sets the stage shown on the card and the status line; <paramref name="total"/> 0 means nothing to count.</summary>
+    private void ReportLoading(string stage, int done = 0, int total = 0, string unit = "page")
+    {
+        LoadingStage = stage;
+        LoadingIndeterminate = total <= 0;
+        LoadingProgress = total > 0 ? Math.Clamp((double)done / total, 0, 1) : 0;
+        _loadingCount = total > 0 ? $"{char.ToUpperInvariant(unit[0])}{unit[1..]} {Math.Min(done, total)} of {total}" : "";
+        StatusMessage = total > 0 ? $"{stage}: {unit} {Math.Min(done, total)} of {total}" : $"{stage}…";
+        RefreshLoadingDetail();
+    }
+
+    private void RefreshLoadingDetail()
+    {
+        double seconds = System.Diagnostics.Stopwatch.GetElapsedTime(_loadingStarted).TotalSeconds;
+        string elapsed = seconds >= 1 ? $"{seconds:F0} s" : "";
+        LoadingDetail = string.Join(" · ", new[] { _loadingCount, elapsed }.Where(t => t.Length > 0));
+    }
+
+    private void EndLoading()
+    {
+        _loadingClock?.Stop();
+        IsLoading = false;
+    }
+
+    /// <summary>
+    /// The passage a reopened document resumes from, when its position was restored and it is not
+    /// the first: the window shows that passage instead of the first page.
+    /// </summary>
+    public string? RestoredSegmentId { get; private set; }
 
     /// <summary>The play/pause button's caption: what pressing it will do now.</summary>
     public string PlayButtonText => IsStarting ? "⏹ Cancel" : _playback.State == PlaybackState.Playing ? "⏸ Pause" : "▶ Play";
@@ -445,6 +532,12 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     /// Loads, extracts and plans a document. Every step reports what it is doing, because a large
     /// scanned PDF can take long enough that a silent spinner reads as a hang.
     /// </summary>
+    /// <remarks>
+    /// The work runs on the thread pool; this method only awaits it and reports. Hashing the file,
+    /// finding the reading order, planning and starting the speech model used to run on the UI
+    /// thread between awaits, which froze the window for a couple of seconds at the end of every
+    /// load — exactly when a progress display has to keep moving.
+    /// </remarks>
     public async Task LoadDocumentAsync(string path)
     {
         if (!File.Exists(path)) { StatusMessage = $"No such file: {path}"; return; }
@@ -457,25 +550,32 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         string? previousPath = DocumentPath;
         bool committed = false;
         Busy = true;
+        BeginLoading(path);
         try
         {
             // The document being replaced keeps its place, even if the new one fails to open.
             await SavePositionAsync();
             await Coordinator.StopAsync();
-            StatusMessage = "Reading the document…";
 
-            string hash = CacheKey.Sha256HexOfFile(path);
+            // The speech model takes a second or two to start. It starts now, beside the extraction,
+            // instead of on the UI thread once everything else is done.
+            var voices = Task.Run(ListVoicesAsync);
+            // Observed even when the load ends early, so a failure there is not left unobserved.
+            _ = voices.ContinueWith(t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+
+            string hash = await Task.Run(() => CacheKey.Sha256HexOfFile(path));
             var cachedPlan = await _services.PlanStore.TryGetPlanAsync(hash);
 
-            _services.Extraction.AttachDocument(path);
+            await Task.Run(() => _services.Extraction.AttachDocument(path));
             var request = _services.CreateExtractionRequest(path);
+            ReportLoading("Reading the pages");
             // Progress is posted, so a report can land after extraction has returned — with a cache
             // hit, after "Ready" — and overwrite the status. Reports are ignored once it is done.
             bool extracting = true;
             var snapshot = await _services.CachedExtraction.ExtractAsync(request,
                 new Progress<ExtractionProgress>(p => Dispatcher.UIThread.Post(() =>
                 {
-                    if (extracting) StatusMessage = $"{p.Stage}: page {p.PagesDone} of {p.PagesTotal}";
+                    if (extracting) ReportLoading(ExtractionStage(p.Stage), p.PagesDone, p.PagesTotal);
                 })));
             extracting = false;
 
@@ -488,8 +588,13 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
                 return;
             }
 
-            StatusMessage = "Finding the reading order…";
-            var units = _services.CreateUnitBuilder(_overrides).Build(snapshot, out var diagnostics);
+            ReportLoading("Finding the reading order");
+            var builder = _services.CreateUnitBuilder(_overrides);
+            var (units, diagnostics) = await Task.Run(() =>
+            {
+                var built = builder.Build(snapshot, out var notes);
+                return (built, notes);
+            });
             foreach (string d in diagnostics) if (!Notes.Contains(d)) Notes.Add(d);
 
             if (units.Count == 0)
@@ -498,22 +603,41 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
                 return;
             }
 
-            StatusMessage = units.Any(u => u.IsMaths)
-                ? "Preparing narration, including mathematical expressions…"
-                : "Preparing narration…";
+            string planning = units.Any(u => u.IsMaths)
+                ? "Preparing narration, including mathematical expressions"
+                : "Preparing narration";
+            ReportLoading(planning);
 
             var planner = _services.CreatePlanner();
-            // A cached plan is reusable only if it was built from the inputs in force now, not
-            // merely from the same file: changed filters, maths mode or region overrides rebuild.
-            string fingerprint = NarrationPlanner.ComputeInputFingerprint(
-                planner.Options, _services.CurrentSettings.Filters, units);
-            bool reuseCached = cachedPlan is { } c && c.Matches(snapshot.Identity, fingerprint);
-            var plan = reuseCached
-                ? cachedPlan!
-                : await planner.BuildPlanAsync(snapshot, units, _services.CurrentSettings.Filters);
+            var filters = _services.CurrentSettings.Filters;
+            bool planningNow = true;
+            var planProgress = new Progress<PlanningProgress>(p =>
+            {
+                if (planningNow) ReportLoading(planning, p.UnitsDone, p.UnitsTotal, "passage");
+            });
+            var (plan, reuseCached) = await Task.Run(async () =>
+            {
+                // A cached plan is reusable only if it was built from the inputs in force now, not
+                // merely from the same file: changed filters, maths mode or region overrides rebuild.
+                string fingerprint = NarrationPlanner.ComputeInputFingerprint(planner.Options, filters, units);
+                if (cachedPlan is { } c && c.Matches(snapshot.Identity, fingerprint)) return (c, true);
+                var built = await planner.BuildPlanAsync(snapshot, units, filters, progress: planProgress).ConfigureAwait(false);
+                return (built, false);
+            });
+            planningNow = false;
 
             if (!reuseCached)
                 await _services.PlanStore.StorePlanAsync(plan);
+
+            ReportLoading("Starting the voice");
+            var position = await _services.PlanStore.TryGetPositionAsync(hash);
+            (string? ProviderId, IReadOnlyList<TtsVoice> Voices, IReadOnlyList<string> Devices) available = (null, [], []);
+            try { available = await voices; }
+            catch (Exception ex)
+            {
+                // The document can still be opened and browsed; pressing Play reports the provider's error.
+                Notes.Add($"The speech voices could not be listed: {ex.GetType().Name}: {ex.Message}");
+            }
 
             // ---- commit point: everything below describes the new document ----
             _snapshot = snapshot;
@@ -523,13 +647,14 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             committed = true;
 
             RebuildTranscript();
-            await LoadVoicesAsync();
+            ShowVoices(available);
 
-            var position = await _services.PlanStore.TryGetPositionAsync(hash);
             await Coordinator.LoadPlanAsync(plan, position);
             if (position is not null) ShowRestoredPreferences(position);
             // The starting passage is where the reader already is; only a move is worth saving.
             _lastSavedSegmentId = Coordinator.Snapshot.SegmentId;
+            RestoredSegmentId = position is { SegmentId: not null } && Coordinator.Snapshot.SegmentIndex > 0
+                ? Coordinator.Snapshot.SegmentId : null;
 
             StatusMessage = position is { SegmentId: not null }
                 ? $"Ready. Restored your position ({plan.SegmentCount} passages)."
@@ -552,10 +677,19 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
                 try { _services.Extraction.AttachDocument(previousPath); }
                 catch (Exception ex) { Notes.Add($"Could not restore the previous document for display: {ex.Message}"); }
             }
+            EndLoading();
             Busy = false;
             InvalidateSurface?.Invoke();
         }
     }
+
+    /// <summary>The extraction's own stage names, said the way the loading card says things.</summary>
+    private static string ExtractionStage(string stage) => stage switch
+    {
+        "Extracting text and geometry" => "Reading the pages",
+        "Loaded from cache" => "Reading the pages (already analysed)",
+        _ => stage,
+    };
 
     private void RebuildTranscript()
     {
@@ -566,18 +700,31 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             Transcript.Add(new TranscriptEntry(segment.Id, i++, segment.SpokenText, segment.IsMaths, segment.HasWarnings));
     }
 
-    private async Task LoadVoicesAsync()
+    /// <summary>
+    /// The speech provider in use, its voices and the audio devices. Listing voices starts the
+    /// speech model, so this runs on the thread pool; <see cref="ShowVoices"/> puts the result on
+    /// screen.
+    /// </summary>
+    private async Task<(string? ProviderId, IReadOnlyList<TtsVoice> Voices, IReadOnlyList<string> Devices)> ListVoicesAsync()
+    {
+        var provider = _services.SpeechProviders.Get(_services.CurrentSettings.SpeechProviderId)
+                       ?? await _services.SpeechProviders.FirstAvailableAsync().ConfigureAwait(false);
+        if (provider is null) return (null, [], []);
+        var voices = await provider.ListVoicesAsync().ConfigureAwait(false);
+        var devices = _services.AudioDevice.Enumerate()
+            .Select(d => $"{d.Id}: {d.Name}{(d.IsDefault ? " (default)" : "")}").ToList();
+        return (provider.ProviderId, voices, devices);
+    }
+
+    private void ShowVoices((string? ProviderId, IReadOnlyList<TtsVoice> Voices, IReadOnlyList<string> Devices) available)
     {
         Voices.Clear();
         AudioDevices.Clear();
-        var provider = _services.SpeechProviders.Get(_services.CurrentSettings.SpeechProviderId)
-                       ?? await _services.SpeechProviders.FirstAvailableAsync();
-        if (provider is null) return;
-        _voiceProviderId = provider.ProviderId;
+        if (available.ProviderId is null) return;
+        _voiceProviderId = available.ProviderId;
 
-        foreach (var voice in await provider.ListVoicesAsync()) Voices.Add(voice);
-        foreach (var device in _services.AudioDevice.Enumerate())
-            AudioDevices.Add($"{device.Id}: {device.Name}{(device.IsDefault ? " (default)" : "")}");
+        foreach (var voice in available.Voices) Voices.Add(voice);
+        foreach (string device in available.Devices) AudioDevices.Add(device);
 
         // Keep the voice already in use (from settings, or the reader's last choice); the provider's
         // default is only for a first run. Selecting the default unconditionally switched every
