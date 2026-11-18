@@ -137,6 +137,11 @@
             </DataTemplate>
           </ComboBox.ItemTemplate>
         </ComboBox>
+        <!-- Strength, offered only while a filter is on. -->
+        <Slider Width="90" Minimum="0" Maximum="1" SmallChange="0.05" LargeChange="0.25"
+                Value="{Binding ColourEffectIntensity}" IsVisible="{Binding HasColourEffect}"
+                VerticalAlignment="Center"
+                ToolTip.Tip="{Binding ColourEffectPercent, StringFormat=Filter strength: {0}%}" />
       </WrapPanel>
     </Border>
 

@@ -43,9 +43,6 @@ Since PR #10:
 
 In rough priority order:
 
-- **Seeking to a passage on another page.** Next or Previous across a page break shows the
-  preparing card, but the pulsing outline is drawn only on the page in view. Move the view to
-  the target page when the seek starts.
 - **Saving a restored position as a passage id.** When the plan changes (new layout model, a
   version bump), the saved id can point at a different passage. Store a page plus text-offset
   anchor and map it onto the new plan.
@@ -54,7 +51,6 @@ In rough priority order:
   transcription: about 66 s for a lead-in. That is the main reason model time is close to
   narration time. Options: a smaller thinking budget for the first attempt, or transcribing in
   parallel when the server has a second slot. Measure with `rail-narrator-mathbench`.
-- **Colour filter strength.** `ColourEffectIntensity` is a setting with no control in the window.
 - **Proof-read a sample of rule readings against the printed equations**, symbol by symbol. So
   far they have been checked only for leftover notation.
 - **Identify the flaky Audio test.** It failed once in a full-solution run while the LLM was

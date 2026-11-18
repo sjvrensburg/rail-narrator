@@ -74,6 +74,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         _followMode = services.CurrentSettings.FollowMode;
         _selectedVoiceId = services.CurrentSettings.KokoroVoiceId ?? services.CurrentSettings.ZonosSpeakerId;
         _highlightAlpha = services.CurrentSettings.HighlightAlpha;
+        _colourEffectIntensity = Math.Clamp(services.CurrentSettings.ColourEffectIntensity, 0, 1);
         _colourEffect = Enum.TryParse<ColourEffect>(services.CurrentSettings.ColourEffect, ignoreCase: true, out var effect)
             ? effect : ColourEffect.None;
         _highlightHighContrast = services.CurrentSettings.HighlightHighContrast;
@@ -256,6 +257,26 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public IReadOnlyList<ColourEffectOption> ColourEffects { get; } =
         ColourEffectExtensions.All.Select(e => new ColourEffectOption(e.Effect, e.Effect.DisplayName(), e.Description)).ToList();
 
+    private double _colourEffectIntensity = 1.0;
+
+    /// <summary>True when a colour filter is on, so its strength can be offered.</summary>
+    public bool HasColourEffect => _colourEffect != ColourEffect.None;
+
+    /// <summary>Strength of the colour filter, 0 to 1, as RailReader's intensity.</summary>
+    public double ColourEffectIntensity
+    {
+        get => _colourEffectIntensity;
+        set
+        {
+            double clamped = Math.Clamp(value, 0, 1);
+            if (!Set(ref _colourEffectIntensity, clamped)) return;
+            OnPropertyChanged(nameof(ColourEffectPercent));
+            PersistPreference(s => s with { ColourEffectIntensity = clamped });
+        }
+    }
+
+    public int ColourEffectPercent => (int)Math.Round(_colourEffectIntensity * 100);
+
     /// <summary>The View menu's colour-filter entry, naming the filter in use.</summary>
     public string ColourFilterMenuHeader => $"_Colour filter: {_colourEffect.DisplayName()}";
 
@@ -284,6 +305,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             if (!Set(ref _colourEffect, value)) return;
             OnPropertyChanged(nameof(SelectedColourEffect));
             OnPropertyChanged(nameof(ColourFilterMenuHeader));
+            OnPropertyChanged(nameof(HasColourEffect));
             PersistPreference(s => s with { ColourEffect = value.ToString() });
         }
     }
