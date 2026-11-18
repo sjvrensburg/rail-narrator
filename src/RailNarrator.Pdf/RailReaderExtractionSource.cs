@@ -460,16 +460,26 @@ public sealed class RailReaderExtractionSource : IExtractionSource, IDisposable
                 (int)Math.Clamp(Math.Ceiling(region.Bottom * sy), 1, pxH));
             if (pixelRect.Width <= 0 || pixelRect.Height <= 0) return (ReadOnlyMemory<byte>?)null;
 
-            using var bitmap = new SKBitmap(new SKImageInfo(pxW, pxH, SKColorType.Rgb888x, SKAlphaType.Opaque));
-            unsafe
+            // The pixmap is packed 3-byte RGB, which Skia has no colour type for (Rgb888x is four
+            // bytes a pixel: installing this buffer as it failed, and every crop threw). Copy just
+            // the crop's rows out as RGBA.
+            if (rgb.Length < pxW * pxH * 3) return (ReadOnlyMemory<byte>?)null;
+            int w = pixelRect.Width, h = pixelRect.Height;
+            var rgba = new byte[w * h * 4];
+            for (int y = 0; y < h; y++)
             {
-                fixed (byte* ptr = rgb) bitmap.InstallPixels(bitmap.Info, (IntPtr)ptr, pxW * 3);
-                using var surface = SKSurface.Create(new SKImageInfo(pixelRect.Width, pixelRect.Height, SKColorType.Rgba8888, SKAlphaType.Premul));
-                surface.Canvas.DrawBitmap(bitmap, pixelRect, new SKRect(0, 0, pixelRect.Width, pixelRect.Height));
-                using var image = surface.Snapshot();
-                using var data = image.Encode(SKEncodedImageFormat.Png, 100);
-                return data is null ? null : new ReadOnlyMemory<byte>(data.ToArray());
+                int src = ((pixelRect.Top + y) * pxW + pixelRect.Left) * 3, dst = y * w * 4;
+                for (int x = 0; x < w; x++, src += 3, dst += 4)
+                {
+                    rgba[dst] = rgb[src];
+                    rgba[dst + 1] = rgb[src + 1];
+                    rgba[dst + 2] = rgb[src + 2];
+                    rgba[dst + 3] = 255;
+                }
             }
+            using var image = SKImage.FromPixelCopy(new SKImageInfo(w, h, SKColorType.Rgba8888, SKAlphaType.Opaque), rgba, w * 4);
+            using var data = image?.Encode(SKEncodedImageFormat.Png, 100);
+            return data is null ? null : new ReadOnlyMemory<byte>(data.ToArray());
         }, ct).ConfigureAwait(false);
     }
 

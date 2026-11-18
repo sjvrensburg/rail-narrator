@@ -113,8 +113,14 @@ Recorded in `docs/decisions/`, each with the measurement that drove it:
 
 - **No notation reaches a speech engine.** A model's interpretation is rejected if it
   still carries symbols, Greek letters or variable names ("h t"), gets one repair
-  turn, and is then refused: a sentence is read as printed, an equation becomes an
-  explicit "this equation could not be read reliably" announcement. Tested.
+  turn, and is then refused. The model is then asked only to transcribe the passage
+  from the page image, and a rule-based reader says that notation aloud in words
+  ("h sub t equals alpha sub zero plus the sum from i equals one to q of …"),
+  labelled as saying the notation rather than its meaning. If that fails too, a
+  sentence is read as printed and an equation becomes an explicit "this equation
+  could not be read reliably" announcement. Tested.
+- **A short wait before the first word.** Play waits up to 20 s for about a minute
+  of narration to be ready, so maths interpretation stays ahead of the voice.
 - **No invented word timings.** Without timing evidence the highlight covers the
   whole sentence or equation and the diagnostics say so. Interpolating by character
   count would look measured and be wrong.

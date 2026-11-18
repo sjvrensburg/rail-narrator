@@ -52,6 +52,31 @@ public sealed class ExtractionTests
     }
 
     [Fact]
+    public async Task ACropOfAPassageIsAPngOfItsInk()
+    {
+        // Every crop used to throw (an RGB pixmap installed as a four-byte format), and the maths
+        // interpreter, which swallows a failed crop, silently worked from the text layer alone.
+        string path = SyntheticPdf.WriteSingleColumn(SyntheticPdf.TempPath("crop"), ["The quick brown fox jumps over the lazy dog."]);
+        using var source = new RailReaderExtractionSource();
+        source.WithBackend(ExtractionBackend.ModelFree());
+        var snapshot = await source.ExtractAsync(new ExtractionRequest(path, null, null, ModelFreeOptions, NarrationFilterSettings.Default));
+        source.AttachDocument(path);
+        var line = snapshot.Pages[0]!.Lines[0];
+
+        var png = await source.RenderCropPngAsync(snapshot.Identity, 0, line.Rect, 800);
+
+        Assert.NotNull(png);
+        using var bitmap = SkiaSharp.SKBitmap.Decode(png.Value.ToArray());
+        Assert.NotNull(bitmap);
+        Assert.InRange(bitmap.Width, 790, 810);
+        int dark = 0;
+        for (int y = 0; y < bitmap.Height; y++)
+            for (int x = 0; x < bitmap.Width; x++)
+                if (bitmap.GetPixel(x, y).Red < 100) dark++;
+        Assert.True(dark > bitmap.Width, $"expected the line's ink in the crop, found {dark} dark pixels");
+    }
+
+    [Fact]
     public async Task Snapshot_StampsCoordinateFrameAndIdentity()
     {
         string path = SyntheticPdf.WriteSingleColumn(SyntheticPdf.TempPath("frame"), ["Some text on the page."]);

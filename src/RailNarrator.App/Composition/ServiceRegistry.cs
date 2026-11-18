@@ -120,10 +120,17 @@ public sealed class ServiceRegistry : IAsyncDisposable
             // images. A reasoning model spends tokens thinking before it answers, hence the budget.
             interpreter = new OpenAiCompatibleMathInterpreter(new MathEndpointSettings(
                 settings.MathLlmBaseUrl, settings.MathLlmModel, settings.ResolveMathApiKey(),
-                Temperature: 0.2, MaxTokens: 4000, MaxRetries: 1, RequestTimeout: TimeSpan.FromMinutes(3),
-                DisableThinking: settings.MathLlmDisableThinking));
+                Temperature: 0.2, MaxTokens: 4000, MaxRetries: 1, RequestTimeout: TimeSpan.FromMinutes(3)),
+                thinking: settings.EffectiveMathThinking switch
+                {
+                    MathThinkingPolicy.Off => MathThinking.Off,
+                    MathThinkingPolicy.Always => MathThinking.Always,
+                    _ => MathThinking.EquationsOnly,
+                });
+            // A refused interpretation is read mechanically from the same model's transcription of
+            // the passage image, rather than from the garbled text layer.
             segmentResolver = new MathInterpretationResolver(interpreter, extraction, new DiskTextCache(),
-                PlannerOptionsFor(settings, interpret: true));
+                PlannerOptionsFor(settings, interpret: true), reader: (IMathReader)interpreter);
         }
         else
         {
