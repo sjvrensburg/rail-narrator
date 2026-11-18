@@ -1,3 +1,4 @@
+using RailReader.Core.Models;
 using System.Collections.ObjectModel;
 using Avalonia.Controls;
 using Avalonia.Platform.Storage;
@@ -60,9 +61,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     private double _zoom = 1.0;
     private string? _selectedVoiceId;
     private double _playbackRate = 1.0;
-    private FollowMode _followMode = FollowMode.KeepVisible;
+    private FollowMode _followMode = FollowMode.Follow;
     private bool _followSuspended;
-    private bool _transcriptVisible = true;
+    private bool _transcriptVisible;
     private MathsReview? _mathsReview;
 
     public MainViewModel(ServiceRegistry services)
@@ -73,6 +74,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         _followMode = services.CurrentSettings.FollowMode;
         _selectedVoiceId = services.CurrentSettings.KokoroVoiceId ?? services.CurrentSettings.ZonosSpeakerId;
         _highlightAlpha = services.CurrentSettings.HighlightAlpha;
+        _colourEffect = Enum.TryParse<ColourEffect>(services.CurrentSettings.ColourEffect, ignoreCase: true, out var effect)
+            ? effect : ColourEffect.None;
         _highlightHighContrast = services.CurrentSettings.HighlightHighContrast;
 
         foreach (string note in services.StartupNotes) Notes.Add(note);
@@ -85,8 +88,12 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         OpenDocument = new RelayCommand(() => OpenDocumentAsync(TopLevelProvider?.Invoke()), () => !Busy, OnCommandError);
         Play = new RelayCommand(() => _services.Coordinator.PlayAsync(), () => Plan is { SegmentCount: > 0 }, OnCommandError);
         Pause = new RelayCommand(() => _services.Coordinator.PauseAsync(), () => _playback.State == PlaybackState.Playing, OnCommandError);
-        Stop = new RelayCommand(() => _services.Coordinator.StopAsync(),
-            () => Plan is { SegmentCount: > 0 } && _playback.State is not PlaybackState.Idle, OnCommandError);
+        // One button: play, pause, or — while a start is still waiting for its audio — cancel that
+        // start. Pausing then would not stop it: the start would play when the audio arrived.
+        PlayPause = new RelayCommand(() => IsPreparing || _playback.State == PlaybackState.Seeking
+                ? _services.Coordinator.StopAsync()
+                : _playback.State == PlaybackState.Playing ? _services.Coordinator.PauseAsync() : _services.Coordinator.PlayAsync(),
+            () => Plan is { SegmentCount: > 0 }, OnCommandError);
         Next = new RelayCommand(() => _services.Coordinator.NextSegmentAsync(), () => Plan is { SegmentCount: > 0 }, OnCommandError);
         Previous = new RelayCommand(() => _services.Coordinator.PreviousSegmentAsync(), () => Plan is { SegmentCount: > 0 }, OnCommandError);
         Replay = new RelayCommand(() => _services.Coordinator.ReplaySegmentAsync(), () => Plan is { SegmentCount: > 0 }, OnCommandError);
@@ -146,8 +153,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             Notes.Add($"{what}: {ex.GetType().Name}: {ex.Message}");
         });
 
-    /// <summary>Raised when the camera should move to a page and region.</summary>
-    public event Action<int, IReadOnlyList<PageRect>>? CameraRequested;
+    /// <summary>Raised when the camera should follow the reading to a cue on a page.</summary>
+    public event Action<FollowTarget>? CameraRequested;
 
     public ObservableCollection<string> Notes { get; } = [];
     public ObservableCollection<TranscriptEntry> Transcript { get; } = [];
@@ -169,7 +176,29 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public string StatusMessage { get => _statusMessage; private set => Set(ref _statusMessage, value); }
     public bool Busy { get => _busy; private set { if (Set(ref _busy, value)) RefreshCommands(); } }
 
-    public PlaybackSnapshot Playback { get => _playback; private set => Set(ref _playback, value); }
+    public PlaybackSnapshot Playback
+    {
+        get => _playback;
+        private set
+        {
+            if (!Set(ref _playback, value)) return;
+            OnPropertyChanged(nameof(IsPreparing));
+            OnPropertyChanged(nameof(PlayButtonText));
+            OnPropertyChanged(nameof(PreparationText));
+        }
+    }
+
+    /// <summary>True while a start the reader asked for is waiting on a passage's audio.</summary>
+    public bool IsPreparing => _playback.Preparation is not null;
+
+    /// <summary>The play/pause button's caption: what pressing it will do now.</summary>
+    public string PlayButtonText => _playback.Preparation is not null || _playback.State is PlaybackState.Seeking
+        ? "⏹ Cancel" : _playback.State == PlaybackState.Playing ? "⏸ Pause" : "▶ Play";
+
+    /// <summary>Headline of the on-page preparing card: which passage, and what it is waiting on.</summary>
+    public string? PreparationText => _playback.Preparation is { } p
+        ? $"Preparing passage {p.SegmentIndex + 1} of {_playback.SegmentCount}\n{p.Describe()}"
+        : null;
 
     public int SelectedTranscriptIndex
     {
@@ -207,14 +236,57 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         set
         {
             if (!Set(ref _followMode, value)) return;
+            OnPropertyChanged(nameof(FollowLabel));
             Coordinator.SetFollowMode(value);
             PersistPreference(s => s with { FollowMode = value });
         }
     }
 
+    /// <summary>The follow toggle's caption.</summary>
+    public string FollowLabel => _followMode == FollowMode.Off ? "Follow: off" : "Follow: on";
+
     public bool FollowSuspended { get => _followSuspended; private set => Set(ref _followSuspended, value); }
 
+    /// <summary>The script, maths review and diagnostics panel. Hidden unless asked for: a listener does not need the script.</summary>
     public bool TranscriptVisible { get => _transcriptVisible; set => Set(ref _transcriptVisible, value); }
+
+    private ColourEffect _colourEffect;
+
+    /// <summary>RailReader's colour filters, applied to the page raster, with their display names.</summary>
+    public IReadOnlyList<ColourEffectOption> ColourEffects { get; } =
+        ColourEffectExtensions.All.Select(e => new ColourEffectOption(e.Effect, e.Effect.DisplayName(), e.Description)).ToList();
+
+    /// <summary>The View menu's colour-filter entry, naming the filter in use.</summary>
+    public string ColourFilterMenuHeader => $"_Colour filter: {_colourEffect.DisplayName()}";
+
+    /// <summary>
+    /// Moves to the next colour filter, wrapping round to none: RailReader2's C key. Says which one
+    /// is now on, since the change can be subtle (amber at low intensity).
+    /// </summary>
+    public void CycleColourEffect()
+    {
+        var all = ColourEffects.Select(o => o.Effect).ToList();
+        ColourEffect = all[(all.IndexOf(_colourEffect) + 1) % all.Count];
+        StatusMessage = $"Colour filter: {_colourEffect.DisplayName()} (C for the next)";
+    }
+
+    public ColourEffectOption? SelectedColourEffect
+    {
+        get => ColourEffects.FirstOrDefault(o => o.Effect == _colourEffect);
+        set { if (value is not null) ColourEffect = value.Effect; }
+    }
+
+    public ColourEffect ColourEffect
+    {
+        get => _colourEffect;
+        set
+        {
+            if (!Set(ref _colourEffect, value)) return;
+            OnPropertyChanged(nameof(SelectedColourEffect));
+            OnPropertyChanged(nameof(ColourFilterMenuHeader));
+            PersistPreference(s => s with { ColourEffect = value.ToString() });
+        }
+    }
 
     public TtsVoice? SelectedVoice
     {
@@ -281,7 +353,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public RelayCommand OpenDocument { get; }
     public RelayCommand Play { get; }
     public RelayCommand Pause { get; }
-    public RelayCommand Stop { get; }
+    public RelayCommand PlayPause { get; }
     public RelayCommand Next { get; }
     public RelayCommand Previous { get; }
     public RelayCommand Replay { get; }
@@ -479,6 +551,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     {
         if (position.PlaybackRate > 0) Set(ref _playbackRate, position.PlaybackRate, nameof(PlaybackRate));
         Set(ref _followMode, position.FollowMode, nameof(FollowMode));
+        OnPropertyChanged(nameof(FollowLabel));
         if (position.VoiceId is { } id && Voices.FirstOrDefault(v => v.Id == id) is { } voice)
         {
             Set(ref _selectedVoiceId, id, nameof(SelectedVoiceId));
@@ -507,14 +580,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     }
 
     private void CycleFollowMode()
-    {
-        FollowMode = FollowMode switch
-        {
-            FollowMode.Off => FollowMode.KeepVisible,
-            FollowMode.KeepVisible => FollowMode.ReadingRail,
-            _ => FollowMode.Off,
-        };
-    }
+        => FollowMode = FollowMode == FollowMode.Off ? FollowMode.Follow : FollowMode.Off;
 
     private DispatcherTimer? _followResumeTimer;
 
@@ -618,11 +684,11 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         if (Dispatcher.UIThread.CheckAccess()) Apply(); else Dispatcher.UIThread.Post(Apply);
     }
 
-    private void OnFollowRequested(ActiveCue cue, IReadOnlyList<PageRect> rects, int page)
+    private void OnFollowRequested(ActiveCue cue, FollowTarget target)
     {
         void Apply()
         {
-            if (cue.Generation == Coordinator.Generation) CameraRequested?.Invoke(page, rects);
+            if (cue.Generation == Coordinator.Generation) CameraRequested?.Invoke(target);
         }
         if (Dispatcher.UIThread.CheckAccess()) Apply(); else Dispatcher.UIThread.Post(Apply);
     }
@@ -803,7 +869,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     {
         Play.RaiseCanExecuteChanged();
         Pause.RaiseCanExecuteChanged();
-        Stop.RaiseCanExecuteChanged();
+        PlayPause.RaiseCanExecuteChanged();
         Next.RaiseCanExecuteChanged();
         Previous.RaiseCanExecuteChanged();
         Replay.RaiseCanExecuteChanged();
@@ -825,4 +891,10 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         _services.Coordinator.FollowRequested -= OnFollowRequested;
         await SavePositionAsync();
     }
+}
+
+/// <summary>A colour filter as the toolbar offers it.</summary>
+public sealed record ColourEffectOption(ColourEffect Effect, string Name, string Description)
+{
+    public override string ToString() => Name;
 }

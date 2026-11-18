@@ -134,9 +134,15 @@ public sealed record RailNarratorSettings
 
     public string? AudioDeviceId { get; init; }
     public double PlaybackRate { get; init; } = 1.0;
-    public FollowMode FollowMode { get; init; } = FollowMode.KeepVisible;
+    public FollowMode FollowMode { get; init; } = FollowMode.Follow;
     public double PreferredZoom { get; init; } = 1.0;
     public bool ReduceMotion { get; init; }
+
+    /// <summary>RailReader colour filter for the page, by name: None, HighContrast, HighVisibility, Amber or Invert.</summary>
+    public string ColourEffect { get; init; } = "None";
+
+    /// <summary>Strength of the colour filter, 0 to 1.</summary>
+    public double ColourEffectIntensity { get; init; } = 1.0;
 
     /// <summary>
     /// Seconds without scrolling, dragging or turning pages after which following resumes by itself.
@@ -171,7 +177,7 @@ public sealed class SettingsStore
     private static readonly JsonSerializerOptions Options = new()
     {
         WriteIndented = true,
-        Converters = { new JsonStringEnumConverter() },
+        Converters = { new FollowModeJsonConverter(), new JsonStringEnumConverter() },
         PropertyNameCaseInsensitive = true,
     };
 
@@ -236,7 +242,7 @@ public sealed class DiskSpeechAssetStore : ISpeechAssetStore
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = false,
-        Converters = { new JsonStringEnumConverter() },
+        Converters = { new FollowModeJsonConverter(), new JsonStringEnumConverter() },
     };
 
     private readonly string _root;
@@ -356,7 +362,7 @@ public sealed class DiskPlanStore : IPlanStore
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = false,
-        Converters = { new JsonStringEnumConverter() },
+        Converters = { new FollowModeJsonConverter(), new JsonStringEnumConverter() },
     };
 
     private readonly string _root;
@@ -414,4 +420,23 @@ public enum MathThinkingPolicy
     Off,
     EquationsOnly,
     Always,
+}
+
+/// <summary>
+/// Reads <see cref="FollowMode"/> tolerantly. The two old following modes, <c>KeepVisible</c> and
+/// <c>ReadingRail</c>, became one; a settings file or saved position naming either must still load
+/// (as <see cref="FollowMode.Follow"/>) rather than fail and reset every preference to its default.
+/// </summary>
+public sealed class FollowModeJsonConverter : JsonConverter<FollowMode>
+{
+    public override FollowMode Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+    {
+        if (reader.TokenType == JsonTokenType.Number)
+            return reader.TryGetInt32(out int n) && n == 0 ? FollowMode.Off : FollowMode.Follow;
+        string? name = reader.GetString();
+        return string.Equals(name, nameof(FollowMode.Off), StringComparison.OrdinalIgnoreCase) ? FollowMode.Off : FollowMode.Follow;
+    }
+
+    public override void Write(Utf8JsonWriter writer, FollowMode value, JsonSerializerOptions options)
+        => writer.WriteStringValue(value.ToString());
 }

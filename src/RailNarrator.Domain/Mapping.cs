@@ -40,6 +40,23 @@ public sealed class SourceMap
 
     public NarrationSegment? Segment(string segmentId) => _segments.GetValueOrDefault(segmentId);
 
+    /// <summary>
+    /// Every box of the reading units a segment speaks, on one page: the paragraph around a
+    /// sentence, so highlight line heights can be made uniform across it.
+    /// </summary>
+    public IReadOnlyList<PageRect> UnitRects(string segmentId, int pageIndex)
+    {
+        if (Segment(segmentId) is not { } segment) return [];
+        var rects = new List<PageRect>();
+        foreach (var unitId in segment.ReadingUnitIds)
+        {
+            if (Plan.Unit(unitId) is not { } unit) continue;
+            foreach (var a in unit.Anchors)
+                if (a.PageIndex == pageIndex) rects.AddRange(a.Rects.Where(r => !r.IsEmpty));
+        }
+        return rects;
+    }
+
     /// <summary>Every anchor id the plan knows. Used to reject a model response that cites invented sources.</summary>
     public IReadOnlySet<string> KnownAnchorIds => _anchors.Keys.ToHashSet();
 
@@ -288,6 +305,26 @@ public sealed class CueScheduler
             TimedCue.ForWholeClip(clip.Asset.FrameCount, fallbackAnchors, fallbackGranularity),
             fallbackAnchors, fallbackGranularity, SpokenRange: null,
             clip.Asset.TimingProvenance, [.. clip.Diagnostics, "no sub-clip timing; highlighting the whole unit"]);
+    }
+
+    /// <summary>
+    /// For a word cue: the next aligned word's anchors and how far the clock is from this word's
+    /// measured start to the next word's measured start (to this word's end when it is the last).
+    /// Null when the clip has no word timings. Both ends of the interval are measured; this is for
+    /// moving the camera between them, never for placing a highlight.
+    /// </summary>
+    public (IReadOnlyList<string> NextAnchorIds, double Progress)? WordProgress(string segmentId, TimedCue cue, long sampleInClip)
+    {
+        ArgumentNullException.ThrowIfNull(cue);
+        ClipTiming? clip;
+        lock (_gate) _clips.TryGetValue(segmentId, out clip);
+        if (clip is null || clip.Cues.Count == 0) return null;
+        var next = clip.Cues.FirstOrDefault(c => c.StartSample > cue.StartSample);
+        long end = next?.StartSample ?? cue.EndSample;
+        long span = end - cue.StartSample;
+        double progress = span <= 0 ? 0 : Math.Clamp((double)(sampleInClip - cue.StartSample) / span, 0, 1);
+        IReadOnlyList<string> anchors = next is null ? [] : next.AnchorIds.Where(id => _sourceMap.Anchor(id) is not null).ToList();
+        return (anchors, progress);
     }
 
     private sealed record ClipTiming(SpeechAsset Asset, IReadOnlyList<TimedCue> Cues, IReadOnlyList<string> Diagnostics);

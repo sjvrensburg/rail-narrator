@@ -42,19 +42,27 @@ public partial class MainWindow : Window
                 _viewModel.Status($"Narration is ready, but the page could not be displayed: {ex.Message}");
             }
         });
+        Surface.SetColourEffect(_viewModel.ColourEffect, services.CurrentSettings.ColourEffectIntensity);
         _viewModel.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName is nameof(MainViewModel.HighlightAlpha) or nameof(MainViewModel.HighlightHighContrast))
                 Surface.SetHighlightStyle(BuildHighlightStyle());
+            if (e.PropertyName is nameof(MainViewModel.ColourEffect))
+                Surface.SetColourEffect(_viewModel.ColourEffect, _services.CurrentSettings.ColourEffectIntensity);
         };
         _viewModel.Coordinator.ActiveCueChanged += cue =>
         {
             void Apply()
             {
                 if (cue.Generation != _viewModel.Coordinator.Generation) return;
-                var pages = _viewModel.Coordinator.Scheduler?.SourceMap.HighlightRectsByPage(cue.AnchorIds);
-                if (pages is null) { Surface.ClearHighlight(); return; }
-                Surface.SetHighlightMultiPage(pages);
+                var map = _viewModel.Coordinator.Scheduler?.SourceMap;
+                var pages = map?.HighlightRectsByPage(cue.AnchorIds);
+                if (map is null || pages is null) { Surface.ClearHighlight(); return; }
+                // One box height per line, the same across the paragraph: a box sized to each word's
+                // ink jumps up and down as the reading moves along the line.
+                Surface.SetHighlightMultiPage(pages.ToDictionary(
+                    p => p.Key,
+                    p => HighlightLines.Uniform(p.Value, map.UnitRects(cue.SegmentId, p.Key))));
             }
             if (Avalonia.Threading.Dispatcher.UIThread.CheckAccess()) Apply();
             else Avalonia.Threading.Dispatcher.UIThread.Post(Apply);
@@ -93,6 +101,14 @@ public partial class MainWindow : Window
     private void OnNextPageClicked(object? sender, RoutedEventArgs e) => Surface.TurnPage(+1);
 
     private void OnFitClicked(object? sender, RoutedEventArgs e) => Surface.FitToWidth();
+
+    private void OnCycleColourFilterClicked(object? sender, RoutedEventArgs e) => _viewModel.CycleColourEffect();
+
+    private void OnColourFilterClicked(object? sender, RoutedEventArgs e)
+    {
+        if (sender is MenuItem { Tag: string name } && Enum.TryParse<RailReader.Core.Models.ColourEffect>(name, out var effect))
+            _viewModel.ColourEffect = effect;
+    }
     private void OnCloseClicked(object? sender, RoutedEventArgs e) => Close();
 
     private void OnMathsEditClicked(object? sender, RoutedEventArgs e)
@@ -127,14 +143,15 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Space and Escape, handled before any child control sees them.
+    /// Space, C and Escape, handled before any child control sees them.
     /// </summary>
     /// <remarks>
     /// These were window key bindings, which fire wherever focus is: typing a space into the maths
     /// correction box started playback, and pressing Escape to dismiss a menu stopped it. Handling
     /// them here lets the context decide. Space toggles play/pause unless a text box has focus, and
     /// does so even when a toolbar button is focused (a button would otherwise swallow it and click
-    /// itself). Escape stops playback only when it is not being used to close a menu or drop-down.
+    /// itself); while a start is waiting for audio it cancels that start. Escape pauses playback
+    /// only when it is not being used to close a menu or drop-down.
     /// </remarks>
     private void OnPreviewKeyDown(object? sender, KeyEventArgs e)
     {
@@ -144,8 +161,14 @@ public partial class MainWindow : Window
         if (e.Key == Key.Space)
         {
             if (focused is TextBox || MainMenu.IsOpen || IsInsideOpenDropDown(focused)) return;
-            if (_viewModel.Playback.State == PlaybackState.Playing) _viewModel.Pause.Execute(null);
-            else _viewModel.Play.Execute(null);
+            if (_viewModel.PlayPause.CanExecute(null)) _viewModel.PlayPause.Execute(null);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.C)
+        {
+            // RailReader2's key for cycling the colour filter. Not while typing, or in a menu.
+            if (focused is TextBox || MainMenu.IsOpen || IsInsideOpenDropDown(focused)) return;
+            _viewModel.CycleColourEffect();
             e.Handled = true;
         }
         else if (e.Key == Key.Escape)
@@ -153,8 +176,11 @@ public partial class MainWindow : Window
             if (MainMenu.IsOpen || IsInsideOpenDropDown(focused)) return;
             // The PDF surface uses Escape to resume following; a text box uses it to give up focus.
             if (focused is PdfSurface or TextBox) return;
-            if (_viewModel.Stop.CanExecute(null)) _viewModel.Stop.Execute(null);
-            e.Handled = true;
+            if (_viewModel.Playback.State == PlaybackState.Playing && _viewModel.Pause.CanExecute(null))
+            {
+                _viewModel.Pause.Execute(null);
+                e.Handled = true;
+            }
         }
     }
 

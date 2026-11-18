@@ -7,11 +7,11 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 416 passing, 6 opt-in skips, 0 warnings
+## Verified by automated tests — 435 passing, 6 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
-| `RailNarrator.Domain.Tests` | 206 | The camera leads when it moves (the cue goes to the top and left of the safe zone, not just inside its edge); Abbreviations expanded only as whole words ("Chap.", "overlap.", "p.adjust" untouched); maths italic letters (U+1D400 block, ℎ) mark their sentence as maths and are spoken as plain letters and Greek names, mapped back to both UTF-16 units; silent marks not counted as words; a zoom re-checks the camera at once unless following is suspended; Decimals and signed numbers after a year cue ("from 0.20", "by 0.75") read as numbers, not handed to the year reading; Play waits for the maths ahead (and starts anyway after the cap), a refused interpretation read mechanically from a transcription and labelled, a failed page crop reported, Front-matter metadata skipped (body sentences that start the same way kept), A lead-in sentence and its equation interpreted as one passage, Citation markers left out (and brackets that are content kept), regenerate re-asks the model, Maths left pending with an honest fallback, interpreted once with surrounding definitions and cached, spoken by the coordinator; Layout roles (model formulas trusted over geometry, display lines merged, headings kept apart, inline maths kept in its sentence, tables announced, publisher cover sheets skipped), years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
+| `RailNarrator.Domain.Tests` | 220 | One gliding follow mode: the reading line held at the reading height (the line's, not the word's, so the view does not bob), a line wider than the view panned between aligned words at their measured pace, starting with the line's start 20 % in from the left and ending with its end near the middle, a new line reached by a quicker carriage-return glide, the frame-loop follow target present only while playing and following; highlight boxes given one height per line across the paragraph, the other column not taken as part of the line, a sentence or equation cue without word timing framed at its start and held (never panned at a guessed rate), a page change cut rather than glided, the glide eased without overshoot at 20–144 fps, keeping its speed when retargeted and bounded after a stalled frame; a seek to an unprepared passage reports its stage (interpreting, loading, synthesising, timing words) and elapsed time and clears when it plays, a prepared passage starts with no wait reported; Abbreviations expanded only as whole words ("Chap.", "overlap.", "p.adjust" untouched); maths italic letters (U+1D400 block, ℎ) mark their sentence as maths and are spoken as plain letters and Greek names, mapped back to both UTF-16 units; silent marks not counted as words; a zoom re-checks the camera at once unless following is suspended; Decimals and signed numbers after a year cue ("from 0.20", "by 0.75") read as numbers, not handed to the year reading; Play waits for the maths ahead (and starts anyway after the cap), a refused interpretation read mechanically from a transcription and labelled, a failed page crop reported, Front-matter metadata skipped (body sentences that start the same way kept), A lead-in sentence and its equation interpreted as one passage, Citation markers left out (and brackets that are content kept), regenerate re-asks the model, Maths left pending with an honest fallback, interpreted once with surrounding definitions and cached, spoken by the coordinator; Layout roles (model formulas trusted over geometry, display lines merged, headings kept apart, inline maths kept in its sentence, tables announced, publisher cover sheets skipped), years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
 | `RailNarrator.Pdf.Tests` | 20 (+3 opt-in) | Layout analysis that fails to start, or fails mid-document, finishes on the CPU fallback from the page that failed and says so once, and the source then reports it so the snapshot is not cached under the GPU key; opt-in, the `Cpu` setting never uses the GPU, and (`RN_WEBGPU_INTEGRATION=1`) the GPU gives the same blocks, kinds, reading units and geometry within 0.1 pt as the CPU; A passage crop is a PNG of its ink; **Real PDFs** through the real RailReaderCore pipeline, including a cached snapshot building the same plan as a fresh one; opt-in, the real PP-DocLayoutV3 model through the adapter |
 | `RailNarrator.Speech.Tests` | 36 (+2 opt-in) | Opt-in, real Kokoro speech holding acronyms and words the dictionary lacks aligned word by word; PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
 | `RailNarrator.Audio.Tests` | 39 | Resampler (polyphase path equal to the direct sinc filter on four rate pairs), time-stretcher (fast grain search equal to the direct search at three rates), playback engine against a controllable fake device, engine lock ordering, coordinator-plus-engine transition stress |
@@ -584,3 +584,41 @@ threads meeting.
     (`FollowAutoResumeSeconds`, 0 to keep the old behaviour), and the status bar says so. This was
     checked in the window: a wheel scroll during playback showed Resume following, and 5.9 s later
     the camera moved back to the word being read.
+
+51. **Following moved in jumps, in two modes that differed little.** "Keep visible" and "Reading
+    rail" both left the view still until the cue crossed the edge of a safe zone, then moved it at
+    once; the planned animation time was never used. They are replaced by one mode, modelled on
+    RailReader's auto-scroll: the line being read is held at the reading height, a line wider than
+    the view is panned along with the aligned words, and every move is a critically damped glide
+    stepped by the compositor's frame time. Without word timing (maths, interpreted passages) the
+    passage start is framed and held. Settings saved with the old names load as the new mode.
+    Covered by the tests above; **not yet watched in the running app.**
+52. **A wait for a passage said only "Seeking".** Clicking a passage a few pages ahead, or pressing
+    Play before its maths was interpreted, could wait for a minute with that one word in the status
+    bar. The wait now names its stage and elapsed time ("Synthesising speech · 4 s"), a card over
+    the page says which passage is being prepared, the passage pulses with a dashed outline, and
+    the Play button reads "Preparing…". The coordinator part is covered by tests; **the card and
+    outline have not yet been watched in the running app.**
+53. **Following, refined after first use.** Panning along a wide line stepped from word to word,
+    because each word was a new target. While audio plays the camera now follows the media clock
+    every frame, moving between two aligned words' positions over the measured time between their
+    starts (camera only; the highlight still changes at the measured boundary), and a move to a new
+    line uses a quicker glide (0.14 s against 0.3 s). The view may now go half a screen past a wide
+    page's left or right edge, so a line starts 20 % in from the left and the camera stops with
+    its end near the middle. Highlight boxes no longer change height from word to word: each takes
+    its line's top and the paragraph's typical line height. Covered by the tests above; the motion
+    has **not yet been watched in the running app.**
+54. **The window was simplified.** One Play/Pause button (Cancel while a start is waiting for
+    audio) replaces Play, Pause and Stop; Escape pauses. The script, maths review and diagnostics
+    panel is hidden unless chosen in View; the fixed zoom levels moved to the View menu; the status
+    bar shows a progress bar instead of the raw state. RailReader's colour filters (high contrast,
+    high visibility, amber, invert) are offered on the toolbar, applied to the page raster with
+    Core's shaders and saved as `ColourEffect` / `ColourEffectIntensity`; on a filtered page the
+    highlight uses the colour RailReader pairs with that filter. Checked under Xvfb with a synthetic
+    two-column PDF: the window loads, and High Visibility renders yellow on black. Playback was not
+    exercised there (no speech model in the isolated directories).
+55. **The colour filter was hard to find.** It was an unlabelled drop-down at the end of the
+    toolbar, and RailReader2's C key did nothing. The drop-down is now labelled "Colour:", View has
+    a "Colour filter: <current>" submenu, and C cycles the filters as in RailReader2, saying which
+    one is on in the status bar. Checked under Xvfb with XTEST: two presses of C went from None to
+    High Contrast to High Visibility, the setting was saved, and the View menu named the filter.

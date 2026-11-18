@@ -224,119 +224,281 @@ public sealed class NarrationPlannerTests
 }
 
 /// <summary>
-/// The camera must move only when it has to, only as far as it has to, and never against the user.
+/// The camera glides with the reading: the line being read at a steady height, a line too wide for
+/// the view panned along with its words, and never a pan the timing does not support.
 /// </summary>
 public sealed class CameraFollowTests
 {
     private static readonly PageRect Viewport = new(0, 0, 400, 600);
 
+    private static FollowTarget Words(PageRect word, params PageRect[] passage)
+        => new(0, [word], passage.Length == 0 ? [word] : passage, CueGranularity.Word);
+
+    private static FollowDecision Plan(FollowTarget target, FollowOptions? options = null, PageRect? viewport = null)
+        => CameraFollowPlanner.Plan(new PageViewport(0, viewport ?? Viewport), target, FollowMode.Follow, options ?? FollowOptions.Default);
+
+    /// <summary>
+    /// The reading line goes to the reading height. At fit-width that is the whole motion: the page
+    /// rolls up a line at a time, gliding, instead of standing still and then jumping a screenful.
+    /// </summary>
     [Fact]
-    public void ACueInsideTheSafeZone_DoesNotMoveTheCamera()
+    public void TheLineBeingRead_GoesToTheReadingHeight()
     {
-        var cue = new PageRect(150, 300, 250, 312);
-        var decision = CameraFollowPlanner.Plan(new PageViewport(0, Viewport), [cue], 0,
-            FollowMode.KeepVisible, FollowOptions.Default);
+        var word = new PageRect(100, 700, 140, 712);
+        var options = FollowOptions.Default;
+        var decision = Plan(Words(word, new PageRect(20, 700, 380, 712)), options);
+
+        Assert.True(decision.ShouldMove);
+        var to = decision.TargetVisible.Visible;
+        Assert.Equal(to.Top + Viewport.Height * options.VerticalBias, word.MidY, precision: 3);
+        // The line fits across the view, so nothing moves sideways.
+        Assert.Equal(Viewport.Left, to.Left);
+        Assert.True(decision.GlideSeconds > 0, "a move on the same page glides");
+    }
+
+    [Fact]
+    public void TheNextWordOnTheSameFittingLine_DoesNotMoveTheCamera()
+    {
+        var options = FollowOptions.Default;
+        var line = new PageRect(20, 300, 380, 312);
+        double top = 306 - Viewport.Height * options.VerticalBias;
+        var viewport = new PageRect(0, (float)top, 400, (float)top + 600);
+        var decision = Plan(Words(new PageRect(200, 300, 240, 312), line), options, viewport);
 
         Assert.False(decision.ShouldMove);
-        Assert.Contains("safe zone", decision.Reason);
+        Assert.Contains("already on the reading line", decision.Reason);
+        // The target is still given, so a glide in flight can be redirected to it.
+        Assert.False(decision.TargetVisible.Visible.IsEmpty);
     }
 
     /// <summary>
-    /// When the cue leaves the safe zone downwards, its line goes to the top of the zone, so the
-    /// reader sees what comes next and the view moves about once a screenful. The old minimum move
-    /// kept the word pinned to the bottom edge and scrolled one line at a time.
+    /// At high magnification a line is wider than the view: the camera pans along it, keeping the
+    /// spoken word a little left of centre so the rest of the line is ahead, in view.
     /// </summary>
     [Fact]
-    public void ACueBelowTheViewport_IsBroughtToTheTopOfTheSafeZone()
+    public void AWideLine_IsPannedAlongWithTheSpokenWord()
     {
-        var cue = new PageRect(100, 700, 200, 712);   // below the 600pt viewport
         var options = FollowOptions.Default;
-        var decision = CameraFollowPlanner.Plan(new PageViewport(0, Viewport), [cue], 0,
-            FollowMode.KeepVisible, options);
+        var narrow = new PageRect(0, 0, 100, 150);   // 400% of the 400x600 view
+        var line = new PageRect(20, 300, 380, 312);
+        var first = Plan(Words(new PageRect(150, 300, 180, 312), line), options, narrow).TargetVisible.Visible;
+        var later = Plan(Words(new PageRect(250, 300, 280, 312), line), options, narrow).TargetVisible.Visible;
 
-        Assert.True(decision.ShouldMove);
-        // Only the vertical axis moves: the cue is horizontally inside the zone.
-        Assert.Equal(Viewport.Left, decision.TargetVisible.Visible.Left);
-        double zoneTop = decision.TargetVisible.Visible.Top + Viewport.Height * options.SafeZone + options.HysteresisPoints;
-        Assert.Equal(zoneTop, cue.Top, precision: 3);
+        Assert.Equal(150 - 100 * options.LeadFraction, first.Left, precision: 3);
+        Assert.Equal(250 - 100 * options.LeadFraction, later.Left, precision: 3);
     }
 
     /// <summary>
-    /// At high magnification a line is wider than the view. When the word runs past the right of the
-    /// zone, the view moves so the word starts at the zone's left, leaving the rest of the line ahead
-    /// in view; at a line wrap the start of the next line goes to the same place.
+    /// The camera goes past the page margins at both ends of a wide line: the line's start sits in
+    /// from the left edge, and the camera stops with the line's end near the middle of the view, so
+    /// the last words are read where the eye already is.
     /// </summary>
-    [Theory]
-    [InlineData(380, 395)]   // ran off to the right along the line
-    [InlineData(-300, -280)]  // wrapped back to the start of the next line, far to the left
-    public void ACueOutsideTheZoneSideways_StartsAtTheZonesLeft(float left, float right)
+    [Fact]
+    public void PanningStartsInFromTheLeftAndEndsNearTheMiddle()
     {
-        var cue = new PageRect(left, 300, right, 312);
         var options = FollowOptions.Default;
-        var decision = CameraFollowPlanner.Plan(new PageViewport(0, Viewport), [cue], 0,
-            FollowMode.KeepVisible, options);
+        var narrow = new PageRect(0, 0, 100, 150);
+        var line = new PageRect(20, 300, 380, 312);
+
+        var start = Plan(Words(new PageRect(20, 300, 50, 312), line), options, narrow).TargetVisible.Visible;
+        var end = Plan(Words(new PageRect(350, 300, 380, 312), line) with { Progress = 1 }, options, narrow).TargetVisible.Visible;
+
+        Assert.Equal(20 - 100 * options.LineStartFraction, start.Left, precision: 3);
+        Assert.Equal(380 - 100 * options.LineEndFraction, end.Left, precision: 3);
+    }
+
+    /// <summary>
+    /// Between two aligned words the camera travels at the measured pace: halfway through the time
+    /// from one word's start to the next, it is halfway between their positions. That is what makes
+    /// the pan continuous rather than a step per word.
+    /// </summary>
+    [Fact]
+    public void BetweenTwoWords_TheCameraTravelsAtTheMeasuredPace()
+    {
+        var options = FollowOptions.Default;
+        var narrow = new PageRect(0, 0, 100, 150);
+        var line = new PageRect(20, 300, 380, 312);
+        var word = new PageRect(150, 300, 180, 312);
+        var next = new PageRect(190, 300, 230, 312);
+
+        var halfway = Plan(Words(word, line) with { NextCueRects = [next], Progress = 0.5 }, options, narrow).TargetVisible.Visible;
+
+        Assert.Equal(170 - 100 * options.LeadFraction, halfway.Left, precision: 3);
+    }
+
+    [Fact]
+    public void TheLastWordOfALine_IsCrossedFromItsStartToItsEnd()
+    {
+        var options = FollowOptions.Default;
+        var narrow = new PageRect(0, 0, 100, 150);
+        var line = new PageRect(20, 300, 380, 312);
+        var last = new PageRect(200, 300, 240, 312);
+        var nextLine = new PageRect(20, 314, 60, 326);
+
+        var to = Plan(Words(last, line) with { NextCueRects = [nextLine], Progress = 0.5 }, options, narrow).TargetVisible.Visible;
+
+        Assert.Equal(220 - 100 * options.LeadFraction, to.Left, precision: 3);
+    }
+
+    /// <summary>A move to a new line is the carriage return: quicker than the pan along a line.</summary>
+    [Fact]
+    public void ANewLine_GlidesFasterThanThePan()
+    {
+        var options = FollowOptions.Default;
+        var narrow = new PageRect(0, 0, 100, 150);
+        var line = new PageRect(20, 300, 380, 312);
+        var along = Plan(Words(new PageRect(150, 300, 180, 312), line), options, new PageRect(60, 243, 160, 393));   // already on the line, a little behind the reading
+        var nextLine = Plan(Words(new PageRect(20, 340, 50, 352), new PageRect(20, 340, 380, 352)), options,
+            new PageRect(260, 300 - 63, 360, 300 - 63 + 150));
+
+        Assert.Equal(options.GlideSeconds, along.GlideSeconds, precision: 6);
+        Assert.Equal(options.ReturnGlideSeconds, nextLine.GlideSeconds, precision: 6);
+    }
+
+    /// <summary>The camera's height follows the line, not each word's ink, so it does not bob.</summary>
+    [Fact]
+    public void WordsOfDifferentHeights_KeepTheCameraAtOneHeight()
+    {
+        var line = new PageRect(20, 298, 380, 314);
+        var a = Plan(Words(new PageRect(100, 303, 108, 310), line)).TargetVisible.Visible;
+        var tall = Plan(Words(new PageRect(120, 298, 190, 314), line)).TargetVisible.Visible;
+        Assert.Equal(a.Top, tall.Top, precision: 3);
+    }
+
+    /// <summary>
+    /// A sentence or equation cue has no timing inside it. Sweeping across it at a rate taken from
+    /// the clip length would be an invented speech rate (ADR-0004), so its first line is framed at
+    /// its start and held.
+    /// </summary>
+    [Fact]
+    public void ACueWithoutWordTiming_IsFramedAtItsStartAndHeld()
+    {
+        var options = FollowOptions.Default;
+        var narrow = new PageRect(200, 0, 300, 150);
+        var lines = new[] { new PageRect(20, 300, 380, 312), new PageRect(20, 314, 380, 326), new PageRect(20, 328, 200, 340) };
+        var decision = Plan(new FollowTarget(0, lines, lines, CueGranularity.Sentence), options, narrow);
 
         Assert.True(decision.ShouldMove);
-        double zoneLeft = decision.TargetVisible.Visible.Left + Viewport.Width * options.SafeZone + options.HysteresisPoints;
-        Assert.Equal(zoneLeft, cue.Left, precision: 3);
-        Assert.Equal(Viewport.Top, decision.TargetVisible.Visible.Top);
+        Assert.Equal(20 - 100 * options.LineStartFraction, decision.TargetVisible.Visible.Left, precision: 3);
+        Assert.Contains("holding at the line start", decision.Reason);
+    }
+
+    [Fact]
+    public void AnEquationThatFits_IsFramedWhole()
+    {
+        var equation = new PageRect(120, 900, 280, 960);
+        var decision = Plan(new FollowTarget(0, [equation], [equation], CueGranularity.Equation));
+
+        var to = decision.TargetVisible.Visible;
+        Assert.True(to.Top <= equation.Top && to.Bottom >= equation.Bottom, "the whole equation is in view");
+    }
+
+    /// <summary>
+    /// The line's extent comes from the passage's rects that share the word's line and touch it, not
+    /// from a rect in the other column at the same height.
+    /// </summary>
+    [Fact]
+    public void TheOtherColumn_IsNotPartOfTheLine()
+    {
+        var options = FollowOptions.Default;
+        var leftColumn = new PageRect(20, 300, 190, 312);
+        var rightColumn = new PageRect(230, 300, 390, 312);
+        // 200 points wide: the left-column line fits, the two together would not.
+        var view = new PageRect(0, 0, 200, 300);
+        var decision = Plan(Words(new PageRect(100, 300, 130, 312), leftColumn, rightColumn), options, view);
+
+        Assert.Equal(0, decision.TargetVisible.Visible.Left, precision: 3);
     }
 
     [Fact]
     public void FollowOff_NeverMoves()
     {
-        var cue = new PageRect(100, 5000, 200, 5012);
-        var decision = CameraFollowPlanner.Plan(new PageViewport(0, Viewport), [cue], 0,
+        var decision = CameraFollowPlanner.Plan(new PageViewport(0, Viewport), Words(new PageRect(100, 5000, 200, 5012)),
             FollowMode.Off, FollowOptions.Default);
         Assert.False(decision.ShouldMove);
     }
 
     [Fact]
-    public void APageTransition_ReAnchorsInsteadOfPanningAcrossTheMargin()
+    public void APageTransition_CutsRatherThanGlides()
     {
-        var cue = new PageRect(100, 100, 200, 112);
-        var decision = CameraFollowPlanner.Plan(new PageViewport(0, Viewport), [cue], 3,
-            FollowMode.KeepVisible, FollowOptions.Default);
+        var target = new FollowTarget(3, [new PageRect(100, 100, 200, 112)], [new PageRect(100, 100, 200, 112)], CueGranularity.Word);
+        var decision = CameraFollowPlanner.Plan(new PageViewport(0, Viewport), target, FollowMode.Follow, FollowOptions.Default);
 
         Assert.True(decision.ShouldMove);
         Assert.Equal(3, decision.TargetVisible.PageIndex);
+        Assert.Equal(0, decision.GlideSeconds);
         Assert.Contains("page transition", decision.Reason);
     }
 
     [Fact]
-    public void ReducedMotion_JumpsRatherThanAnimating()
+    public void ReducedMotion_JumpsRatherThanGliding()
     {
-        var cue = new PageRect(100, 700, 200, 712);
-        var decision = CameraFollowPlanner.Plan(new PageViewport(0, Viewport), [cue], 0,
-            FollowMode.KeepVisible, FollowOptions.NoMotion);
-
+        var decision = Plan(Words(new PageRect(100, 700, 200, 712)), FollowOptions.NoMotion);
         Assert.True(decision.ShouldMove);
-        Assert.Equal(0, decision.AnimationSeconds);
+        Assert.Equal(0, decision.GlideSeconds);
+    }
+
+    /// <summary>The glide eases toward its target without overshooting, at any frame rate.</summary>
+    [Theory]
+    [InlineData(1.0 / 144)]
+    [InlineData(1.0 / 60)]
+    [InlineData(1.0 / 20)]
+    public void TheGlide_ArrivesWithoutOvershoot(double dt)
+    {
+        double position = 0, velocity = 0, target = 100;
+        double previous = position;
+        for (double t = 0; t < 3; t += dt)
+        {
+            position = CameraGlide.Step(position, target, ref velocity, 0.35, dt);
+            Assert.True(position >= previous - 1e-9, "never moves backwards");
+            Assert.True(position <= target + 1e-9, "never overshoots");
+            previous = position;
+        }
+        Assert.True(CameraGlide.HasArrived(position, target, velocity));
+    }
+
+    /// <summary>A target that moves on while the camera is gliding is followed without a stop.</summary>
+    [Fact]
+    public void ARetargetedGlide_KeepsItsSpeed()
+    {
+        double position = 0, velocity = 0;
+        for (int i = 0; i < 6; i++) position = CameraGlide.Step(position, 40, ref velocity, 0.35, 1.0 / 60);
+        double before = velocity;
+        position = CameraGlide.Step(position, 80, ref velocity, 0.35, 1.0 / 60);
+        Assert.True(before > 0 && velocity >= before * 0.9, $"velocity carried over: {before} then {velocity}");
     }
 
     [Fact]
-    public void ReadingRail_CentresTheCueVertically()
+    public void AStalledFrame_DoesNotFlingTheCamera()
     {
-        var cue = new PageRect(100, 700, 200, 712);
-        var decision = CameraFollowPlanner.Plan(new PageViewport(0, Viewport), [cue], 0,
-            FollowMode.ReadingRail, FollowOptions.Default with { VerticalBias = 0.5 });
-
-        Assert.True(decision.ShouldMove);
-        double centre = decision.TargetVisible.Visible.Top + decision.TargetVisible.Visible.Height * 0.5;
-        Assert.True(Math.Abs(centre - cue.MidY) < 1.0,
-            $"rail mode should centre the cue: centre {centre}, cue mid {cue.MidY}");
+        double velocity = 0;
+        double position = CameraGlide.Step(0, 1000, ref velocity, 0.35, dtSeconds: 5.0);
+        double bounded = 0, v2 = 0;
+        bounded = CameraGlide.Step(bounded, 1000, ref v2, 0.35, CameraGlide.MaxStepSeconds);
+        Assert.Equal(bounded, position, precision: 6);
     }
 
+    /// <summary>
+    /// Highlight boxes on a line share one height, and every line of the paragraph gets the same
+    /// height from its top, so the box does not jump as reading moves from "a" to "Typography".
+    /// </summary>
     [Fact]
-    public void DisjointRects_AreFramedByTheirUnion_ButOnlyForTheMoveDecision()
+    public void HighlightBoxes_HaveOneHeightPerLine_AcrossTheParagraph()
     {
-        // A cue split across two columns: the decision uses the union, which is safe because it only
-        // decides whether and how far to move. It must never be what gets drawn.
-        var left = new PageRect(20, 700, 180, 712);
-        var right = new PageRect(240, 700, 390, 712);
-        var decision = CameraFollowPlanner.Plan(new PageViewport(0, Viewport), [left, right], 0,
-            FollowMode.KeepVisible, FollowOptions.Default);
-        Assert.True(decision.ShouldMove);
+        var shortWord = new PageRect(100, 304, 108, 311);     // "a": x-height only
+        var tallWord = new PageRect(120, 300, 190, 314);      // "Typography": ascender and descender
+        var nextLineNoDescender = new PageRect(20, 318, 80, 329);
+        var context = new[] { shortWord, tallWord, new PageRect(200, 301, 300, 311), nextLineNoDescender, new PageRect(90, 317, 160, 332) };
+
+        var a = HighlightLines.Uniform([shortWord], context)[0];
+        var t = HighlightLines.Uniform([tallWord], context)[0];
+        var n = HighlightLines.Uniform([nextLineNoDescender], context)[0];
+
+        Assert.Equal(t.Top, a.Top);
+        Assert.Equal(t.Bottom, a.Bottom);
+        Assert.Equal(t.Height, n.Height, precision: 3);
+        Assert.Equal(100, a.Left);
+        Assert.Equal(108, a.Right);   // only the height changes
     }
 
     [Fact]

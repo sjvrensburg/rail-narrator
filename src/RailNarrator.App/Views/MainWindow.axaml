@@ -14,7 +14,7 @@
     <KeyBinding Gesture="Ctrl+O" Command="{Binding OpenDocument}" />
     <!-- Space and Escape are handled in MainWindow.OnPreviewKeyDown, not here: a window-level
          binding also fires while a text box is being typed in or a menu is being dismissed. -->
-    <KeyBinding Gesture="Ctrl+P" Command="{Binding Play}" />
+    <KeyBinding Gesture="Ctrl+P" Command="{Binding PlayPause}" />
     <KeyBinding Gesture="Ctrl+Right" Command="{Binding Next}" />
     <KeyBinding Gesture="Ctrl+Left" Command="{Binding Previous}" />
     <KeyBinding Gesture="Ctrl+R" Command="{Binding Replay}" />
@@ -34,9 +34,7 @@
         <MenuItem Header="E_xit" Click="OnCloseClicked" />
       </MenuItem>
       <MenuItem Header="_Playback">
-        <MenuItem Header="_Play" Command="{Binding Play}" InputGesture="Space" />
-        <MenuItem Header="Pa_use" Command="{Binding Pause}" />
-        <MenuItem Header="_Stop" Command="{Binding Stop}" InputGesture="Escape" />
+        <MenuItem Header="_Play / pause" Command="{Binding PlayPause}" InputGesture="Space" />
         <Separator />
         <MenuItem Header="_Previous passage" Command="{Binding Previous}" InputGesture="Ctrl+Left" />
         <MenuItem Header="_Next passage" Command="{Binding Next}" InputGesture="Ctrl+Right" />
@@ -46,9 +44,25 @@
         <MenuItem Header="Zoom _in" Command="{Binding ZoomIn}" InputGesture="Ctrl+OemPlus" />
         <MenuItem Header="Zoom _out" Command="{Binding ZoomOut}" InputGesture="Ctrl+OemMinus" />
         <MenuItem Header="_Fit width" Click="OnFitClicked" />
+        <MenuItem Header="Zoom 200%" Command="{Binding Zoom200}" />
+        <MenuItem Header="Zoom 400%" Command="{Binding Zoom400}" />
+        <MenuItem Header="Zoom 800%" Command="{Binding Zoom800}" />
         <Separator />
-        <MenuItem Header="_Cycle follow mode" Command="{Binding ToggleFollow}" InputGesture="Ctrl+F" />
+        <MenuItem Header="_Follow the reading" Command="{Binding ToggleFollow}" InputGesture="Ctrl+F" />
         <MenuItem Header="_Resume following" Command="{Binding ResumeFollow}" InputGesture="F9" />
+        <Separator />
+        <MenuItem Header="{Binding ColourFilterMenuHeader}">
+          <MenuItem Header="_Next colour filter" Click="OnCycleColourFilterClicked" InputGesture="C" />
+          <Separator />
+          <MenuItem Header="_None" Tag="None" Click="OnColourFilterClicked" />
+          <MenuItem Header="_High contrast (white on black)" Tag="HighContrast" Click="OnColourFilterClicked" />
+          <MenuItem Header="High _visibility (yellow on black)" Tag="HighVisibility" Click="OnColourFilterClicked" />
+          <MenuItem Header="_Amber" Tag="Amber" Click="OnColourFilterClicked" />
+          <MenuItem Header="_Invert" Tag="Invert" Click="OnColourFilterClicked" />
+        </MenuItem>
+        <Separator />
+        <MenuItem Header="Show _script, maths review and diagnostics" ToggleType="CheckBox"
+                  IsChecked="{Binding TranscriptVisible}" />
       </MenuItem>
       <MenuItem Header="_Maths">
         <MenuItem Header="Mark region as _maths" Click="OnMarkAsMathsClicked" />
@@ -63,33 +77,35 @@
       </MenuItem>
     </Menu>
 
-    <!-- Transport bar -->
+    <!-- Transport bar: one play/pause button, passage steps, voice and speed; page, zoom, follow
+         and colour on the right. Everything else is in the menus. -->
     <Border DockPanel.Dock="Top" Padding="8" Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
       <!-- Wraps rather than clipping: the follow controls at the end must stay reachable in a narrow window. -->
       <WrapPanel Orientation="Horizontal" ItemSpacing="6" LineSpacing="4">
-        <Button Name="PlayButton" Content="▶ Play" Command="{Binding Play}" ToolTip.Tip="Play (Space)" />
-        <Button Content="⏸ Pause" Command="{Binding Pause}" ToolTip.Tip="Pause" />
-        <Button Content="⏹ Stop" Command="{Binding Stop}" ToolTip.Tip="Stop (Escape)" />
-        <Button Content="⏮ Previous" Command="{Binding Previous}" ToolTip.Tip="Previous passage (Ctrl+Left)" />
-        <Button Content="⏭ Next" Command="{Binding Next}" ToolTip.Tip="Next passage (Ctrl+Right)" />
-        <Button Content="↻ Replay" Command="{Binding Replay}" ToolTip.Tip="Replay this passage (Ctrl+R)" />
+        <Button Content="⏮" Command="{Binding Previous}" ToolTip.Tip="Previous passage (Ctrl+Left)" />
+        <Button Name="PlayButton" Content="{Binding PlayButtonText}" Command="{Binding PlayPause}" MinWidth="110"
+                ToolTip.Tip="Play or pause (Space). While a passage is being prepared, cancels the start." />
+        <Button Content="⏭" Command="{Binding Next}" ToolTip.Tip="Next passage (Ctrl+Right)" />
 
         <Separator Width="1" Margin="6,2" />
 
-        <TextBlock Text="Voice:" VerticalAlignment="Center" />
         <ComboBox ItemsSource="{Binding Voices}" SelectedItem="{Binding SelectedVoice}"
-                  MinWidth="200" HorizontalAlignment="Left"
-                  ToolTip.Tip="Changing voice discards prepared audio and re-synthesises from here.">
+                  MinWidth="180" HorizontalAlignment="Left"
+                  ToolTip.Tip="Voice. Changing it discards prepared audio and re-synthesises from here.">
           <ComboBox.ItemTemplate>
             <DataTemplate x:DataType="domain:TtsVoice">
               <TextBlock Text="{Binding DisplayName}" />
             </DataTemplate>
           </ComboBox.ItemTemplate>
         </ComboBox>
-
-        <TextBlock Text="Speed:" VerticalAlignment="Center" Margin="8,0,0,0" />
-        <ComboBox ItemsSource="{Binding PlaybackRates}" SelectedItem="{Binding PlaybackRate}" MinWidth="90"
-                  ToolTip.Tip="Pitch-preserving playback speed. This is not a synthesis-rate change." />
+        <ComboBox ItemsSource="{Binding PlaybackRates}" SelectedItem="{Binding PlaybackRate}" MinWidth="80"
+                  ToolTip.Tip="Playback speed (pitch-preserving)">
+          <ComboBox.ItemTemplate>
+            <DataTemplate x:DataType="x:Double">
+              <TextBlock Text="{Binding StringFormat={}{0}×}" />
+            </DataTemplate>
+          </ComboBox.ItemTemplate>
+        </ComboBox>
 
         <Separator Width="1" Margin="6,2" />
 
@@ -104,29 +120,34 @@
                    TextAlignment="Center" />
         <Button Content="+" Command="{Binding ZoomIn}" ToolTip.Tip="Zoom in (Ctrl++)" />
         <Button Content="Fit" Click="OnFitClicked" ToolTip.Tip="Fit page width" />
-        <Button Content="200%" Command="{Binding Zoom200}" />
-        <Button Content="400%" Command="{Binding Zoom400}" />
-        <Button Content="800%" Command="{Binding Zoom800}" />
 
         <Separator Width="1" Margin="6,2" />
 
-        <Button Content="{Binding FollowMode, StringFormat=Follow: {0}}" Command="{Binding ToggleFollow}"
-                ToolTip.Tip="Cycle follow mode (Ctrl+F)" />
+        <Button Content="{Binding FollowLabel}" Command="{Binding ToggleFollow}"
+                ToolTip.Tip="Glide with the reading, line by line (Ctrl+F)" />
         <Button Content="Resume following (F9)" Command="{Binding ResumeFollow}"
                 IsVisible="{Binding FollowSuspended}"
                 ToolTip.Tip="Browsing paused the camera; this restores it. Audio was never stopped." />
+        <TextBlock Text="Colour:" VerticalAlignment="Center" Margin="6,0,0,0" />
+        <ComboBox ItemsSource="{Binding ColourEffects}" SelectedItem="{Binding SelectedColourEffect}" MinWidth="140"
+                  ToolTip.Tip="Colour filter for the page: high contrast, high visibility, amber or invert (C cycles them)">
+          <ComboBox.ItemTemplate>
+            <DataTemplate x:DataType="vm:ColourEffectOption">
+              <TextBlock Text="{Binding Name}" ToolTip.Tip="{Binding Description}" />
+            </DataTemplate>
+          </ComboBox.ItemTemplate>
+        </ComboBox>
       </WrapPanel>
     </Border>
 
     <!-- Status bar -->
     <Border DockPanel.Dock="Bottom" Padding="8,4" Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
-      <Grid ColumnDefinitions="*,Auto,Auto">
+      <Grid ColumnDefinitions="*,Auto">
         <TextBlock Grid.Column="0" Text="{Binding StatusMessage}" TextTrimming="CharacterEllipsis"
                    VerticalAlignment="Center" />
-        <TextBlock Grid.Column="1" Margin="12,0,0,0" VerticalAlignment="Center"
-                   Text="{Binding Playback.State, StringFormat=State: {0}}" />
-        <TextBlock Grid.Column="2" Margin="12,0,0,0" VerticalAlignment="Center"
-                   Text="{Binding Playback.PlanProgress, StringFormat=Progress: {0:P0}}" />
+        <ProgressBar Grid.Column="1" Margin="12,0,0,0" Width="160" Minimum="0" Maximum="1"
+                     Value="{Binding Playback.PlanProgress}" VerticalAlignment="Center"
+                     ToolTip.Tip="How far through the document" />
       </Grid>
     </Border>
 
@@ -202,7 +223,24 @@
       </Grid>
     </Border>
 
-    <!-- Reading area -->
-    <views:PdfSurface Name="Surface" Focusable="True" />
+    <!-- Reading area. The card over it appears only while a start is waiting for audio: what is
+         being prepared and for how long, where the reader is looking, not only in the status bar.
+         It does not take input, so the page can still be browsed or clicked underneath. -->
+    <Panel>
+      <views:PdfSurface Name="Surface" Focusable="True" />
+      <Border IsVisible="{Binding IsPreparing}" IsHitTestVisible="False"
+              HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,16,0,0"
+              Padding="16,10" CornerRadius="8" MinWidth="320"
+              Background="#E6202833" BorderBrush="#2F80ED" BorderThickness="1"
+              BoxShadow="0 4 16 0 #60000000">
+        <StackPanel Spacing="8">
+          <TextBlock Text="{Binding PreparationText}" Foreground="White" FontSize="14"
+                     TextAlignment="Center" TextWrapping="Wrap" />
+          <ProgressBar IsIndeterminate="True" Height="4" MinWidth="280" Foreground="#2F80ED" />
+          <TextBlock Text="Not playing yet: reading starts as soon as the audio is ready."
+                     Foreground="#B0FFFFFF" FontSize="11" TextAlignment="Center" />
+        </StackPanel>
+      </Border>
+    </Panel>
   </DockPanel>
 </Window>
