@@ -103,7 +103,7 @@ model or sound card.
 
 Recorded in `docs/decisions/`, each with the measurement that drove it:
 
-- **[ADR-0001](docs/decisions/ADR-0001-stack-and-core-pin.md)** — stack, and why RailReaderCore is pinned to published packages (0.90.0)
+- **[ADR-0001](docs/decisions/ADR-0001-stack-and-core-pin.md)** — stack, and why RailReaderCore is pinned to published packages (0.91.0)
 - **[ADR-0002](docs/decisions/ADR-0002-speech-provider.md)** — Kokoro default, ZONOS3 alternative; both measured, neither inert
 - **[ADR-0003](docs/decisions/ADR-0003-audio-backend.md)** — PortAudio callback DAC timestamps and the presented-frame clock
 - **[ADR-0004](docs/decisions/ADR-0004-alignment-policy.md)** — local word alignment with validated sentence/equation fallback

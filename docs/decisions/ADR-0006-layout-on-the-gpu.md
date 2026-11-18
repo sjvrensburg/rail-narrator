@@ -6,8 +6,9 @@
 
 The PP-DocLayoutV3 layout model runs on a WebGPU-capable GPU when one is found and the model
 loads on it, and on the CPU otherwise. This is the setting `LayoutAcceleration`, default `Auto`;
-`Cpu` turns the GPU off. The GPU comes from `RailReader.Core.Analysis.WebGpu` 0.90.0 (ONNX Runtime
-WebGPU plugin EP 0.5.0, matched to the ORT 1.31.1 the application already resolves). OCR stays on
+`Cpu` turns the GPU off. The GPU comes from `RailReader.Core.Analysis.WebGpu` (0.90.0 when this was
+decided: WebGPU plugin EP 0.5.0 with ORT 1.31.1; 0.91.0 since, with plugin 0.6.0 and ORT 1.32.0,
+re-tested in ADR-0001's 0.91.0 amendment). OCR stays on
 the CPU.
 
 ## Context

@@ -1,6 +1,6 @@
 # ADR-0001: Stack, and pinning RailReaderCore to published NuGet packages
 
-**Status:** accepted · **Date:** 2026-11-17 · **Amended:** 2026-11-18 (pin moved to 0.90.0, see below)
+**Status:** accepted · **Date:** 2026-11-17 · **Amended:** 2026-11-18 (pin moved to 0.90.0, then 0.91.0, see below)
 
 ## Decision
 
@@ -65,3 +65,23 @@ into the extraction cache key, so snapshots made with 0.89.0 are not reused.
 enabled (real Kokoro, the PP-DocLayoutV3 layout model, MFA alignment, and silent output to a
 real device), and `rail-narrator-smoke all` passes.
 **Not measured:** the effect of the duplicate-block fix on a real document's narration.
+
+## Amendment 2026-11-18: pin moved to 0.91.0
+
+All seven RailReaderCore packages were moved to **0.91.0**, published from upstream commit
+`f666eeade270f473ae7d4cceb662c3262bca0a73` (tag `v0.91.0`; the commit is the one recorded in the
+package's nuspec). Upstream's change is dependencies: ONNX Runtime 1.31 → **1.32** (resolves
+1.32.0) and the WebGPU plugin EP 0.5 → **0.6** (0.6.0), which ORT 1.32 is matched with, plus
+OpenAI 2.15.0 for the VLM package. Upstream re-measured both layout models on the GPU against the
+CPU (identical blocks on every page) on the same RTX A2000 as this project's laptop.
+
+The application now resolves ONNX Runtime 1.32.0 throughout (KokoroSharp, built against 1.22.0,
+still runs on it), the plugin 0.6.0, and SkiaSharp 3.119.4. The Core assembly version moves to
+0.91.0.0 and is folded into the extraction cache key, so 0.90.0 snapshots are not reused.
+
+**Verified:** the build has 0 warnings; all 470 tests pass with the opt-in integrations enabled
+(real Kokoro, the PP-DocLayoutV3 layout model on the CPU and on the GPU, MFA alignment including
+generated pronunciations, and Kokoro on WebGPU); only the real-audio-device test was left off.
+Rechecked for ADR-0007 on plugin 0.6: stock Kokoro models (int64 `tokens`) still abort the process
+on WebGPU, the fp16 export still gives NaN samples, and the converted fp32 model still gives real
+audio at RTF 0.26–0.28, so the conversion and the fp32 choice stand.
