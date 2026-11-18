@@ -425,6 +425,69 @@ public sealed class NarrationCoordinatorTests
         Assert.Null(coordinator.CurrentFollowTarget());
     }
 
+    /// <summary>
+    /// Gapless: once the next passage is prepared it is handed to the transport to follow the current
+    /// one, and when the transport moves on to it the reading position advances without loading or
+    /// starting anything — the audio is already playing. Then the passage after that is queued.
+    /// </summary>
+    [Fact]
+    public async Task TheNextPassage_IsQueuedAndFollowsWithoutBeingLoaded()
+    {
+        var tts = new FakeTtsProvider();
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(tts, transport);
+        var plan = PlanWith(4);
+        await coordinator.LoadPlanAsync(plan);
+        await coordinator.PlayAsync();
+        await WaitUntil(() => transport.QueuedSegmentId == plan.Segments[1].Id, what: "the second passage to be queued");
+
+        int loads = transport.Loaded.Count, plays = transport.PlayCount;
+        Assert.True(transport.RaiseClipAdvanced());
+
+        await WaitUntil(() => coordinator.Snapshot.SegmentId == plan.Segments[1].Id, what: "the position to advance");
+        Assert.Equal(loads, transport.Loaded.Count);
+        Assert.Equal(plays, transport.PlayCount);
+        Assert.Equal(PlaybackState.Playing, coordinator.Snapshot.State);
+        await WaitUntil(() => transport.QueuedSegmentId == plan.Segments[2].Id, what: "the third passage to be queued");
+    }
+
+    /// <summary>A transport that cannot queue still gets each passage loaded after the last completes.</summary>
+    [Fact]
+    public async Task WithoutQueueing_PassagesAreStillLoadedOnCompletion()
+    {
+        var tts = new FakeTtsProvider();
+        var transport = new FakeAudioTransport { AcceptQueue = false };
+        await using var coordinator = new NarrationCoordinator(tts, transport);
+        var plan = PlanWith(3);
+        await coordinator.LoadPlanAsync(plan);
+        await coordinator.PlayAsync();
+        await WaitUntil(() => transport.Loaded.Count == 1, what: "the first load");
+        await WaitUntil(() => tts.SynthesizeCount >= 2, what: "the second passage to be prepared");
+
+        transport.RaiseClipCompleted(plan.Segments[0].Id);
+        await WaitUntil(() => transport.Loaded.Count == 2, what: "the second passage to be loaded");
+        Assert.Equal(plan.Segments[1].Id, transport.Loaded[1].SegmentId);
+    }
+
+    /// <summary>An edit must not let the queued clip play in its old words.</summary>
+    [Fact]
+    public async Task AScriptEditWhilePlaying_ClearsTheQueuedClip()
+    {
+        var tts = new FakeTtsProvider();
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(tts, transport);
+        var plan = PlanWith(3);
+        await coordinator.LoadPlanAsync(plan);
+        await coordinator.PlayAsync();
+        await WaitUntil(() => transport.QueuedSegmentId == plan.Segments[1].Id, what: "the second passage to be queued");
+
+        await coordinator.ApplyScriptEditAsync(plan.Segments[1].Id, "A corrected second sentence.");
+
+        Assert.True(transport.ClearQueuedCount > 0);
+        // Re-prepared in its new words, it is queued again.
+        await WaitUntil(() => transport.QueuedSegmentId == plan.Segments[1].Id, what: "the corrected passage to be queued");
+    }
+
     [Fact]
     public async Task AScriptEdit_InvalidatesTheCachedSpeechForThatDocument()
     {
