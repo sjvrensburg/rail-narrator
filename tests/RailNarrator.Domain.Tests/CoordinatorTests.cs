@@ -322,7 +322,7 @@ public sealed class NarrationCoordinatorTests
         var transport = new FakeAudioTransport();
         await using var coordinator = new NarrationCoordinator(tts, transport);
         var follows = new List<string>();
-        coordinator.FollowRequested += (cue, _, _) => { lock (follows) follows.Add(cue.SegmentId); };
+        coordinator.FollowRequested += (cue, _) => { lock (follows) follows.Add(cue.SegmentId); };
 
         var plan = PlanWith(3);
         await coordinator.LoadPlanAsync(plan);
@@ -340,6 +340,89 @@ public sealed class NarrationCoordinatorTests
         coordinator.RefollowCurrentCue();
         lock (follows) Assert.Equal(before + 1, follows.Count);
         Assert.True(coordinator.FollowSuspended);
+    }
+
+    /// <summary>
+    /// A seek to a passage that is not ready says what it is waiting on and for how long, and the
+    /// wait is cleared once the passage plays: the on-page card and the Play button read this.
+    /// </summary>
+    [Fact]
+    public async Task ASeekToAnUnpreparedPassage_ReportsWhatItIsWaitingOn_ThenClears()
+    {
+        var tts = new FakeTtsProvider(new FakeTtsOptions(Latency: TimeSpan.FromMilliseconds(700)));
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(tts, transport);
+        var seen = new List<PreparationProgress>();
+        coordinator.SnapshotChanged += s => { if (s.Preparation is { } p) lock (seen) seen.Add(p); };
+
+        var plan = PlanWith(12);
+        await coordinator.LoadPlanAsync(plan);
+        string target = plan.Segments[9].Id;   // beyond the lookahead window
+        var seek = coordinator.GoToSegmentAsync(target);
+
+        await WaitUntil(() => { lock (seen) return seen.Count > 0; }, what: "the wait to be reported");
+        PreparationProgress first;
+        lock (seen) first = seen[0];
+        Assert.Equal(target, first.SegmentId);
+        Assert.Equal(9, first.SegmentIndex);
+        Assert.Equal(PreparationStage.Synthesising, first.Stage);
+        Assert.Equal(PlaybackState.Seeking, coordinator.Snapshot.State);
+        Assert.Contains("Synthesising speech", coordinator.Snapshot.Message);
+
+        await seek;
+        Assert.Equal(PlaybackState.Playing, coordinator.Snapshot.State);
+        Assert.Null(coordinator.Snapshot.Preparation);
+    }
+
+    [Fact]
+    public async Task APassageAlreadyPrepared_StartsWithoutAWaitBeingReported()
+    {
+        var tts = new FakeTtsProvider();
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(tts, transport);
+        var plan = PlanWith(3);
+        await coordinator.LoadPlanAsync(plan);
+        await WaitUntil(() => tts.SynthesizeCount >= 3, what: "lookahead");
+        await Task.Delay(50);
+
+        bool reported = false;
+        coordinator.SnapshotChanged += s => { if (s.Preparation is not null) reported = true; };
+        await coordinator.GoToSegmentAsync(plan.Segments[1].Id);
+
+        Assert.False(reported);
+        Assert.Equal(PlaybackState.Playing, coordinator.Snapshot.State);
+    }
+
+    /// <summary>
+    /// The frame loop's follow target comes from the media clock while audio plays, and from nowhere
+    /// otherwise: paused, browsing or with following off, the camera is the reader's.
+    /// </summary>
+    [Fact]
+    public async Task TheFrameLoopFollowTarget_ExistsOnlyWhilePlayingAndFollowing()
+    {
+        var tts = new FakeTtsProvider();
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(tts, transport);
+        var plan = PlanWith(3);
+        await coordinator.LoadPlanAsync(plan);
+        Assert.Null(coordinator.CurrentFollowTarget());
+
+        await coordinator.PlayAsync();
+        await WaitUntil(() => transport.PlayCount > 0, what: "playback to start");
+        var target = coordinator.CurrentFollowTarget();
+        Assert.NotNull(target);
+        Assert.Equal(0, target!.PageIndex);
+        Assert.NotEmpty(target.CueRects);
+
+        coordinator.SuspendFollow();
+        Assert.Null(coordinator.CurrentFollowTarget());
+        coordinator.ResumeFollow();
+        coordinator.SetFollowMode(FollowMode.Off);
+        Assert.Null(coordinator.CurrentFollowTarget());
+        coordinator.SetFollowMode(FollowMode.Follow);
+
+        await coordinator.PauseAsync();
+        Assert.Null(coordinator.CurrentFollowTarget());
     }
 
     [Fact]

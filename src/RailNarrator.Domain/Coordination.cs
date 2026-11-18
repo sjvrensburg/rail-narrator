@@ -91,7 +91,7 @@ public sealed record NarrationCoordinatorOptions(
     string? VoiceId = null,
     AudioFormat? Format = null,
     double PlaybackRate = 1.0,
-    FollowMode FollowMode = FollowMode.KeepVisible,
+    FollowMode FollowMode = FollowMode.Follow,
     bool RequestTimings = true,
     int InterpretAheadSegments = 40,
     double PreRollSeconds = 60,
@@ -160,6 +160,9 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     // Interpretations in flight, keyed by generation + segment id + revision, shared by the
     // interpret-ahead loop and the synthesis path so a passage is never sent to the model twice.
     private readonly ConcurrentDictionary<string, Lazy<Task<NarrationSegment>>> _resolving = new();
+    // What each passage's preparation is doing right now, by segment id, so a wait the reader asked
+    // for can say what it is waiting on. Written by whichever path is doing the work.
+    private readonly ConcurrentDictionary<string, PreparationStage> _stages = new(StringComparer.Ordinal);
     private CancellationTokenSource? _interpretCts;
     private readonly CancellationTokenSource _lifetime = new();
     private Task? _interpretLoop;
@@ -212,8 +215,8 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     /// <summary>Raised when the cue to highlight changes. Carries the cue and the anchors to draw.</summary>
     public event Action<ActiveCue>? ActiveCueChanged;
 
-    /// <summary>Raised when follow mode should be re-applied, with the rects to frame.</summary>
-    public event Action<ActiveCue, IReadOnlyList<PageRect>, int>? FollowRequested;
+    /// <summary>Raised when follow mode should be re-applied, with the cue and passage to frame.</summary>
+    public event Action<ActiveCue, FollowTarget>? FollowRequested;
 
     /// <summary>True when manual browsing has suspended camera following. Audio keeps playing.</summary>
     public bool FollowSuspended { get { lock (_gate) return _followSuspended; } }
@@ -238,6 +241,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             _plan = plan;
             _scheduler = new CueScheduler(plan);
             _prepared.Clear();
+            _stages.Clear();
             _segmentIndex = Math.Clamp(
                 resume?.SegmentId is { } id ? Math.Max(0, plan.Segments.ToList().FindIndex(s => s.Id == id)) : 0,
                 0, Math.Max(0, plan.SegmentCount - 1));
@@ -286,7 +290,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         StartPreparation(gen);
         await PreRollAsync(gen, ct).ConfigureAwait(false);
         if (gen != Generation) return;
-        if (!await EnsureSegmentReadyAsync(_segmentIndex, gen, ct).ConfigureAwait(false)) return;
+        if (!await WaitForSegmentAsync(_segmentIndex, gen, PlaybackState.Preparing, ct).ConfigureAwait(false)) return;
         await StartCurrentSegmentAsync(gen, ct).ConfigureAwait(false);
     }
 
@@ -328,7 +332,13 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             if (ready >= _options.PreRollSeconds) return;
             double waited = System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalSeconds;
             if (waited >= _options.PreRollTimeoutSeconds) return;
-            Publish(PlaybackState.Buffering, $"Interpreting maths before reading ({ready:F0} of {_options.PreRollSeconds:F0} s ready)");
+            var plan = _plan;
+            int index;
+            lock (_gate) index = Math.Max(0, _segmentIndex);
+            var progress = plan is null || index >= plan.SegmentCount ? null : new PreparationProgress(
+                plan.Segments[index].Id, index, PreparationStage.InterpretingAhead, waited, ready, _options.PreRollSeconds);
+            Publish(PlaybackState.Buffering, progress?.Describe()
+                ?? $"Interpreting maths before reading ({ready:F0} of {_options.PreRollSeconds:F0} s ready)", preparation: progress);
             await Task.Delay(200, ct).ConfigureAwait(false);
         }
     }
@@ -373,7 +383,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         await _audio.StopAsync(ct).ConfigureAwait(false);
         lock (_gate) _segmentIndex = index;
         StartPreparation(gen);
-        if (!await EnsureSegmentReadyAsync(index, gen, ct).ConfigureAwait(false)) return;
+        if (!await WaitForSegmentAsync(index, gen, PlaybackState.Seeking, ct).ConfigureAwait(false)) return;
         await StartCurrentSegmentAsync(gen, ct, withinSegmentSeconds).ConfigureAwait(false);
     }
 
@@ -472,7 +482,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         StartPreparation(generation);
         if (_plan is not null && wasPlaying)
         {
-            if (await EnsureSegmentReadyAsync(Math.Max(0, _segmentIndex), generation, ct).ConfigureAwait(false)
+            if (await WaitForSegmentAsync(Math.Max(0, _segmentIndex), generation, PlaybackState.Preparing, ct).ConfigureAwait(false)
                 && generation == Generation)
                 await StartCurrentSegmentAsync(generation, ct).ConfigureAwait(false);
         }
@@ -679,6 +689,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         var plan = _plan;
         if (plan is null || _resolver is null) return segment;
         string key = $"{plan.Header.PlanId}:{plan.Header.InputFingerprint}:{segment.Id}:{segment.ScriptRevision}";
+        _stages[segment.Id] = PreparationStage.Interpreting;
         var lazy = _resolving.GetOrAdd(key, _ => new Lazy<Task<NarrationSegment>>(
             () => _resolver.ResolveAsync(plan, segment, _lifetime.Token)));
         NarrationSegment resolved;
@@ -712,6 +723,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             }
         }
         _resolving.TryRemove(key, out _);
+        _stages.TryRemove(new KeyValuePair<string, PreparationStage>(segment.Id, PreparationStage.Interpreting));
         if (replaced) SegmentResolved?.Invoke(resolved);
         return resolved;
     }
@@ -780,6 +792,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         {
             ((ICollection<KeyValuePair<string, Lazy<Task>>>)_inflight)
                 .Remove(new KeyValuePair<string, Lazy<Task>>(key, lazy));
+            _stages.TryRemove(segment.Id, out _);
         }
     }
 
@@ -794,6 +807,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
 
         if (_assetStore is not null)
         {
+            _stages[segment.Id] = PreparationStage.LoadingCached;
             var cached = await _assetStore.TryGetAsync(assetId, ct).ConfigureAwait(false);
             if (cached is not null)
             {
@@ -826,6 +840,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         var warnings = new List<string>();
 
         TtsSynthesisResult result;
+        _stages[segment.Id] = PreparationStage.Synthesising;
         try
         {
             result = await _tts.SynthesizeAsync(new TtsSynthesisRequest(
@@ -937,6 +952,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         string hash = CacheKey.Sha256Hex(pcm.Span);
         try
         {
+            _stages[segment.Id] = PreparationStage.Aligning;
             if (!await _aligner.IsAvailableAsync(ct).ConfigureAwait(false))
                 return asset with { TimingWarnings = asset.TimingWarnings.Append("Local word aligner is unavailable.").Distinct().ToArray() };
             string revision = CacheKey.ForAlignment(hash, "forced", _aligner.Revision, CacheKey.Sha256Hex(segment.SpokenText));
@@ -962,6 +978,54 @@ public sealed class NarrationCoordinator : IAsyncDisposable
 
     private static string SynthesisOptionsToken(AudioFormat format)
         => $"rate={format.SampleRate};ch={format.Channels};fmt={(int)format.SampleFormat};pv={NarrationVersions.ProsePipeline}";
+
+    /// <summary>How long a wait runs before it is reported, so a passage already prepared does not flash a message.</summary>
+    private static readonly TimeSpan WaitReportDelay = TimeSpan.FromMilliseconds(150);
+
+    /// <summary>
+    /// <see cref="EnsureSegmentReadyAsync"/> for a start the reader asked for, publishing what the wait
+    /// is for (<see cref="PlaybackSnapshot.Preparation"/>) and how long it has lasted, about four
+    /// times a second, until the audio is ready, the wait is superseded or preparation fails.
+    /// </summary>
+    private async Task<bool> WaitForSegmentAsync(int index, long generation, PlaybackState waitState, CancellationToken ct)
+    {
+        var plan = _plan;
+        if (plan is null || index < 0 || index >= plan.SegmentCount) return false;
+        string segmentId = plan.Segments[index].Id;
+        lock (_gate) if (_prepared.ContainsKey(segmentId)) return true;
+
+        long started = System.Diagnostics.Stopwatch.GetTimestamp();
+        using var stop = new CancellationTokenSource();
+        var reporter = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(WaitReportDelay, stop.Token).ConfigureAwait(false);
+                while (!stop.IsCancellationRequested && generation == Generation && !_disposed)
+                {
+                    // A failure published by the preparation itself stands; do not paper over it.
+                    if (Snapshot.State == PlaybackState.Error) return;
+                    var stage = _stages.TryGetValue(segmentId, out var s) ? s
+                        : plan.Segments[index].Provenance == ScriptProvenance.PendingInterpretation
+                            ? PreparationStage.Interpreting : PreparationStage.Synthesising;
+                    var progress = new PreparationProgress(segmentId, index, stage,
+                        System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalSeconds);
+                    Publish(waitState, progress.Describe(), preparation: progress);
+                    await Task.Delay(250, stop.Token).ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) { }
+        });
+        try
+        {
+            return await EnsureSegmentReadyAsync(index, generation, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            stop.Cancel();
+            await reporter.ConfigureAwait(false);
+        }
+    }
 
     /// <summary>Waits until a segment has audio, preparing it directly if the lookahead has not reached it.</summary>
     private async Task<bool> EnsureSegmentReadyAsync(int index, long generation, CancellationToken ct)
@@ -1057,7 +1121,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
                     ReleaseClipsOutsideWindow(plan, index + 1);
                 }
                 ExtendPreparation(gen);
-                if (!await EnsureSegmentReadyAsync(index + 1, gen, CancellationToken.None).ConfigureAwait(false)) return;
+                if (!await WaitForSegmentAsync(index + 1, gen, PlaybackState.Buffering, CancellationToken.None).ConfigureAwait(false)) return;
                 if (gen != Generation) return;
                 await StartCurrentSegmentAsync(gen, CancellationToken.None).ConfigureAwait(false);
             }
@@ -1167,24 +1231,67 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         var scheduler = _scheduler;
         if (scheduler is null) return;
 
-        var rectsByPage = scheduler.SourceMap.HighlightRectsByPage(cue.AnchorIds);
-        var pages = scheduler.SourceMap.PagesFor(cue.AnchorIds);
-        if (pages.Count == 0) return;
-        int page = pages[0];
-        var rects = rectsByPage.TryGetValue(page, out var r) ? r : [];
-        if (rects.Count == 0) return;
+        if (BuildFollowTarget(scheduler, cue) is not { } target) return;
         _lastFollowAt = _clock.NowSeconds;
         _pendingFollow = null;
-        FollowRequested?.Invoke(cue, rects, page);
+        FollowRequested?.Invoke(cue, target);
+    }
+
+    private static FollowTarget? BuildFollowTarget(CueScheduler scheduler, ActiveCue cue)
+    {
+        var map = scheduler.SourceMap;
+        var pages = map.PagesFor(cue.AnchorIds);
+        if (pages.Count == 0) return null;
+        int page = pages[0];
+        var rects = map.HighlightRects(cue.AnchorIds, page);
+        if (rects.Count == 0) return null;
+        // The passage's own lines on that page, so the camera can tell whether the line being read
+        // fits in the view or has to be panned along.
+        var passage = map.Segment(cue.SegmentId) is { } segment ? map.HighlightRects(segment.AnchorIds, page) : rects;
+        var target = new FollowTarget(page, rects, passage, cue.Granularity);
+        if (cue.Granularity == CueGranularity.Word && cue.Cue is { } timed
+            && scheduler.WordProgress(cue.SegmentId, timed, cue.SampleInClip) is { } progress)
+        {
+            target = target with { NextCueRects = map.HighlightRects(progress.NextAnchorIds, page), Progress = progress.Progress };
+        }
+        return target;
+    }
+
+    /// <summary>
+    /// Where the camera should be following right now, from the media clock: the word being spoken
+    /// and how far the clock is toward the next measured word. For the host's frame loop, so the
+    /// camera moves continuously at the measured pace; null when not playing, when following is off
+    /// or suspended, or when the position has no geometry.
+    /// </summary>
+    public FollowTarget? CurrentFollowTarget()
+    {
+        if (_options.FollowMode == FollowMode.Off) return null;
+        // The transport is read before the coordinator lock is taken (lock order).
+        if (_audio.State is not PlaybackState.Playing) return null;
+        double position = _audio.PositionSeconds;
+        var scheduler = _scheduler;
+        var plan = _plan;
+        if (scheduler is null || plan is null) return null;
+        string segmentId;
+        PreparedClip? prepared;
+        lock (_gate)
+        {
+            if (_followSuspended || _segmentIndex < 0 || _segmentIndex >= plan.SegmentCount) return null;
+            segmentId = plan.Segments[_segmentIndex].Id;
+            prepared = _prepared.GetValueOrDefault(segmentId);
+        }
+        if (prepared is null) return null;
+        var cue = scheduler.Resolve(segmentId, prepared.Asset.Format.ToFrames(position));
+        return cue.AnchorIds.Count == 0 ? null : BuildFollowTarget(scheduler, cue);
     }
 
     // ---- snapshots ---------------------------------------------------------------------
 
-    private void Publish(PlaybackState state, string? message, NarrationError? error = null)
+    private void Publish(PlaybackState state, string? message, NarrationError? error = null, PreparationProgress? preparation = null)
     {
         lock (_gate)
         {
-            _snapshot = _snapshot with { State = state, Message = message, Error = error };
+            _snapshot = _snapshot with { State = state, Message = message, Error = error, Preparation = preparation };
         }
         PublishSnapshotOnly();
     }

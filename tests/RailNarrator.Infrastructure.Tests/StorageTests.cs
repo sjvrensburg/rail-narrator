@@ -85,3 +85,42 @@ public sealed class DiskSpeechAssetStoreTests : IDisposable
         Assert.NotNull(await store.TryLoadPcmAsync(a.Id));
     }
 }
+
+/// <summary>
+/// The two old follow modes became one. A settings file naming either must load as following, not
+/// fail and reset every other preference to its default.
+/// </summary>
+public sealed class SettingsStoreFollowModeTests : IDisposable
+{
+    private readonly string _dir = Directory.CreateTempSubdirectory("rn-settings-").FullName;
+
+    public void Dispose() => Directory.Delete(_dir, recursive: true);
+
+    [Theory]
+    [InlineData("KeepVisible", FollowMode.Follow)]
+    [InlineData("ReadingRail", FollowMode.Follow)]
+    [InlineData("Follow", FollowMode.Follow)]
+    [InlineData("Off", FollowMode.Off)]
+    public void AnOldFollowModeName_StillLoads_AndTheOtherSettingsSurvive(string saved, FollowMode expected)
+    {
+        string path = Path.Combine(_dir, "settings.json");
+        File.WriteAllText(path, $$"""{ "FollowMode": "{{saved}}", "PlaybackRate": 1.5 }""");
+        var store = new RailNarrator.Infrastructure.SettingsStore(path);
+
+        var loaded = store.Load();
+
+        Assert.Null(store.LastError);
+        Assert.Equal(expected, loaded.FollowMode);
+        Assert.Equal(1.5, loaded.PlaybackRate);
+    }
+
+    [Fact]
+    public void FollowMode_IsSavedByName()
+    {
+        string path = Path.Combine(_dir, "settings.json");
+        var store = new RailNarrator.Infrastructure.SettingsStore(path);
+        store.Save(RailNarrator.Infrastructure.RailNarratorSettings.Default with { FollowMode = FollowMode.Off });
+        Assert.Contains("\"FollowMode\": \"Off\"", File.ReadAllText(path));
+        Assert.Equal(FollowMode.Off, store.Load().FollowMode);
+    }
+}

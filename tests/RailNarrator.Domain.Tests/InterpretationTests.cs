@@ -248,7 +248,9 @@ public sealed class InterpretationTests
         await WaitUntil(() => coordinator.Snapshot.State == PlaybackState.Buffering, "the coordinator to buffer");
         await Task.Delay(300);
         Assert.Equal(0, transport.PlayCount);   // the first sentence (five seconds) is not enough lead
-        Assert.Contains("Interpreting maths", coordinator.Snapshot.Message ?? "", StringComparison.Ordinal);
+        Assert.Contains("Interpreting the maths ahead", coordinator.Snapshot.Message ?? "", StringComparison.Ordinal);
+        Assert.Equal(PreparationStage.InterpretingAhead, coordinator.Snapshot.Preparation?.Stage);
+        Assert.Equal(30, coordinator.Snapshot.Preparation!.TargetSeconds);
 
         resolver.Gate.SetResult();
         await play;

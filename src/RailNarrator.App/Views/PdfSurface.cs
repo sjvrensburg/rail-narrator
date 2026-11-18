@@ -5,6 +5,7 @@ using Avalonia.Media;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Threading;
+using RailReader.Core.Models;
 using RailReader.Core.Services;
 using RailReader.Renderer.Skia;
 using RailNarrator.App.ViewModels;
@@ -35,8 +36,8 @@ namespace RailNarrator.App.Views;
 /// </remarks>
 public sealed class PdfSurface : Control
 {
-    /// <summary>Where the active cue sits vertically when the camera must move.</summary>
-    private const double FollowVerticalBias = 0.42;
+    /// <summary>Where a passage chosen by hand is placed vertically: the follow camera's reading height.</summary>
+    private static readonly double FollowVerticalBias = FollowOptions.Default.VerticalBias;
 
     private IPdfService? _pdf;
     private SkiaRenderedPage? _renderedPage;
@@ -54,7 +55,22 @@ public sealed class PdfSurface : Control
         new Dictionary<int, IReadOnlyList<PageRect>>();
     private NarrationHighlightStyle _highlightStyle = NarrationHighlightStyle.Default;
 
+    /// <summary>How far past a wide page's left or right edge the view may go, as a fraction of its width.</summary>
+    private const double HorizontalOverscroll = 0.5;
+
+    private static readonly Lazy<ColourEffectShaders> Shaders = new(() => new ColourEffectShaders());
+    private ColourEffect _colourEffect = ColourEffect.None;
+    private float _colourEffectIntensity = 1f;
+
     private bool _frameRequested;
+    private TimeSpan? _lastFrameTime;
+
+    // The camera's glide: where the visible region's top-left is heading, in page points, and how
+    // fast it is moving there. Null when the camera is at rest. Kept in page points rather than
+    // screen offsets so a zoom during a glide does not send it to the wrong place.
+    private (double X, double Y)? _glideTarget;
+    private double _glideVelocityX, _glideVelocityY;
+    private double _glideSeconds;
 
     public PdfSurface()
     {
@@ -98,11 +114,20 @@ public sealed class PdfSurface : Control
     {
         if (_frameRequested || _viewModel is null || TopLevel.GetTopLevel(this) is not { } top) return;
         _frameRequested = true;
-        top.RequestAnimationFrame(_ =>
+        top.RequestAnimationFrame(time =>
         {
             _frameRequested = false;
             if (_viewModel is null) return;
             _viewModel.Coordinator.Tick();
+            // The compositor's frame time, not a clock read here: see CameraGlide.
+            double dt = _lastFrameTime is { } last ? (time - last).TotalSeconds : 0;
+            _lastFrameTime = time;
+            // While audio plays the camera follows the media clock every frame, travelling between
+            // measured word positions at the measured pace; FollowRequested covers the rest (a
+            // resume, a zoom, a seek while paused).
+            if (_viewModel.Coordinator.CurrentFollowTarget() is { } follow) OnCameraRequested(follow);
+            StepGlide(dt);
+            if (_viewModel.IsPreparing) InvalidateVisual();   // the preparing outline pulses
             RequestFrame();
         });
     }
@@ -169,6 +194,7 @@ public sealed class PdfSurface : Control
     public void TurnPage(int direction)
     {
         if (_pdf is null) return;
+        CancelGlide();
         int target = CurrentPage + Math.Sign(direction);
         if (target < 0 || target >= _pdf.PageCount) return;
         _viewModel?.NotifyManualNavigation();
@@ -185,6 +211,7 @@ public sealed class PdfSurface : Control
         if (_pdf is null || Bounds.Width <= 0) return;
         var (w, _) = _pdf.GetPageSize(CurrentPage);
         if (w <= 0) return;
+        CancelGlide();
         _zoom = Math.Clamp(Bounds.Width / w, 0.25, 8.0);
         _offsetX = 0;
         _offsetY = 0;
@@ -199,6 +226,7 @@ public sealed class PdfSurface : Control
     /// </summary>
     private void ZoomAbout(double zoom, double x, double y)
     {
+        CancelGlide();
         var (pageX, pageY) = new PageTransform(_zoom, _offsetX, _offsetY).ToPage(x, y);
         double next = Math.Clamp(zoom, 0.25, 8.0);
         _offsetX = x - pageX * next;
@@ -215,14 +243,19 @@ public sealed class PdfSurface : Control
         ClampOffsets();
     }
 
-    private void ClampOffsets()
+    private void ClampOffsets() => (_offsetX, _offsetY) = ClampedOffsets(_offsetX, _offsetY);
+
+    private (double X, double Y) ClampedOffsets(double x, double y)
     {
-        if (_pdf is null) return;
+        if (_pdf is null) return (x, y);
         var (w, h) = _pdf.GetPageSize(CurrentPage);
         double scaledW = w * _zoom, scaledH = h * _zoom;
-        // The page may be scrolled off-centre at high magnification, but never entirely out of view.
-        _offsetX = Math.Clamp(_offsetX, Math.Min(0, Bounds.Width - scaledW), Math.Max(0, Bounds.Width - scaledW));
-        _offsetY = Math.Clamp(_offsetY, Math.Min(0, Bounds.Height - scaledH), Math.Max(0, Bounds.Height - scaledH));
+        // A page wider than the view may be scrolled past its edges by up to half the view, so the
+        // follow camera can bring a line's start in from the left edge and stop with its end near the
+        // middle (FollowOptions.LineStartFraction, LineEndFraction). A page that fits stays put.
+        double overscroll = scaledW > Bounds.Width ? Bounds.Width * HorizontalOverscroll : 0;
+        return (Math.Clamp(x, Math.Min(0, Bounds.Width - scaledW) - overscroll, Math.Max(0, Bounds.Width - scaledW) + overscroll),
+                Math.Clamp(y, Math.Min(0, Bounds.Height - scaledH), Math.Max(0, Bounds.Height - scaledH)));
     }
 
     /// <summary>Sets highlights grouped by page, so a unit spanning a page break lights up on either page.</summary>
@@ -241,36 +274,72 @@ public sealed class PdfSurface : Control
         InvalidateVisual();
     }
 
-    private void OnCameraRequested(int page, IReadOnlyList<PageRect> rects)
+    private void OnCameraRequested(FollowTarget target)
     {
-        if (rects.Count == 0) return;
-        // Reading moved to another page: show it, then place the cue on it now. Returning here kept
-        // the old scroll position, so at high magnification the new page opened at its bottom.
-        if (page != CurrentPage)
+        if (target.CueRects.Count == 0 || _pdf is null) return;
+        // Reading moved to another page: show it, then place the cue on it at once. There is nothing
+        // to glide from: the old page's position means nothing on the new one.
+        bool newPage = target.PageIndex != CurrentPage;
+        if (newPage)
         {
-            GoToPage(page);
-            if (page != CurrentPage) return;
+            CancelGlide();
+            GoToPage(target.PageIndex);
+            if (target.PageIndex != CurrentPage) return;
         }
 
-        // Follow the active cue rather than the midpoint of a whole paragraph, and move only when the
-        // cue has left the safe zone. The decision is made in page points, so it behaves identically at
-        // every zoom and DPI, and it preserves the reader's magnification instead of zooming out to fit.
-        var visible = new PageTransform(_zoom, _offsetX, _offsetY)
-            .ToPageRect(0, 0, Bounds.Width, Bounds.Height);
+        // Decide in page points, so it behaves identically at every zoom and DPI and never changes
+        // the reader's magnification; then glide there frame by frame (StepGlide).
+        var visible = new PageTransform(_zoom, _offsetX, _offsetY).ToPageRect(0, 0, Bounds.Width, Bounds.Height);
         var decision = CameraFollowPlanner.Plan(
-            new PageViewport(page, visible), rects, page,
-            _viewModel?.FollowMode ?? FollowMode.KeepVisible,
+            new PageViewport(newPage ? -1 : CurrentPage, visible), target,
+            _viewModel?.FollowMode ?? FollowMode.Follow,
             new FollowOptions(ReduceMotion: _viewModel?.Services.CurrentSettings.ReduceMotion ?? false));
 
         double beforeX = _offsetX, beforeY = _offsetY;
-        if (decision.ShouldMove)
+        bool redirect = !decision.ShouldMove && _glideTarget is not null && !decision.TargetVisible.Visible.IsEmpty;
+        if (decision.ShouldMove || redirect)
         {
-            _offsetX += (visible.Left - decision.TargetVisible.Visible.Left) * _zoom;
-            _offsetY += (visible.Top - decision.TargetVisible.Visible.Top) * _zoom;
-            ClampOffsets();
-            InvalidateVisual();
+            // Clamp the destination the way the offsets are clamped, so the glide ends where the view
+            // can actually be, rather than straining against the page edge.
+            var (offX, offY) = ClampedOffsets(-decision.TargetVisible.Visible.Left * _zoom, -decision.TargetVisible.Visible.Top * _zoom);
+            var destination = (X: -offX / _zoom, Y: -offY / _zoom);
+            if (decision.GlideSeconds <= 0 || newPage)
+            {
+                CancelGlide();
+                _offsetX = offX;
+                _offsetY = offY;
+                InvalidateVisual();
+            }
+            else
+            {
+                // A new target while gliding keeps the velocity: the next word bends the path rather
+                // than restarting it, which is what turns word-by-word targets into one steady pan.
+                _glideTarget = destination;
+                _glideSeconds = decision.GlideSeconds;
+            }
         }
-        FollowLog.Write(page, rects, visible, decision, Bounds, _zoom, (beforeX, beforeY), (_offsetX, _offsetY));
+        FollowLog.Write(target.PageIndex, target.CueRects, visible, decision, Bounds, _zoom, (beforeX, beforeY), (_offsetX, _offsetY));
+    }
+
+    /// <summary>Moves the camera one frame along its glide.</summary>
+    private void StepGlide(double dtSeconds)
+    {
+        if (_glideTarget is not { } target || _zoom <= 0) return;
+        double x = -_offsetX / _zoom, y = -_offsetY / _zoom;
+        x = CameraGlide.Step(x, target.X, ref _glideVelocityX, _glideSeconds, dtSeconds);
+        y = CameraGlide.Step(y, target.Y, ref _glideVelocityY, _glideSeconds, dtSeconds);
+        (_offsetX, _offsetY) = ClampedOffsets(-x * _zoom, -y * _zoom);
+        if (CameraGlide.HasArrived(-_offsetX / _zoom, target.X, _glideVelocityX)
+            && CameraGlide.HasArrived(-_offsetY / _zoom, target.Y, _glideVelocityY))
+            CancelGlide();
+        InvalidateVisual();
+    }
+
+    /// <summary>Stops the glide where it is: the reader has taken the camera, or it has arrived.</summary>
+    private void CancelGlide()
+    {
+        _glideTarget = null;
+        _glideVelocityX = _glideVelocityY = 0;
     }
 
     /// <summary>The DPI to rasterise at, quantised so a small zoom change does not force a re-render.</summary>
@@ -307,6 +376,22 @@ public sealed class PdfSurface : Control
         _bitmap = null;
     }
 
+    /// <summary>
+    /// Applies one of RailReader's colour filters (high contrast, high visibility, amber, invert) to
+    /// the page. Filtered once per raster, when it is copied for the compositor, so panning costs
+    /// nothing extra.
+    /// </summary>
+    public void SetColourEffect(ColourEffect effect, double intensity)
+    {
+        float i = (float)Math.Clamp(intensity, 0, 1);
+        if (effect == _colourEffect && Math.Abs(i - _colourEffectIntensity) < 0.001f) return;
+        _colourEffect = effect;
+        _colourEffectIntensity = i;
+        _bitmap?.Dispose();
+        _bitmap = null;   // re-upload through the new filter
+        InvalidateVisual();
+    }
+
     /// <summary>Copies the Skia raster into a bitmap the compositor can blit.</summary>
     private unsafe WriteableBitmap? EnsureBitmap()
     {
@@ -323,6 +408,21 @@ public sealed class PdfSurface : Control
         _bitmap = new WriteableBitmap(new PixelSize(skia.Width, skia.Height), new Vector(96, 96),
             PixelFormat.Bgra8888, AlphaFormat.Premul);
 
+        // The colour filter is drawn into a copy, so the cached raster stays unfiltered and a change
+        // of filter needs no PDF render.
+        SkiaSharp.SKBitmap? filtered = null;
+        if (_colourEffect != ColourEffect.None && Shaders.Value.CreatePaint(_colourEffect, _colourEffectIntensity) is { } paint)
+        {
+            using (paint)
+            {
+                filtered = new SkiaSharp.SKBitmap(skia.Info);
+                using var canvas = new SkiaSharp.SKCanvas(filtered);
+                canvas.DrawBitmap(skia, 0, 0, paint);
+            }
+            skia = filtered;
+        }
+
+        using (filtered)
         using (var buffer = _bitmap.Lock())
         {
             int rowBytes = skia.Width * 4;
@@ -352,6 +452,7 @@ public sealed class PdfSurface : Control
                 context.DrawImage(bitmap, new Rect(0, 0, bitmap.PixelSize.Width, bitmap.PixelSize.Height), destination);
             }
             DrawHighlights(context);
+            DrawPreparing(context);
         }
         catch (Exception ex)
         {
@@ -368,6 +469,13 @@ public sealed class PdfSurface : Control
 
         var transform = new PageTransform(_zoom, _offsetX, _offsetY);
         var fillColour = _highlightStyle.FillColour;
+        // On a filtered page the default amber can vanish (yellow on high-visibility yellow, say); use
+        // the colour RailReader pairs with that filter for its line highlight.
+        if (_colourEffect != ColourEffect.None)
+        {
+            var tint = _colourEffect.GetOverlayPalette().LineHighlight;
+            fillColour = new SkiaSharp.SKColor(tint.R, tint.G, tint.B);
+        }
         var fill = new SolidColorBrush(Color.FromArgb(_highlightStyle.FillAlpha,
             fillColour.Red, fillColour.Green, fillColour.Blue));
         IPen? outline = _highlightStyle.OutlineColour is { } c
@@ -387,6 +495,33 @@ public sealed class PdfSurface : Control
             var (x1, y1) = transform.ToScreen(rect.Right + pad, rect.Bottom + pad);
             var target = new Rect(x0, y0, Math.Max(1, x1 - x0), Math.Max(1, y1 - y0));
             context.DrawRectangle(fill, outline, target, radius, radius);
+        }
+    }
+
+    /// <summary>
+    /// Outlines the passage a start is waiting on, pulsing, so it is plain on the page which passage
+    /// will be read and that it is not playing yet.
+    /// </summary>
+    private void DrawPreparing(DrawingContext context)
+    {
+        if (_viewModel?.Playback.Preparation is not { } preparation) return;
+        if (_viewModel.Coordinator.Scheduler?.SourceMap is not { } map) return;
+        if (map.Segment(preparation.SegmentId) is not { } segment) return;
+        var rects = map.HighlightRects(segment.AnchorIds, CurrentPage);
+        if (rects.Count == 0) return;
+
+        double phase = (Environment.TickCount64 % 1400) / 1400.0;
+        byte alpha = (byte)(110 + 110 * (0.5 + 0.5 * Math.Sin(phase * 2 * Math.PI)));
+        var pen = new Pen(new SolidColorBrush(Color.FromArgb(alpha, 0x2F, 0x80, 0xED)), 2,
+            new DashStyle([4, 3], phase * 7));
+        var fill = new SolidColorBrush(Color.FromArgb((byte)(alpha / 6), 0x2F, 0x80, 0xED));
+        var transform = new PageTransform(_zoom, _offsetX, _offsetY);
+        float pad = _highlightStyle.PaddingPoints;
+        foreach (var rect in rects)
+        {
+            var (x0, y0) = transform.ToScreen(rect.Left - pad, rect.Top - pad);
+            var (x1, y1) = transform.ToScreen(rect.Right + pad, rect.Bottom + pad);
+            context.DrawRectangle(fill, pen, new Rect(x0, y0, Math.Max(1, x1 - x0), Math.Max(1, y1 - y0)), 2, 2);
         }
     }
 
@@ -428,7 +563,11 @@ public sealed class PdfSurface : Control
         if (!_dragging) return;
         var point = e.GetPosition(this);
         // Manual panning suspends the camera, not the audio.
-        if (Math.Abs(point.X - _dragStart.X) + Math.Abs(point.Y - _dragStart.Y) > 4) _viewModel?.NotifyManualNavigation();
+        if (Math.Abs(point.X - _dragStart.X) + Math.Abs(point.Y - _dragStart.Y) > 4)
+        {
+            CancelGlide();
+            _viewModel?.NotifyManualNavigation();
+        }
         _offsetX = _dragOffsetStart.X + (point.X - _dragStart.X);
         _offsetY = _dragOffsetStart.Y + (point.Y - _dragStart.Y);
         ClampOffsets();
@@ -467,6 +606,7 @@ public sealed class PdfSurface : Control
     {
         if (_pdf is null) return;
         const double Step = 80;
+        CancelGlide();
         _viewModel?.NotifyManualNavigation();
         var (w, h) = _pdf.GetPageSize(CurrentPage);
         double minY = Math.Min(0, Bounds.Height - h * _zoom);
