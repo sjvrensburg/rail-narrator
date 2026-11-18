@@ -7,11 +7,11 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 414 passing, 6 opt-in skips, 0 warnings
+## Verified by automated tests — 416 passing, 6 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
-| `RailNarrator.Domain.Tests` | 204 | Abbreviations expanded only as whole words ("Chap.", "overlap.", "p.adjust" untouched); maths italic letters (U+1D400 block, ℎ) mark their sentence as maths and are spoken as plain letters and Greek names, mapped back to both UTF-16 units; silent marks not counted as words; a zoom re-checks the camera at once unless following is suspended; Decimals and signed numbers after a year cue ("from 0.20", "by 0.75") read as numbers, not handed to the year reading; Play waits for the maths ahead (and starts anyway after the cap), a refused interpretation read mechanically from a transcription and labelled, a failed page crop reported, Front-matter metadata skipped (body sentences that start the same way kept), A lead-in sentence and its equation interpreted as one passage, Citation markers left out (and brackets that are content kept), regenerate re-asks the model, Maths left pending with an honest fallback, interpreted once with surrounding definitions and cached, spoken by the coordinator; Layout roles (model formulas trusted over geometry, display lines merged, headings kept apart, inline maths kept in its sentence, tables announced, publisher cover sheets skipped), years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
+| `RailNarrator.Domain.Tests` | 206 | The camera leads when it moves (the cue goes to the top and left of the safe zone, not just inside its edge); Abbreviations expanded only as whole words ("Chap.", "overlap.", "p.adjust" untouched); maths italic letters (U+1D400 block, ℎ) mark their sentence as maths and are spoken as plain letters and Greek names, mapped back to both UTF-16 units; silent marks not counted as words; a zoom re-checks the camera at once unless following is suspended; Decimals and signed numbers after a year cue ("from 0.20", "by 0.75") read as numbers, not handed to the year reading; Play waits for the maths ahead (and starts anyway after the cap), a refused interpretation read mechanically from a transcription and labelled, a failed page crop reported, Front-matter metadata skipped (body sentences that start the same way kept), A lead-in sentence and its equation interpreted as one passage, Citation markers left out (and brackets that are content kept), regenerate re-asks the model, Maths left pending with an honest fallback, interpreted once with surrounding definitions and cached, spoken by the coordinator; Layout roles (model formulas trusted over geometry, display lines merged, headings kept apart, inline maths kept in its sentence, tables announced, publisher cover sheets skipped), years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
 | `RailNarrator.Pdf.Tests` | 20 (+3 opt-in) | Layout analysis that fails to start, or fails mid-document, finishes on the CPU fallback from the page that failed and says so once, and the source then reports it so the snapshot is not cached under the GPU key; opt-in, the `Cpu` setting never uses the GPU, and (`RN_WEBGPU_INTEGRATION=1`) the GPU gives the same blocks, kinds, reading units and geometry within 0.1 pt as the CPU; A passage crop is a PNG of its ink; **Real PDFs** through the real RailReaderCore pipeline, including a cached snapshot building the same plan as a fresh one; opt-in, the real PP-DocLayoutV3 model through the adapter |
 | `RailNarrator.Speech.Tests` | 36 (+2 opt-in) | Opt-in, real Kokoro speech holding acronyms and words the dictionary lacks aligned word by word; PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
 | `RailNarrator.Audio.Tests` | 39 | Resampler (polyphase path equal to the direct sinc filter on four rate pairs), time-stretcher (fast grain search equal to the direct search at three rates), playback engine against a controllable fake device, engine lock ordering, coordinator-plus-engine transition stress |
@@ -226,8 +226,11 @@ chapter that showed some sentences highlighted word by word and others whole.
 - Before the fix, three sentences holding maths italic letters could not be synthesised at all
   (Kokoro's phonemiser threw). All 71 pending maths sentences in the chapter can now be spoken in
   their fallback reading.
-- Not measured: how accurate the boundaries of generated words are, and whether the view follows
-  the word at high zoom in the window. The camera code path is tested, but the GUI was not driven.
+- The window was driven on an Xvfb display (XTEST input, audio on a null sink) with the chapter:
+  at 173% and at 400% the view followed the highlighted word across lines and onto the next
+  page; ◀/▶ and the wheel turned pages and paused following; Resume following returned to the
+  word being read. Frames were inspected by eye; no timing of the camera was measured.
+- Not measured: how accurate the boundaries of generated words are.
 
 ## Not verified — and what it would take
 
@@ -558,3 +561,15 @@ threads meeting.
     the reader had panned away, and the zoom buttons scaled about the page's corner, so the word
     went off screen until the next cue. Zooming now keeps following, scales about the pointer or
     the middle of the view, and re-checks the camera at once.
+47. **The camera kept the word being read at the edge of the view.** A move was the minimum that
+    brought the cue back inside the safe zone, so the reading line sat at the bottom edge and the
+    view scrolled a line at a time (and, at high zoom, panned word by word). A move now leads: the
+    cue goes to the top and left of the zone, so what follows is in view.
+48. **There was no way to change page, and a click stopped following.** The only page keys needed
+    keyboard focus, the wheel only zoomed and dragging stopped at the page edge. Any click on blank
+    space suspended following, so the view stayed put while reading moved on to the next page. The
+    toolbar now has ◀ Page n / N ▶, the wheel scrolls through pages (Ctrl+wheel zooms), and only an
+    actual drag suspends following. A page change by the camera now places the word at once rather
+    than keeping the old page's scroll position.
+49. **The toolbar was wider than the window.** With the page controls added, the follow-mode and
+    Resume following buttons were cut off; the toolbar now wraps.

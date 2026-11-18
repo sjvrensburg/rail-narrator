@@ -121,6 +121,7 @@ public sealed class PdfSurface : Control
         _pdf = (factory ?? new SkiaPdfServiceFactory()).CreatePdfService(path);
         CurrentPage = 0;
         FitToWidth();
+        PageChanged?.Invoke(CurrentPage, PageCount);
         InvalidateVisual();
     }
 
@@ -140,6 +141,9 @@ public sealed class PdfSurface : Control
         }
     }
 
+    /// <summary>Raised with the zero-based page shown and the page count whenever either changes.</summary>
+    public event Action<int, int>? PageChanged;
+
     public void GoToPage(int page, PageRect? focus = null)
     {
         if (_pdf is null || page < 0 || page >= _pdf.PageCount) return;
@@ -147,6 +151,8 @@ public sealed class PdfSurface : Control
         {
             ReleasePage();
             CurrentPage = page;
+            ClampOffsets();   // the new page may be a different size
+            PageChanged?.Invoke(CurrentPage, PageCount);
         }
         if (focus is { IsEmpty: false } rect) CentreOn(rect);
         InvalidateVisual();
@@ -155,6 +161,23 @@ public sealed class PdfSurface : Control
     public void NextPage() => GoToPage(CurrentPage + 1);
 
     public void PreviousPage() => GoToPage(CurrentPage - 1);
+
+    /// <summary>
+    /// The reader turns to the next or previous page: shown from its top (or, going back, its bottom),
+    /// with following paused so the camera does not pull the view straight back.
+    /// </summary>
+    public void TurnPage(int direction)
+    {
+        if (_pdf is null) return;
+        int target = CurrentPage + Math.Sign(direction);
+        if (target < 0 || target >= _pdf.PageCount) return;
+        _viewModel?.NotifyManualNavigation();
+        GoToPage(target);
+        var (_, h) = _pdf.GetPageSize(CurrentPage);
+        _offsetY = direction > 0 ? 0 : Bounds.Height - h * _zoom;
+        ClampOffsets();
+        InvalidateVisual();
+    }
 
     /// <summary>Fits the page width to the control and records that as the reader's zoom.</summary>
     public void FitToWidth()
@@ -221,7 +244,13 @@ public sealed class PdfSurface : Control
     private void OnCameraRequested(int page, IReadOnlyList<PageRect> rects)
     {
         if (rects.Count == 0) return;
-        if (page != CurrentPage) { GoToPage(page); return; }
+        // Reading moved to another page: show it, then place the cue on it now. Returning here kept
+        // the old scroll position, so at high magnification the new page opened at its bottom.
+        if (page != CurrentPage)
+        {
+            GoToPage(page);
+            if (page != CurrentPage) return;
+        }
 
         // Follow the active cue rather than the midpoint of a whole paragraph, and move only when the
         // cue has left the safe zone. The decision is made in page points, so it behaves identically at
@@ -384,8 +413,8 @@ public sealed class PdfSurface : Control
         _dragging = true;
         _dragStart = point;
         _dragOffsetStart = (_offsetX, _offsetY);
-        // Manual panning suspends the camera, not the audio.
-        _viewModel?.NotifyManualNavigation();
+        // Following is suspended once the pointer actually pans (see OnPointerMoved). A plain click
+        // on blank space or between lines used to suspend it, and with it the move to the next page.
         e.Pointer.Capture(this);
     }
 
@@ -394,6 +423,8 @@ public sealed class PdfSurface : Control
         base.OnPointerMoved(e);
         if (!_dragging) return;
         var point = e.GetPosition(this);
+        // Manual panning suspends the camera, not the audio.
+        if (Math.Abs(point.X - _dragStart.X) + Math.Abs(point.Y - _dragStart.Y) > 4) _viewModel?.NotifyManualNavigation();
         _offsetX = _dragOffsetStart.X + (point.X - _dragStart.X);
         _offsetY = _dragOffsetStart.Y + (point.Y - _dragStart.Y);
         ClampOffsets();
@@ -410,12 +441,38 @@ public sealed class PdfSurface : Control
     protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
     {
         base.OnPointerWheelChanged(e);
-        if (Math.Abs(e.Delta.Y) < 0.01) return;
+        if (Math.Abs(e.Delta.Y) < 0.01 && Math.Abs(e.Delta.X) < 0.01) return;
         var point = e.GetPosition(this);
-        // Zoom about the pointer so the text under the cursor stays under it. The new zoom is kept
-        // (follow pans, it never zooms), and following carries on: it used to be suspended here, so
-        // after zooming in the view no longer followed the word being read.
-        ZoomAbout(_zoom * (e.Delta.Y > 0 ? 1.15 : 1 / 1.15), point.X, point.Y);
+        if (e.KeyModifiers.HasFlag(KeyModifiers.Control))
+        {
+            // Zoom about the pointer so the text under the cursor stays under it. The new zoom is
+            // kept (follow pans, it never zooms), and following carries on.
+            ZoomAbout(_zoom * (e.Delta.Y > 0 ? 1.15 : 1 / 1.15), point.X, point.Y);
+            e.Handled = true;
+            return;
+        }
+        ScrollBy(e.KeyModifiers.HasFlag(KeyModifiers.Shift) ? e.Delta.Y : e.Delta.X, e.KeyModifiers.HasFlag(KeyModifiers.Shift) ? 0 : e.Delta.Y);
+        e.Handled = true;
+    }
+
+    /// <summary>
+    /// Scrolls by wheel notches, carrying on to the next or previous page at a page's end. Scrolling
+    /// is browsing, so it pauses following (Resume following, F9 or Escape restores it).
+    /// </summary>
+    private void ScrollBy(double notchesX, double notchesY)
+    {
+        if (_pdf is null) return;
+        const double Step = 80;
+        _viewModel?.NotifyManualNavigation();
+        var (w, h) = _pdf.GetPageSize(CurrentPage);
+        double minY = Math.Min(0, Bounds.Height - h * _zoom);
+        bool atBottom = _offsetY <= minY + 0.5, atTop = _offsetY >= -0.5;
+        if (notchesY < 0 && atBottom && CurrentPage + 1 < _pdf.PageCount) { TurnPage(+1); return; }
+        if (notchesY > 0 && atTop && CurrentPage > 0) { TurnPage(-1); return; }
+        _offsetX += notchesX * Step;
+        _offsetY += notchesY * Step;
+        ClampOffsets();
+        InvalidateVisual();
     }
 
     protected override void OnKeyDown(KeyEventArgs e)
@@ -424,9 +481,9 @@ public sealed class PdfSurface : Control
         switch (e.Key)
         {
             case Key.PageDown:
-                NextPage(); _viewModel?.NotifyManualNavigation(); e.Handled = true; break;
+                TurnPage(+1); e.Handled = true; break;
             case Key.PageUp:
-                PreviousPage(); _viewModel?.NotifyManualNavigation(); e.Handled = true; break;
+                TurnPage(-1); e.Handled = true; break;
             case Key.Escape:
                 _viewModel?.Coordinator.ResumeFollow(); e.Handled = true; break;
         }

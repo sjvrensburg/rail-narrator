@@ -65,7 +65,8 @@
 
     <!-- Transport bar -->
     <Border DockPanel.Dock="Top" Padding="8" Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
-      <StackPanel Orientation="Horizontal" Spacing="6">
+      <!-- Wraps rather than clipping: the follow controls at the end must stay reachable in a narrow window. -->
+      <WrapPanel Orientation="Horizontal" ItemSpacing="6" LineSpacing="4">
         <Button Name="PlayButton" Content="▶ Play" Command="{Binding Play}" ToolTip.Tip="Play (Space)" />
         <Button Content="⏸ Pause" Command="{Binding Pause}" ToolTip.Tip="Pause" />
         <Button Content="⏹ Stop" Command="{Binding Stop}" ToolTip.Tip="Stop (Escape)" />
@@ -92,7 +93,13 @@
 
         <Separator Width="1" Margin="6,2" />
 
-        <Button Content="−" Command="{Binding ZoomOut}" ToolTip.Tip="Zoom out (Ctrl+-)" />
+        <Button Content="◀" Click="OnPreviousPageClicked" ToolTip.Tip="Previous page (Page Up). Pauses following." />
+        <TextBlock Name="PageLabel" Text="Page –" VerticalAlignment="Center" MinWidth="80" TextAlignment="Center" />
+        <Button Content="▶" Click="OnNextPageClicked" ToolTip.Tip="Next page (Page Down). Pauses following." />
+
+        <Separator Width="1" Margin="6,2" />
+
+        <Button Content="−" Command="{Binding ZoomOut}" ToolTip.Tip="Zoom out (Ctrl+-, or Ctrl+wheel)" />
         <TextBlock Text="{Binding ZoomPercent, StringFormat={}{0}%}" VerticalAlignment="Center" MinWidth="48"
                    TextAlignment="Center" />
         <Button Content="+" Command="{Binding ZoomIn}" ToolTip.Tip="Zoom in (Ctrl++)" />
@@ -108,7 +115,7 @@
         <Button Content="Resume following (F9)" Command="{Binding ResumeFollow}"
                 IsVisible="{Binding FollowSuspended}"
                 ToolTip.Tip="Browsing paused the camera; this restores it. Audio was never stopped." />
-      </StackPanel>
+      </WrapPanel>
     </Border>
 
     <!-- Status bar -->

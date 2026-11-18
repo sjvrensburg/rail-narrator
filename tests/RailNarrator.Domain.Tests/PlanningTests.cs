@@ -241,20 +241,45 @@ public sealed class CameraFollowTests
         Assert.Contains("safe zone", decision.Reason);
     }
 
+    /// <summary>
+    /// When the cue leaves the safe zone downwards, its line goes to the top of the zone, so the
+    /// reader sees what comes next and the view moves about once a screenful. The old minimum move
+    /// kept the word pinned to the bottom edge and scrolled one line at a time.
+    /// </summary>
     [Fact]
-    public void ACueBelowTheViewport_MovesByTheMinimumNeeded()
+    public void ACueBelowTheViewport_IsBroughtToTheTopOfTheSafeZone()
     {
         var cue = new PageRect(100, 700, 200, 712);   // below the 600pt viewport
+        var options = FollowOptions.Default;
         var decision = CameraFollowPlanner.Plan(new PageViewport(0, Viewport), [cue], 0,
-            FollowMode.KeepVisible, FollowOptions.Default);
+            FollowMode.KeepVisible, options);
 
         Assert.True(decision.ShouldMove);
-        // Only the vertical axis moves: the reader's horizontal position is theirs, not the app's.
+        // Only the vertical axis moves: the cue is horizontally inside the zone.
         Assert.Equal(Viewport.Left, decision.TargetVisible.Visible.Left);
-        Assert.True(decision.TargetVisible.Visible.Top > Viewport.Top);
-        // The move is the minimum that satisfies the policy, not a re-centring.
-        Assert.True(decision.TargetVisible.Visible.Top < cue.Bottom);
-        Assert.True(cue.Bottom <= decision.TargetVisible.Visible.Bottom);
+        double zoneTop = decision.TargetVisible.Visible.Top + Viewport.Height * options.SafeZone + options.HysteresisPoints;
+        Assert.Equal(zoneTop, cue.Top, precision: 3);
+    }
+
+    /// <summary>
+    /// At high magnification a line is wider than the view. When the word runs past the right of the
+    /// zone, the view moves so the word starts at the zone's left, leaving the rest of the line ahead
+    /// in view; at a line wrap the start of the next line goes to the same place.
+    /// </summary>
+    [Theory]
+    [InlineData(380, 395)]   // ran off to the right along the line
+    [InlineData(-300, -280)]  // wrapped back to the start of the next line, far to the left
+    public void ACueOutsideTheZoneSideways_StartsAtTheZonesLeft(float left, float right)
+    {
+        var cue = new PageRect(left, 300, right, 312);
+        var options = FollowOptions.Default;
+        var decision = CameraFollowPlanner.Plan(new PageViewport(0, Viewport), [cue], 0,
+            FollowMode.KeepVisible, options);
+
+        Assert.True(decision.ShouldMove);
+        double zoneLeft = decision.TargetVisible.Visible.Left + Viewport.Width * options.SafeZone + options.HysteresisPoints;
+        Assert.Equal(zoneLeft, cue.Left, precision: 3);
+        Assert.Equal(Viewport.Top, decision.TargetVisible.Visible.Top);
     }
 
     [Fact]

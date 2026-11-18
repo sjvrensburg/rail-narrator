@@ -71,6 +71,13 @@ run, so compare tallies, not single passages.
   flag the recorder raises the PipeWire quantum and starves the app's stream. To find exact clip
   start times, cross-correlate the recording with the cached clips
   (`$XDG_CACHE_HOME/rail-narrator/speech/rn/*/audio.pcm`, 24 kHz float32).
+- **`PULSE_SINK` does not redirect this app.** PortAudio opens PipeWire's ALSA device, whose streams
+  are named `PipeWire ALSA [rail-narrator]` and carry no process id, and it ignored `PULSE_SINK`: a
+  test run played to the user's default headset. Create a null sink
+  (`pactl load-module module-null-sink sink_name=rn_test`) and, before pressing Play, run a loop that
+  moves every sink input whose `application.name` contains `rail-narrator` to it
+  (`pactl move-sink-input <id> rn_test`); the app opens a new stream per clip. Match the app with
+  `pgrep -x rail-narrator`: `pkill -f` on its path also kills the shell running the command.
 - **The default sink may be someone's headphones.** Before playing anything, record a few
   seconds of the monitor; if it isn't silent, someone is listening to something, so don't
   play test audio.

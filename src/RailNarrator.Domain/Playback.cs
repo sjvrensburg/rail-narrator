@@ -223,10 +223,11 @@ public sealed record FollowDecision(bool ShouldMove, PageViewport TargetVisible,
 /// paragraph: a paragraph's midpoint can be a screen away from the word being spoken.
 /// </para>
 /// <para>
-/// Two rules matter more than the rest. First, a move is the minimum that satisfies the policy, so
-/// the user's magnification and horizontal position are preserved — at 800% the camera pans along
-/// the line rather than zooming out to fit it. Second, nothing moves while the cue is inside the
-/// safe zone, which is what makes the view stable enough to read.
+/// Two rules matter more than the rest. First, nothing moves while the cue is inside the safe zone,
+/// which is what makes the view stable enough to read. Second, a move never changes magnification
+/// (at 800% the camera pans along the line rather than zooming out to fit it), and it leads: the cue
+/// goes to the zone's top and left edge, so the text still to be read is in view and the next move is
+/// a screenful away. A minimum move kept the word pinned to the edge it had crossed.
 /// </para>
 /// </remarks>
 public static class CameraFollowPlanner
@@ -272,19 +273,19 @@ public static class CameraFollowPlanner
 
         double dx = 0, dy = 0;
 
-        // Horizontal: the minimum shift that brings the cue inside the zone. Preserves magnification.
-        if (bounds.Right > zone.Right) dx = bounds.Right - zone.Right;
-        else if (bounds.Left < zone.Left) dx = bounds.Left - zone.Left;
+        // Horizontal: the cue starts at the zone's left, so the rest of its line is ahead in view.
+        // Moving only far enough to clear the right edge kept the word being read pinned there and
+        // panned on every word. Preserves magnification.
+        if (bounds.Right > zone.Right || bounds.Left < zone.Left) dx = bounds.Left - zone.Left;
 
         // Vertical: in rail mode place the cue at the reader's preferred height; in keep-visible
-        // mode shift by the minimum that clears the zone.
+        // mode put its line at the top of the zone, so what follows is in view and the camera moves
+        // about once a screenful rather than once a line.
         if (bounds.Bottom > zone.Bottom || bounds.Top < zone.Top)
         {
             dy = mode == FollowMode.ReadingRail
                 ? bounds.MidY - (visible.Top + visible.Height * options.VerticalBias)
-                : bounds.Bottom > zone.Bottom
-                    ? bounds.Bottom - zone.Bottom
-                    : bounds.Top - zone.Top;
+                : bounds.Top - zone.Top;
         }
 
         if (Math.Abs(dx) < options.MinMovePoints && Math.Abs(dy) < options.MinMovePoints)
