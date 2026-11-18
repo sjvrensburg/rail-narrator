@@ -1,6 +1,6 @@
 # Next steps and open decisions
 
-Handover note, 18 November 2026, after PR #16 and gapless playback. `main` builds with 0 warnings; 442 tests pass
+Handover note, 18 November 2026, after PR #17. `main` builds with 0 warnings; 442 tests pass
 and 6 opt-in tests are skipped. What is verified, and how it was measured, is in `status.md`.
 How to run the real models, the GUI and the audio path on a new machine is in
 `testing-real-world.md`.
@@ -31,14 +31,13 @@ Since PR #10:
 - **Simpler window** (PR #16): one Play/Pause button (Cancel while preparing), the script panel
   hidden by default, and RailReader's colour filters on the toolbar, in View and on the C key.
 
-## Just landed, to check by ear
+## Recently landed
 
-- **Gapless playback** (was open decision 4). The next passage is queued in the audio engine
-  as soon as it is prepared and written straight after the current one, so the ~0.4 s of output
-  latency between passages should be gone, leaving Kokoro's own trailing silence (~0.5 s). Tested
-  on the fake device only. Listen across a few passage boundaries; to measure, record the sink as
-  described in `testing-real-world.md` and compare against the cached clips. If Kokoro's own
-  pause now feels long, trimming trailing silence per clip is the next lever.
+- **Gapless playback** (was open decision 4, PR #17). The next passage is queued in the audio
+  engine and written straight after the current one, so the ~0.4 s of output latency between
+  passages is gone; smoke-tested by ear in the running app. Kokoro's own trailing silence
+  (~0.5 s) remains. Not yet measured with a loopback recording; if Kokoro's pause feels long,
+  trimming trailing silence per clip is the next lever.
 
 ## Work that needs no decision
 
