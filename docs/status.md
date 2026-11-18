@@ -274,7 +274,8 @@ Not fixed yet. Each was observed in the run described above.
   but an affiliation carries no label. Whether to skip them is open (`next-steps.md`).
 - **A restored position is a passage id.** When a document's units change (a new layout model, a
   new pipeline version), the saved id can name a different passage than the one the reader left.
-- **The silence between passages has not been re-measured since gapless queueing** (item 56).
+- **The silence between passages has not been re-measured with a recording since gapless
+  queueing** (item 56); by ear the gap is gone.
   Before it, about 0.4 s was inserted at every boundary (on top of the ~0.5 s each Kokoro clip
   ends with): output latency, ~320–335 ms from a write to the first presented frame on this
   machine, paid because the next clip was written only once the previous one had drained. With
@@ -632,5 +633,6 @@ threads meeting.
     queueing, still takes the old completion-then-load path. Covered by engine tests on the fake
     device (both clips written before any drain, the clock switching at the boundary frame,
     clearing a written clip, refusing a late queue, a rate change) and coordinator tests (advance
-    without a load, the fallback, an edit clearing the queue). **Not yet measured on the real
-    device**: the gap should drop from ~0.4 s to Kokoro's own trailing silence.
+    without a load, the fallback, an edit clearing the queue). Smoke-tested by the maintainer in
+    the running app on 18 November 2026: passages followed one another without the gap. The
+    remaining pause has **not been measured** with a loopback recording.
