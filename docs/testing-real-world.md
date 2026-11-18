@@ -75,6 +75,12 @@ run, so compare tallies, not single passages.
   `$XDG_STATE_HOME/rail-narrator/logs/follow.log`: the cue's rectangle, the visible region in page
   points, the control's size, zoom, offsets before and after, and the decision with its reason. No
   lines while the word moves means no follow was requested (paused, or no word timing).
+- **Route the app's audio with `PIPEWIRE_NODE`.** Start the app with
+  `PIPEWIRE_NODE=rn_test` after creating the null sink below: PipeWire's ALSA plugin honours it, so
+  the very first stream goes to the null sink (checked: the real sink stayed `SUSPENDED` while the
+  app played). Keep the mover loop as a backup, and note that a stream started with
+  `dotnet …/rail-narrator.dll` is named `PipeWire ALSA [dotnet]`, not `[rail-narrator]`, so match
+  both names.
 - **`PULSE_SINK` does not redirect this app.** PortAudio opens PipeWire's ALSA device, whose streams
   are named `PipeWire ALSA [rail-narrator]` and carry no process id, and it ignored `PULSE_SINK`: a
   test run played to the user's default headset. Create a null sink

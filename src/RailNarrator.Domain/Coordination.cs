@@ -190,6 +190,11 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     private int _interpretFrom = -1;
     // The passage handed to the transport to follow the current one without a gap, if any.
     private string? _queuedSegmentId;
+    // The passage a seek in flight is heading to, valid only while that seek's generation is current
+    // and it has not yet arrived. Next and Previous count from it, so presses made while a seek waits
+    // for audio step on from where the reader is going, not from the passage still playing.
+    private int _seekIndex = -1;
+    private long _seekGeneration = -1;
 
     public NarrationCoordinator(
         ITtsProvider tts,
@@ -402,9 +407,15 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         int index = _plan.Segments.ToList().FindIndex(s => s.Id == segmentId);
         if (index < 0) return;
         long gen = AdvanceGeneration();
+        lock (_gate) { _seekIndex = index; _seekGeneration = gen; }
         Publish(PlaybackState.Seeking, "Seeking");
         await _audio.StopAsync(ct).ConfigureAwait(false);
-        lock (_gate) _segmentIndex = index;
+        lock (_gate)
+        {
+            if (gen != Generation) return;   // superseded by a later seek while stopping
+            _segmentIndex = index;
+            _seekGeneration = -1;
+        }
         StartPreparation(gen);
         if (!await WaitForSegmentAsync(index, gen, PlaybackState.Seeking, ct).ConfigureAwait(false)) return;
         await StartCurrentSegmentAsync(gen, ct, withinSegmentSeconds).ConfigureAwait(false);
@@ -415,7 +426,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         var plan = _plan;
         if (plan is null) return Task.CompletedTask;
         int next;
-        lock (_gate) next = Math.Min(_segmentIndex + 1, plan.SegmentCount - 1);
+        lock (_gate) next = Math.Min(StepOriginCore() + 1, plan.SegmentCount - 1);
         return next < 0 ? Task.CompletedTask : GoToSegmentAsync(plan.Segments[next].Id, 0, ct);
     }
 
@@ -426,11 +437,18 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         int prev;
         lock (_gate)
         {
-            if (_segmentIndex < 0) return Task.CompletedTask;
-            prev = Math.Max(_segmentIndex - 1, 0);
+            int origin = StepOriginCore();
+            if (origin < 0) return Task.CompletedTask;
+            prev = Math.Max(origin - 1, 0);
         }
         return GoToSegmentAsync(plan.Segments[prev].Id, 0, ct);
     }
+
+    /// <summary>
+    /// Where Next and Previous count from: the target of a seek still in flight, else the current
+    /// passage. Call with the lock held.
+    /// </summary>
+    private int StepOriginCore() => _seekGeneration == Generation && _seekIndex >= 0 ? _seekIndex : _segmentIndex;
 
     /// <summary>Replays the current segment from its start.</summary>
     public Task ReplaySegmentAsync(CancellationToken ct = default)
@@ -438,7 +456,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         var plan = _plan;
         if (plan is null) return Task.CompletedTask;
         int i;
-        lock (_gate) i = _segmentIndex;
+        lock (_gate) i = StepOriginCore();
         return i < 0 || i >= plan.SegmentCount ? Task.CompletedTask : GoToSegmentAsync(plan.Segments[i].Id, 0, ct);
     }
 
@@ -1204,10 +1222,12 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         lock (_gate)
         {
             int index = _segmentIndex;
-            int started = index + 1 < plan.SegmentCount && plan.Segments[index + 1].Id == startedId
-                ? index + 1
-                : plan.Segments.ToList().FindIndex(s => s.Id == startedId);   // should not happen; follow the audio
-            if (started < 0) return;
+            // Only the boundary the coordinator expects: the current passage giving way to the next.
+            // Anything else is a clip from before a seek or a stop, and must not move the position.
+            if (gen != Generation || _seekGeneration == gen) return;
+            if (index < 0 || index + 1 >= plan.SegmentCount
+                || plan.Segments[index].Id != completedId || plan.Segments[index + 1].Id != startedId) return;
+            int started = index + 1;
             _segmentIndex = started;
             _queuedSegmentId = null;
             ReleaseClipsOutsideWindow(plan, started);

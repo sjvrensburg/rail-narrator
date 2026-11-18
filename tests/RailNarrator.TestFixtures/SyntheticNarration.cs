@@ -239,13 +239,16 @@ public sealed class FakeAudioTransport : IAudioTransport
 
     public Task ResumeAsync(CancellationToken ct = default) { ResumeCount++; SetState(PlaybackState.Playing); return Task.CompletedTask; }
 
-    public Task StopAsync(CancellationToken ct = default)
+    /// <summary>How long Stop takes. The real engine waits for its writer to stop, so Stop yields.</summary>
+    public TimeSpan StopDelay { get; set; }
+
+    public async Task StopAsync(CancellationToken ct = default)
     {
         StopCount++;
+        if (StopDelay > TimeSpan.Zero) await Task.Delay(StopDelay, ct).ConfigureAwait(false);
         CurrentSegmentId = QueuedSegmentId = null;
         _queuedAsset = null;
         SetState(PlaybackState.Idle);
-        return Task.CompletedTask;
     }
 
     // ---- gapless continuation ------------------------------------------------------------

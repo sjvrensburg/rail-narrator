@@ -7,7 +7,7 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 442 passing, 6 opt-in skips, 0 warnings
+## Verified by automated tests — 444 passing, 6 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
@@ -276,6 +276,14 @@ Not fixed yet. Each was observed in the run described above.
   new pipeline version), the saved id can name a different passage than the one the reader left.
 - **The silence between passages has not been re-measured with a recording since gapless
   queueing** (item 56); by ear the gap is gone.
+- **Kokoro cannot keep up with playback on the current development laptop.** The smoke tool
+  measured `kokoro-fp16.onnx` at an aggregate RTF of 1.71 (11.07 s of audio in 18.96 s; 1.43–2.16
+  per clip) on the Ubuntu 24.04 / Iris Xe machine, against 0.11–0.20 on the previous reference
+  machine. Reading pauses with "Synthesising speech" every few passages. ONNX Runtime also warns
+  that it has no CPU kernel for some fp16 nodes, so an fp32 or quantised export may be much faster
+  on a CPU; not yet tried.
+- **A resize of the reading area resets the zoom to fit-width.** Opening the script panel changed
+  235 % to 173 %; at 400 % or 800 % it would discard the reader's magnification.
   Before it, about 0.4 s was inserted at every boundary (on top of the ~0.5 s each Kokoro clip
   ends with): output latency, ~320–335 ms from a write to the first presented frame on this
   machine, paid because the next clip was written only once the previous one had drained. With
@@ -640,9 +648,22 @@ threads meeting.
     page break raised the preparing card, but the pulsing outline was drawn on the page in view,
     not the one being prepared. Once a start has to wait, the view now moves to that passage
     (framing its start) unless it is already fully in view, and a pause in following from
-    browsing ends, since the reader chose where to read. Nothing moves when following is off. Not
-    watched in the running app: the isolated GUI run has no speech model, and playing to the real
-    device was avoided.
+    browsing ends, since the reader chose where to read. Nothing moves when following is off.
+    Watched in the running app (item 59): four Ctrl+Right presses from passage 1 of a four-page
+    fixture moved the view to page 2 with "Preparing passage 5 of 16" and passage 5 outlined.
 58. **Colour filter strength had no control.** A slider beside the colour filter, shown only while a
     filter is on, sets `ColourEffectIntensity` (0–100 %) and redraws the page at once. Checked under
     Xvfb: High Visibility at 50 % gives the half-way blend (grey paper, olive text).
+59. **Keyboard and button presses were swallowed during waits** (found by driving the GUI with real
+    Kokoro speech under Xvfb, audio on a null sink). A command stayed disabled until its handler
+    finished, so while a seek waited for audio (seconds on this laptop) further Next or Previous
+    presses did nothing: four Ctrl+Right moved three passages. For the same reason the Play button's
+    "Cancel" could not be pressed after Play, and Space did nothing. Next, Previous, Replay and
+    Play/Pause now accept presses while an earlier one is waiting, and the coordinator counts Next,
+    Previous and Replay from the passage a seek in flight is heading to (tested with a Stop that
+    yields, as the real engine's does; the tests fail without the fix). A gapless switch from
+    before a seek no longer moves the reading position. The View menu's script-panel item also did
+    nothing (its check state never reached the view model); it now opens the panel. Re-checked in
+    the GUI: four Ctrl+Right went from passage 1 to 5 and six from 8 to 14, each showing the card on
+    the target's page; Cancel during "Preparing passage 14 of 16" stopped it, and it stayed stopped
+    8 s later; View > Show script opened the panel.

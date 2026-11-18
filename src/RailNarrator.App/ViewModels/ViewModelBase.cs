@@ -33,7 +33,9 @@ public sealed class RelayCommand : ICommand
     private readonly Action? _sync;
     private readonly Func<bool>? _canExecute;
     private readonly Action<Exception>? _onError;
+    private readonly bool _allowWhileRunning;
     private bool _running;
+    private int _runs;
 
     public RelayCommand(Action execute, Func<bool>? canExecute = null, Action<Exception>? onError = null)
     {
@@ -42,16 +44,22 @@ public sealed class RelayCommand : ICommand
         _onError = onError;
     }
 
-    public RelayCommand(Func<Task> execute, Func<bool>? canExecute = null, Action<Exception>? onError = null)
+    /// <param name="allowWhileRunning">
+    /// Accept the command again while an earlier run is still awaiting. For transport commands that
+    /// supersede themselves (Next, Previous, Play/Pause's Cancel): a press while the last one is still
+    /// waiting for audio must count, not be swallowed. The handler must be safe to overlap.
+    /// </param>
+    public RelayCommand(Func<Task> execute, Func<bool>? canExecute = null, Action<Exception>? onError = null, bool allowWhileRunning = false)
     {
         _async = execute ?? throw new ArgumentNullException(nameof(execute));
         _canExecute = canExecute;
         _onError = onError;
+        _allowWhileRunning = allowWhileRunning;
     }
 
     public bool IsRunning => _running;
 
-    public bool CanExecute(object? parameter) => !_running && (_canExecute?.Invoke() ?? true);
+    public bool CanExecute(object? parameter) => (_allowWhileRunning || !_running) && (_canExecute?.Invoke() ?? true);
 
     public void Execute(object? parameter)
     {
@@ -63,6 +71,7 @@ public sealed class RelayCommand : ICommand
             return;
         }
 
+        _runs++;
         _running = true;
         RaiseCanExecuteChanged();
         _ = RunAsync();
@@ -73,7 +82,8 @@ public sealed class RelayCommand : ICommand
             catch (Exception ex) { Report(ex); }
             finally
             {
-                _running = false;
+                // Runs complete on the UI thread (ConfigureAwait(true)), so the count needs no lock.
+                _running = --_runs > 0;
                 RaiseCanExecuteChanged();
             }
         }
