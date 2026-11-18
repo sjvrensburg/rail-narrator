@@ -57,6 +57,26 @@ public interface IAudioTransport
 
     /// <summary>Raised when the output device fails. Playback cannot continue without intervention.</summary>
     event Action<string>? DeviceFailed;
+
+    // ---- gapless continuation (optional) ----------------------------------------------
+    // A transport that cannot queue keeps these defaults, and the coordinator loads each clip after
+    // the previous one completes, as before.
+
+    /// <summary>
+    /// Prepares a clip to follow the loaded one with no gap. Returns false when it is too late or not
+    /// supported; the caller then loads the clip when <see cref="ClipCompleted"/> fires.
+    /// </summary>
+    Task<bool> QueueNextAsync(string segmentId, SpeechAsset asset, ReadOnlyMemory<byte> pcm, CancellationToken ct = default)
+        => Task.FromResult(false);
+
+    /// <summary>Forgets the queued clip, making sure none of it is heard.</summary>
+    Task ClearQueuedAsync(CancellationToken ct = default) => Task.CompletedTask;
+
+    /// <summary>
+    /// Raised when a queued clip took over without a gap: (the clip that finished, the one now playing).
+    /// Replaces <see cref="ClipCompleted"/> for that boundary.
+    /// </summary>
+    event Action<string, string>? ClipAdvanced { add { } remove { } }
 }
 
 /// <summary>Coordinator tuning.</summary>
@@ -168,6 +188,8 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     private Task? _interpretLoop;
     private long _interpretGeneration = -1;
     private int _interpretFrom = -1;
+    // The passage handed to the transport to follow the current one without a gap, if any.
+    private string? _queuedSegmentId;
 
     public NarrationCoordinator(
         ITtsProvider tts,
@@ -188,6 +210,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
 
         _audio.StateChanged += OnTransportStateChanged;
         _audio.ClipCompleted += OnClipCompleted;
+        _audio.ClipAdvanced += OnClipAdvanced;
         _audio.Underflow += OnUnderflow;
         _audio.DeviceFailed += OnDeviceFailed;
     }
@@ -518,6 +541,8 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             _prepared.Clear();
         }
         if (_audio.State == PlaybackState.Paused) await _audio.StopAsync(ct).ConfigureAwait(false);
+        // A queued clip may be this passage in its old words.
+        else await _audio.ClearQueuedAsync(ct).ConfigureAwait(false);
         StartPreparation(gen);
         PublishSnapshotOnly();
         SegmentResolved?.Invoke(fresh);
@@ -554,6 +579,8 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         // A paused transport still holds the old wording. Play resumes a paused clip, so it must be
         // stopped here or the correction would not be heard until the passage was reached again.
         if (_audio.State == PlaybackState.Paused) await _audio.StopAsync(ct).ConfigureAwait(false);
+        // A queued clip may be the edited passage in its old words.
+        else await _audio.ClearQueuedAsync(ct).ConfigureAwait(false);
         if (_assetStore is not null)
             await _assetStore.InvalidateAsync(_plan.Header.Extraction.DocumentContentHash, ct).ConfigureAwait(false);
         StartPreparation(gen);
@@ -824,6 +851,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
                         _prepared[segment.Id] = new PreparedClip(cached, pcm.ToArray());
                         AttachTimings(segment, cached);
                     }
+                    await TryQueueNextAsync(generation).ConfigureAwait(false);
                     return;
                 }
             }
@@ -908,6 +936,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             _prepared[segment.Id] = new PreparedClip(asset, result.Pcm.ToArray());
             AttachTimings(segment, asset, warnings);
         }
+        await TryQueueNextAsync(generation).ConfigureAwait(false);
     }
 
     private void AttachTimings(NarrationSegment segment, SpeechAsset asset, IReadOnlyList<string>? extra = null)
@@ -1082,6 +1111,37 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         await _audio.PlayAsync(ct).ConfigureAwait(false);
         Publish(PlaybackState.Playing, null);
         RaiseCueForCurrentPosition();
+        await TryQueueNextAsync(generation).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Hands the next passage to the transport to follow the current one without a gap, once its
+    /// audio is prepared. Called when a passage starts and whenever a clip is prepared; does nothing
+    /// when the next passage is not ready yet, is already queued, or the generation has moved on.
+    /// </summary>
+    private async Task TryQueueNextAsync(long generation)
+    {
+        var plan = _plan;
+        if (plan is null) return;
+        string nextId;
+        PreparedClip? clip;
+        lock (_gate)
+        {
+            if (generation != Generation) return;
+            int index = _segmentIndex;
+            if (index < 0 || index + 1 >= plan.SegmentCount) return;
+            nextId = plan.Segments[index + 1].Id;
+            if (_queuedSegmentId == nextId) return;
+            clip = _prepared.GetValueOrDefault(nextId);
+            if (clip is null) return;
+            _queuedSegmentId = nextId;
+        }
+        // Outside the coordinator lock: never call the transport while holding it.
+        bool queued;
+        try { queued = await _audio.QueueNextAsync(nextId, clip.Asset, clip.Pcm).ConfigureAwait(false); }
+        catch (Exception) { queued = false; }   // the clip is loaded the old way when this one completes
+        if (!queued)
+            lock (_gate) if (_queuedSegmentId == nextId) _queuedSegmentId = null;
     }
 
     // ---- transport callbacks -----------------------------------------------------------
@@ -1130,6 +1190,32 @@ public sealed class NarrationCoordinator : IAsyncDisposable
                 Publish(PlaybackState.Error, null, NarrationError.SpeechSynthesisFailed(ex.Message, segmentId));
             }
         });
+    }
+
+    /// <summary>
+    /// The transport moved from one passage to the queued next one without a gap. The reading
+    /// position follows; nothing is loaded, since the audio is already playing.
+    /// </summary>
+    private void OnClipAdvanced(string completedId, string startedId)
+    {
+        long gen = Generation;
+        var plan = _plan;
+        if (plan is null) return;
+        lock (_gate)
+        {
+            int index = _segmentIndex;
+            int started = index + 1 < plan.SegmentCount && plan.Segments[index + 1].Id == startedId
+                ? index + 1
+                : plan.Segments.ToList().FindIndex(s => s.Id == startedId);   // should not happen; follow the audio
+            if (started < 0) return;
+            _segmentIndex = started;
+            _queuedSegmentId = null;
+            ReleaseClipsOutsideWindow(plan, started);
+        }
+        ExtendPreparation(gen);
+        RaiseCueForCurrentPosition();
+        PublishSnapshotOnly();
+        _ = Task.Run(() => TryQueueNextAsync(gen));
     }
 
     /// <summary>How many passages behind the current one keep their audio in memory, for Previous and Replay.</summary>
@@ -1338,6 +1424,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             _inflight.Clear();
             _lastCue = null;
             _pendingFollow = null;
+            _queuedSegmentId = null;
             _lastFollowAt = double.NegativeInfinity;
             return Interlocked.Increment(ref _generation);
         }
@@ -1357,6 +1444,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         catch (Exception) { /* a failing preparation must not mask disposal */ }
         _audio.StateChanged -= OnTransportStateChanged;
         _audio.ClipCompleted -= OnClipCompleted;
+        _audio.ClipAdvanced -= OnClipAdvanced;
         _audio.Underflow -= OnUnderflow;
         _audio.DeviceFailed -= OnDeviceFailed;
         _prepareCts?.Dispose();

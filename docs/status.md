@@ -7,7 +7,7 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 435 passing, 6 opt-in skips, 0 warnings
+## Verified by automated tests — 442 passing, 6 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
@@ -274,13 +274,12 @@ Not fixed yet. Each was observed in the run described above.
   but an affiliation carries no label. Whether to skip them is open (`next-steps.md`).
 - **A restored position is a passage id.** When a document's units change (a new layout model, a
   new pipeline version), the saved id can name a different passage than the one the reader left.
-- **About 0.4 s of silence is still inserted between passages** (on top of the ~0.5 s each Kokoro
-  clip ends with). It is output latency: from a write to the first presented frame takes
-  ~320–335 ms on this machine (PipeWire through its ALSA bridge, Bluetooth sink), even on a
-  stream that is already running, and the next clip is only written once the previous one has
-  drained. Removing it needs gapless queueing — writing the next clip before the current one
-  drains and moving the clock across the boundary — which changes `IAudioTransport` and the
-  coordinator's clip-completion path.
+- **The silence between passages has not been re-measured since gapless queueing** (item 56).
+  Before it, about 0.4 s was inserted at every boundary (on top of the ~0.5 s each Kokoro clip
+  ends with): output latency, ~320–335 ms from a write to the first presented frame on this
+  machine, paid because the next clip was written only once the previous one had drained. With
+  the next passage queued the device should not run dry, leaving only Kokoro's own pauses; a
+  passage whose audio is not ready in time still takes the old path.
 
 ## Deliberately not implemented
 
@@ -622,3 +621,16 @@ threads meeting.
     a "Colour filter: <current>" submenu, and C cycles the filters as in RailReader2, saying which
     one is on in the status bar. Checked under Xvfb with XTEST: two presses of C went from None to
     High Contrast to High Visibility, the setting was saved, and the View menu named the filter.
+56. **Gapless playback.** The next passage is now handed to the audio engine as soon as its audio
+    is prepared (`IAudioTransport.QueueNextAsync`). The engine renders it ahead of time and
+    writes it straight after the current clip's last frame, so the device does not wait for a
+    drain and pay the output latency again. The media clock and the current segment switch when
+    the device reports the boundary frame presented, and `ClipAdvanced` tells the coordinator,
+    which moves the reading position without loading anything. A script edit or regeneration
+    clears the queued clip (flushing it if already written), a rate change re-renders it, and a
+    seek, stop or voice change discards it. A passage not ready in time, or a transport without
+    queueing, still takes the old completion-then-load path. Covered by engine tests on the fake
+    device (both clips written before any drain, the clock switching at the boundary frame,
+    clearing a written clip, refusing a late queue, a rate change) and coordinator tests (advance
+    without a load, the fallback, an edit clearing the queue). **Not yet measured on the real
+    device**: the gap should drop from ~0.4 s to Kokoro's own trailing silence.

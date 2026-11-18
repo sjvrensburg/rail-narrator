@@ -35,6 +35,14 @@ public sealed record AudioEngineOptions(
 /// heard before the reading position advances. Firing on "buffer empty" instead would cut off the
 /// final word of every sentence.
 /// </para>
+/// <para>
+/// Gapless: a clip queued with <see cref="QueueNextAsync"/> is rendered ahead of time and written
+/// straight after the current clip's last frame, so the device never runs dry between passages.
+/// Waiting for the drain and then writing the next clip cost the whole output latency (~330 ms on
+/// the reference machine) at every boundary. The clock and the current segment switch over when the
+/// device reports the boundary frame <i>presented</i>, not when it was written, and
+/// <see cref="ClipAdvanced"/> says so.
+/// </para>
 /// </remarks>
 public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
 {
@@ -51,6 +59,12 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
     // device's presented counter to zero, so without this base a seek would read the position back
     // as zero and the highlight would jump to the start of the clip.
     private long _sessionOutputStart;
+    // The device's presented-frame count at which the current clip's _sessionOutputStart frame was
+    // presented. Zero after an open or a flush (both reset the counter); after a gapless switch it is
+    // the boundary, since the device keeps counting across clips.
+    private long _deviceBase;
+    // The clip queued to follow without a gap, and how far into it the writer has got.
+    private QueuedClip? _next;
     private PlaybackRender _render = new([], 0);
     private string? _segmentId;
     private SpeechAsset? _asset;
@@ -87,7 +101,7 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
                 if (_outputFormat.SampleRate <= 0) return 0;
                 // presented output frames -> output seconds -> source seconds (a rate of R consumes R
                 // source-seconds per output-second), plus whatever was presented before the last flush.
-                return _render.SourceFrameAt(_sessionOutputStart + _device.PresentedFrames) / _outputFormat.SampleRate;
+                return _render.SourceFrameAt(CurrentOutputFrameCore()) / _outputFormat.SampleRate;
             }
         }
     }
@@ -111,14 +125,30 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
             lock (_gate)
             {
                 if (_outputFormat.SampleRate <= 0) return 0;
-                double position = _sessionOutputStart + _device.PresentedFrames;
+                double position = CurrentOutputFrameCore();
                 return Math.Max(0, _render.SourceFrameAt(_writeCursor) - _render.SourceFrameAt(position)) / _outputFormat.SampleRate;
             }
         }
     }
 
+    /// <summary>The presented frame within the current clip's rendered output. Call with the lock held.</summary>
+    private long CurrentOutputFrameCore()
+        => Math.Min(_output.Length, _sessionOutputStart + Math.Max(0, _device.PresentedFrames - _deviceBase));
+
     public event Action<PlaybackState>? StateChanged;
     public event Action<string>? ClipCompleted;
+
+    /// <summary>
+    /// A queued clip took over without a gap: the first is (completed, the second) now playing.
+    /// Raised outside the engine lock, once the boundary frame has been presented.
+    /// </summary>
+    public event Action<string, string>? ClipAdvanced;
+
+    /// <summary>The segment whose audio the clock currently measures, or null.</summary>
+    public string? CurrentSegmentId { get { lock (_gate) return _segmentId; } }
+
+    /// <summary>The segment queued to follow without a gap, or null.</summary>
+    public string? QueuedSegmentId { get { lock (_gate) return _next?.SegmentId; } }
     public event Action<string>? Underflow;
     public event Action<string>? DeviceFailed;
 
@@ -148,6 +178,8 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
             _output = _render.Samples;
             _writeCursor = 0;
             _sessionOutputStart = 0;
+            _deviceBase = 0;
+            _next = null;
             _clipCompletedRaised = false;
         }
 
@@ -187,8 +219,18 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
                 _output = _render.Samples;
                 _writeCursor = _render.OutputFrameAt(sourceSeconds * _outputFormat.SampleRate);
                 _sessionOutputStart = _writeCursor;
+                _deviceBase = 0;
                 _clipCompletedRaised = false;
             }
+            // The flush discarded whatever of the queued clip was written; render it at the new rate
+            // and write it again from its start after the current clip.
+            if (_next is { } next && _outputFormat.SampleRate > 0)
+                _next = next with
+                {
+                    Render = ApplyRate(Resampler.Resample(next.Source, next.SourceRate, _outputFormat.SampleRate), _outputFormat.SampleRate, clamped),
+                    WriteCursor = 0,
+                    Boundary = null,
+                };
         }
         if (playing) { _device.Start(); StartWriter(); }
     }
@@ -299,6 +341,8 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
         {
             _writeCursor = 0;
             _sessionOutputStart = 0;
+            _deviceBase = 0;
+            _next = null;
             _output = [];
             _render = new([], 0);
             _sourceFloat = [];
@@ -327,9 +371,67 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
             // The flush below zeroes the device's presented count, so the seek target becomes the new
             // base for the clock rather than being lost.
             _sessionOutputStart = _writeCursor;
+            _deviceBase = 0;
+            // A queued clip may already be partly written; the flush discarded that, so it is written
+            // again from its start.
+            if (_next is { } next) _next = next with { WriteCursor = 0, Boundary = null };
             _clipCompletedRaised = false;
         }
         if (State == PlaybackState.Playing) { _device.Start(); StartWriter(); }
+    }
+
+    /// <summary>
+    /// Renders a clip to follow the current one without a gap. Decoding, resampling and time
+    /// stretching happen here, off the boundary. Replaces any clip already queued that has not begun
+    /// to be written. Returns false when it is too late: nothing is loaded, the current clip has
+    /// already completed, or another queued clip is already being written.
+    /// </summary>
+    public Task<bool> QueueNextAsync(string segmentId, SpeechAsset asset, ReadOnlyMemory<byte> pcm, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(asset);
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        int deviceRate;
+        double rate;
+        lock (_gate)
+        {
+            if (_segmentId is null || _clipCompletedRaised || _outputFormat.SampleRate <= 0) return Task.FromResult(false);
+            if (_next is { Boundary: not null }) return Task.FromResult(false);
+            deviceRate = _outputFormat.SampleRate;
+            rate = _rate;
+        }
+        float[] source = DecodeToMonoFloat(pcm.Span, asset.Format);
+        var render = ApplyRate(Resampler.Resample(source, asset.Format.SampleRate, deviceRate), deviceRate, rate);
+        lock (_gate)
+        {
+            // Re-check: the clip may have completed, been stopped, or the rate or device changed while
+            // this was rendering.
+            if (_segmentId is null || _clipCompletedRaised || _outputFormat.SampleRate != deviceRate
+                || Math.Abs(_rate - rate) > 1e-9 || _next is { Boundary: not null })
+                return Task.FromResult(false);
+            _next = new QueuedClip(segmentId, asset, source, asset.Format.SampleRate, render, 0, null);
+        }
+        _writerGate.Set();
+        return Task.FromResult(true);
+    }
+
+    /// <summary>
+    /// Forgets the queued clip (its words were edited, say). If the writer has already begun writing
+    /// it, the device is flushed and the current clip's tail written again, so the stale clip is never
+    /// heard.
+    /// </summary>
+    public async Task ClearQueuedAsync(CancellationToken ct = default)
+    {
+        bool written;
+        lock (_gate)
+        {
+            if (_next is null) return;
+            written = _next.Boundary is not null;
+            if (!written) { _next = null; return; }
+        }
+        // Part of it is in the device. Re-seat at the current position, which flushes it.
+        double position = PositionSeconds;
+        lock (_gate) _next = null;
+        await SeekAsync(position, ct).ConfigureAwait(false);
     }
 
     private double ClipDurationSecondsCore()
@@ -389,6 +491,21 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
             if (state is not PlaybackState.Playing)
             {
                 _writerGate.Wait(TimeSpan.FromMilliseconds(_options.WriterPollMilliseconds), ct);
+                continue;
+            }
+
+            // A queued clip whose first frame the device has presented becomes the current one.
+            if (TryPromoteQueued() is { } advanced)
+            {
+                ClipAdvanced?.Invoke(advanced.Completed, advanced.Started);
+                continue;
+            }
+
+            if (cursor >= length && NextChunkOfQueued() is { } queued)
+            {
+                // The current clip is all written: carry straight on with the queued one, so the device
+                // never runs dry at the boundary.
+                if (!await WriteQueuedChunkAsync(queued, buffer, segmentId, ct).ConfigureAwait(false)) return;
                 continue;
             }
 
@@ -464,6 +581,82 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// The queued clip and where its next chunk starts, once the current clip is entirely written.
+    /// Marks the boundary (the device frame count at which the queued clip begins) on first use.
+    /// </summary>
+    private (QueuedClip Clip, long Cursor)? NextChunkOfQueued()
+    {
+        lock (_gate)
+        {
+            if (_next is not { } next) return null;
+            if (next.Boundary is null)
+            {
+                // Device frames already counted for the current clip, plus what of it is still to be
+                // presented: the frame count at which the queued clip's first frame will be presented.
+                long boundary = _deviceBase + (_output.Length - _sessionOutputStart);
+                _next = next = next with { Boundary = boundary };
+            }
+            if (next.WriteCursor >= next.Render.Samples.Length) return null;
+            return (next, next.WriteCursor);
+        }
+    }
+
+    private async Task<bool> WriteQueuedChunkAsync((QueuedClip Clip, long Cursor) queued, byte[] buffer, string? segmentId, CancellationToken ct)
+    {
+        var samples = queued.Clip.Render.Samples;
+        int frames = (int)Math.Min(_options.WriteChunkFrames, samples.Length - queued.Cursor);
+        for (int i = 0; i < frames; i++)
+            BitConverter.TryWriteBytes(buffer.AsSpan(i * 4, 4), Math.Clamp(samples[queued.Cursor + i], -1f, 1f));
+        int written;
+        try { written = _device.Write(buffer.AsSpan(0, frames * 4), frames); }
+        catch (Exception ex)
+        {
+            SetState(PlaybackState.Error);
+            DeviceFailed?.Invoke(ex.Message);
+            return false;
+        }
+        if (written <= 0)
+        {
+            if (segmentId is not null) Underflow?.Invoke(segmentId);
+            SetState(PlaybackState.Buffering);
+            await Task.Delay(_options.WriterPollMilliseconds * 2, ct).ConfigureAwait(false);
+            return true;
+        }
+        lock (_gate)
+        {
+            // Advance only if this queued clip is still the one queued and nobody re-seated it.
+            if (ReferenceEquals(_next?.Render, queued.Clip.Render) && _next!.WriteCursor == queued.Cursor)
+                _next = _next with { WriteCursor = queued.Cursor + written };
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// Makes the queued clip current once the device has presented its first frame. Returns the
+    /// segments to report, or null when the boundary has not been reached.
+    /// </summary>
+    private (string Completed, string Started)? TryPromoteQueued()
+    {
+        lock (_gate)
+        {
+            if (_next is not { Boundary: { } boundary } next || _segmentId is not { } completed) return null;
+            if (_device.PresentedFrames < boundary) return null;
+            _segmentId = next.SegmentId;
+            _asset = next.Asset;
+            _sourceRate = next.SourceRate;
+            _sourceFloat = next.Source;
+            _render = next.Render;
+            _output = next.Render.Samples;
+            _writeCursor = next.WriteCursor;
+            _sessionOutputStart = 0;
+            _deviceBase = boundary;
+            _next = null;
+            _clipCompletedRaised = false;
+            return (completed, next.SegmentId);
+        }
+    }
+
     private void SetState(PlaybackState state)
     {
         bool changed;
@@ -489,7 +682,7 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
             long presented = _device.PresentedFrames;
             return new AudioClockDiagnostics(
                 _segmentId, _sourceRate, _outputFormat.SampleRate, _rate,
-                _writeCursor - _sessionOutputStart, presented, Math.Max(0, _writeCursor - _sessionOutputStart - presented),
+                _writeCursor - _sessionOutputStart, presented - _deviceBase, Math.Max(0, _writeCursor - _sessionOutputStart - (presented - _deviceBase)),
                 _device.ReportedLatencySeconds, _output.Length - _sessionOutputStart)
             { SourcePositionSeconds = PositionSeconds };
         }
@@ -504,6 +697,12 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
         _writerGate.Dispose();
     }
 }
+
+/// <summary>A clip rendered and waiting to follow the current one without a gap.</summary>
+/// <param name="WriteCursor">Frames of it already written to the device.</param>
+/// <param name="Boundary">Device presented-frame count at which it starts; null until the writer reaches it.</param>
+internal sealed record QueuedClip(
+    string SegmentId, SpeechAsset Asset, float[] Source, int SourceRate, PlaybackRender Render, long WriteCursor, long? Boundary);
 
 /// <summary>A measured snapshot of the playback clock, for diagnostics and sync-error measurement.</summary>
 /// <param name="WrittenOutputFrames">Frames handed to the device.</param>

@@ -496,6 +496,122 @@ public sealed class PlaybackEngineTests
         }
     }
 
+    // ---- gapless continuation ------------------------------------------------------------
+
+    private static (AudioPlaybackEngine Engine, FakeAudioOutputDevice Device) LoadAtSourceRate(long frames)
+        => Load(frames: frames, sourceRate: 24000, deviceRate: 24000) is var (engine, device, _) ? (engine, device) : default;
+
+    /// <summary>
+    /// A queued clip is written straight after the current one, before the current one drains, so
+    /// the device never runs dry at the boundary. The clock and the segment switch over when the
+    /// boundary frame is presented, and the boundary is reported as an advance, not a completion.
+    /// </summary>
+    [Fact]
+    public async Task AQueuedClip_FollowsWithoutAGap_AndTheClockSwitchesAtTheBoundary()
+    {
+        var (engine, device) = LoadAtSourceRate(24000);   // one second
+        await using (engine)
+        {
+            var completed = new List<string>();
+            (string, string)? advanced = null;
+            engine.ClipCompleted += id => { lock (completed) completed.Add(id); };
+            engine.ClipAdvanced += (from, to) => advanced = (from, to);
+
+            Assert.True(await engine.QueueNextAsync("s1", SyntheticNarration.Clip("s1", 12000, 24000), SyntheticNarration.TonePcm(12000, 24000)));
+            Assert.Equal("s1", engine.QueuedSegmentId);
+            await engine.PlayAsync();
+
+            // Both clips are written while nothing has been presented: no wait for a drain.
+            await WaitUntil(() => device.TotalWritten >= 36000, "the queued clip to be written behind the first");
+
+            device.AdvanceByFrames(23000);
+            Assert.Equal("s0", engine.CurrentSegmentId);
+            Assert.Equal(23000 / 24000.0, engine.PositionSeconds, 3);
+
+            device.AdvanceByFrames(2000);   // 1000 frames past the boundary
+            await WaitUntil(() => advanced is not null, "the switch to the queued clip");
+            Assert.Equal(("s0", "s1"), advanced);
+            Assert.Equal("s1", engine.CurrentSegmentId);
+            Assert.Null(engine.QueuedSegmentId);
+            Assert.Equal(1000 / 24000.0, engine.PositionSeconds, 3);
+            Assert.Equal(0.5, engine.ClipDurationSeconds, 3);
+            Assert.Equal(PlaybackState.Playing, engine.State);
+            lock (completed) Assert.Empty(completed);   // the boundary is not a completion
+
+            device.DrainAll();
+            await WaitUntil(() => { lock (completed) return completed.Count > 0; }, "the queued clip to complete");
+            lock (completed) Assert.Equal(["s1"], completed);
+        }
+    }
+
+    /// <summary>
+    /// A queued clip that must not be heard (its words were edited) is removed even after the writer
+    /// has begun writing it: the device is flushed and the current clip resumes where it was.
+    /// </summary>
+    [Fact]
+    public async Task ClearingAQueuedClipAlreadyWritten_FlushesIt_AndKeepsThePosition()
+    {
+        var (engine, device) = LoadAtSourceRate(24000);
+        await using (engine)
+        {
+            string? advanced = null;
+            var completed = new List<string>();
+            engine.ClipAdvanced += (_, to) => advanced = to;
+            engine.ClipCompleted += id => { lock (completed) completed.Add(id); };
+
+            Assert.True(await engine.QueueNextAsync("s1", SyntheticNarration.Clip("s1", 12000, 24000), SyntheticNarration.TonePcm(12000, 24000)));
+            await engine.PlayAsync();
+            await WaitUntil(() => device.TotalWritten >= 36000, "the queued clip to be written");
+            device.AdvanceByFrames(12000);
+            int flushes = device.FlushCount;
+
+            await engine.ClearQueuedAsync();
+
+            Assert.True(device.FlushCount > flushes, "written audio of the cleared clip must be flushed");
+            Assert.Null(engine.QueuedSegmentId);
+            Assert.Equal(0.5, engine.PositionSeconds, 2);
+            await WaitUntil(() => { device.DrainAll(); lock (completed) return completed.Count > 0; }, "completion");
+            Assert.Null(advanced);
+            lock (completed) Assert.Equal(["s0"], completed);
+        }
+    }
+
+    [Fact]
+    public async Task QueueingAfterTheClipCompleted_IsRefused()
+    {
+        var (engine, device) = LoadAtSourceRate(2400);
+        await using (engine)
+        {
+            string? completed = null;
+            engine.ClipCompleted += id => completed = id;
+            await engine.PlayAsync();
+            await WaitUntil(() => { device.DrainAll(); return completed is not null; }, "completion");
+
+            Assert.False(await engine.QueueNextAsync("s1", SyntheticNarration.Clip("s1", 2400, 24000), SyntheticNarration.TonePcm(2400, 24000)));
+        }
+    }
+
+    [Fact]
+    public async Task ARateChange_ReRendersTheQueuedClip_AndStillFollowsWithoutAGap()
+    {
+        var (engine, device) = LoadAtSourceRate(24000);
+        await using (engine)
+        {
+            (string, string)? advanced = null;
+            engine.ClipAdvanced += (from, to) => advanced = (from, to);
+            Assert.True(await engine.QueueNextAsync("s1", SyntheticNarration.Clip("s1", 24000, 24000), SyntheticNarration.TonePcm(24000, 24000)));
+            await engine.PlayAsync();
+            await WaitUntil(() => device.TotalWritten >= 48000, "both clips written");
+
+            engine.SetPlaybackRate(2.0);   // flushes; both clips re-rendered at half length
+            await WaitUntil(() => device.TotalWritten >= 20000, "both clips written again at the new rate");
+            Assert.Equal("s1", engine.QueuedSegmentId);
+
+            await WaitUntil(() => { device.AdvanceByFrames(1200); return advanced is not null; }, "the switch at the new rate");
+            Assert.Equal(("s0", "s1"), advanced);
+        }
+    }
+
     [Fact]
     public async Task DeviceFailure_IsReportedAsAnError()
     {

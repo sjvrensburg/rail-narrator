@@ -217,6 +217,9 @@ public sealed class FakeAudioTransport : IAudioTransport
     {
         if (FailLoadWith is { } reason) throw new InvalidOperationException(reason);
         Loaded.Add((segmentId, asset, pcm.Length));
+        CurrentSegmentId = segmentId;
+        QueuedSegmentId = null;
+        _queuedAsset = null;
         ClipDurationSeconds = asset.DurationSeconds;
         PositionSeconds = 0;
         FlushOnLoadCount++;
@@ -236,7 +239,61 @@ public sealed class FakeAudioTransport : IAudioTransport
 
     public Task ResumeAsync(CancellationToken ct = default) { ResumeCount++; SetState(PlaybackState.Playing); return Task.CompletedTask; }
 
-    public Task StopAsync(CancellationToken ct = default) { StopCount++; SetState(PlaybackState.Idle); return Task.CompletedTask; }
+    public Task StopAsync(CancellationToken ct = default)
+    {
+        StopCount++;
+        CurrentSegmentId = QueuedSegmentId = null;
+        _queuedAsset = null;
+        SetState(PlaybackState.Idle);
+        return Task.CompletedTask;
+    }
+
+    // ---- gapless continuation ------------------------------------------------------------
+
+    private SpeechAsset? _queuedAsset;
+
+    /// <summary>When false, the transport refuses to queue, like one without gapless support.</summary>
+    public bool AcceptQueue { get; set; } = true;
+
+    public string? CurrentSegmentId { get; private set; }
+    public string? QueuedSegmentId { get; private set; }
+    public List<string> QueuedHistory { get; } = [];
+    public int ClearQueuedCount { get; private set; }
+
+    public event Action<string, string>? ClipAdvanced;
+
+    public Task<bool> QueueNextAsync(string segmentId, SpeechAsset asset, ReadOnlyMemory<byte> pcm, CancellationToken ct = default)
+    {
+        if (!AcceptQueue || CurrentSegmentId is null) return Task.FromResult(false);
+        QueuedSegmentId = segmentId;
+        _queuedAsset = asset;
+        lock (QueuedHistory) QueuedHistory.Add(segmentId);
+        return Task.FromResult(true);
+    }
+
+    public Task ClearQueuedAsync(CancellationToken ct = default)
+    {
+        ClearQueuedCount++;
+        QueuedSegmentId = null;
+        _queuedAsset = null;
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Moves to the queued clip without a gap, as the real transport does once the boundary frame is
+    /// presented. Returns false when nothing is queued.
+    /// </summary>
+    public bool RaiseClipAdvanced()
+    {
+        if (CurrentSegmentId is not { } from || QueuedSegmentId is not { } to) return false;
+        CurrentSegmentId = to;
+        ClipDurationSeconds = _queuedAsset?.DurationSeconds ?? 0;
+        PositionSeconds = 0;
+        QueuedSegmentId = null;
+        _queuedAsset = null;
+        ClipAdvanced?.Invoke(from, to);
+        return true;
+    }
 
     public Task SeekAsync(double seconds, CancellationToken ct = default)
     {
