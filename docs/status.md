@@ -7,12 +7,12 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 380 passing, 3 opt-in skips, 0 warnings
+## Verified by automated tests — 390 passing, 5 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
-| `RailNarrator.Domain.Tests` | 174 | Play waits for the maths ahead (and starts anyway after the cap), a refused interpretation read mechanically from a transcription and labelled, a failed page crop reported, Front-matter metadata skipped (body sentences that start the same way kept), A lead-in sentence and its equation interpreted as one passage, Citation markers left out (and brackets that are content kept), regenerate re-asks the model, Maths left pending with an honest fallback, interpreted once with surrounding definitions and cached, spoken by the coordinator; Layout roles (model formulas trusted over geometry, display lines merged, headings kept apart, inline maths kept in its sentence, tables announced, publisher cover sheets skipped), years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
-| `RailNarrator.Pdf.Tests` | 16 (+1 opt-in) | A passage crop is a PNG of its ink; **Real PDFs** through the real RailReaderCore pipeline, including a cached snapshot building the same plan as a fresh one; opt-in, the real PP-DocLayoutV3 model through the adapter |
+| `RailNarrator.Domain.Tests` | 180 | Decimals and signed numbers after a year cue ("from 0.20", "by 0.75") read as numbers, not handed to the year reading; Play waits for the maths ahead (and starts anyway after the cap), a refused interpretation read mechanically from a transcription and labelled, a failed page crop reported, Front-matter metadata skipped (body sentences that start the same way kept), A lead-in sentence and its equation interpreted as one passage, Citation markers left out (and brackets that are content kept), regenerate re-asks the model, Maths left pending with an honest fallback, interpreted once with surrounding definitions and cached, spoken by the coordinator; Layout roles (model formulas trusted over geometry, display lines merged, headings kept apart, inline maths kept in its sentence, tables announced, publisher cover sheets skipped), years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
+| `RailNarrator.Pdf.Tests` | 20 (+3 opt-in) | Layout analysis that fails to start, or fails mid-document, finishes on the CPU fallback from the page that failed and says so once, and the source then reports it so the snapshot is not cached under the GPU key; opt-in, the `Cpu` setting never uses the GPU, and (`RN_WEBGPU_INTEGRATION=1`) the GPU gives the same blocks, kinds, reading units and geometry within 0.1 pt as the CPU; A passage crop is a PNG of its ink; **Real PDFs** through the real RailReaderCore pipeline, including a cached snapshot building the same plan as a fresh one; opt-in, the real PP-DocLayoutV3 model through the adapter |
 | `RailNarrator.Speech.Tests` | 36 | PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
 | `RailNarrator.Audio.Tests` | 39 | Resampler (polyphase path equal to the direct sinc filter on four rate pairs), time-stretcher (fast grain search equal to the direct search at three rates), playback engine against a controllable fake device, engine lock ordering, coordinator-plus-engine transition stress |
 | `RailNarrator.Infrastructure.Tests` | 9 | Cache round-trips and waveform integrity, including same-length replacement; extraction-cache keying, degraded and encrypted documents never stored, corrupt entries treated as misses |
@@ -196,6 +196,22 @@ the two items marked as measured before.
   highlighting because of "su ciently" now steps through its fourteen words, and word
   highlighting works on the scan.
 
+### Layout analysis on the GPU
+
+Measured 18 November 2026 on a different machine from the rest of this document: Ubuntu 24.04,
+i7-12700H (20 threads), 31 GB, NVIDIA RTX A2000 8 GB Laptop GPU. The machine was otherwise idle;
+earlier timings taken while .NET build servers were running were 4–5 times slower and are not
+used. Details in ADR-0006.
+
+- A 24-page pdfTeX chapter extracted with PP-DocLayoutV3 in 26.9 s and 29.5 s on the CPU, and in
+  11.7 s and 14.7 s on the GPU. Building the backend at start-up took 0.6 s on the CPU and 1.2–1.5 s
+  on the GPU.
+- CPU and GPU snapshots of that chapter have the same blocks, kinds, line counts and reading
+  sequence on every page. Geometry differs by at most 0.02 pt and confidence by at most 5 × 10⁻⁴.
+- With the Vulkan drivers hidden, `Auto` fell back to the CPU, said why ("No supported adapters"),
+  and extracted normally.
+- The self-contained publish includes `libonnxruntime_providers_webgpu.so` (15.8 MB).
+
 ## Not verified — and what it would take
 
 | Gap | Why | What would close it |
@@ -207,6 +223,7 @@ the two items marked as measured before.
 | **Scanned-document OCR at 300 dpi** | A 131 ppi scan with handwriting was run and reads as sentences; the handwriting is recognised as stray words | Check a clean 300 dpi scan for coverage, warnings and reading order |
 | **Clean-machine install** | The archive was built and run here, not on a fresh system | Install on a stock Fedora/Debian with only `libportaudio2` added |
 | **Long-document endurance** | Runs of three to seven minutes of a 27-page paper, 1.5–1.7 GB resident; played clips are now released, but a whole document has not been played through | Play a 40-page paper to the end: peak RSS, preparation lag versus playback, cache growth |
+| **Layout on other GPUs** | GPU layout ran on one NVIDIA laptop GPU (Vulkan) | Run `LayoutAccelerationTests` with `RN_WEBGPU_INTEGRATION=1` on AMD and Intel GPUs, including the Fedora reference machine's Radeon 8060S |
 | **File > Open dialog** | The GUI run loaded documents from the command line only | Open a document through the picker under a desktop portal |
 
 ## Open defects found by driving the application
@@ -500,3 +517,8 @@ threads meeting.
     narration ahead is ready (estimated at 15 characters a second, divided by the speed) or 20 s
     have passed, showing "Interpreting maths before reading (n of 60 s ready)"; with nothing
     pending, or a warm cache, it starts at once.
+41. **A document with "from 0.20" in it could not be opened.** The year reading ran on any
+    four-character number after a year cue, so a decimal ("0.75") or signed number ("-100") reached
+    `int.Parse` and the narration plan threw. A 24-page forecasting chapter that RailReader2 opens
+    fine failed to load. The year reading now requires four digits. Six cases are tested; the
+    chapter plans to 607 source-linked segments.

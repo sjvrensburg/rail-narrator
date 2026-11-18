@@ -16,6 +16,11 @@ namespace RailNarrator.Pdf;
 /// <param name="Capabilities">The analyzer's self-description, used to decide whether a reading-order resolver is needed.</param>
 /// <param name="ResolverFactory">Reading-order resolver, or null to let Core pick from <paramref name="Capabilities"/>.</param>
 /// <param name="OcrFactory">Creates an OCR engine, or null when recognition is unavailable.</param>
+/// <param name="Device">Where <paramref name="AnalyzerFactory"/> runs its model. Null means the CPU.</param>
+/// <param name="FallbackAnalyzerFactory">
+/// A CPU analyzer to switch to when <paramref name="AnalyzerFactory"/>'s cannot be built or fails
+/// mid-document, or null. The switch is reported in a page warning, never made silently.
+/// </param>
 /// <remarks>
 /// Kept as a value the caller supplies rather than a hard-wired choice because the two realistic
 /// configurations behave very differently: a model-free analyzer is instant and needs no download
@@ -28,8 +33,13 @@ public sealed record ExtractionBackend(
     Func<ILayoutAnalyzer> AnalyzerFactory,
     LayoutModelCapabilities Capabilities,
     Func<IReadingOrderResolver?>? ResolverFactory = null,
-    Func<IOcrService>? OcrFactory = null)
+    Func<IOcrService>? OcrFactory = null,
+    LayoutDevice? Device = null,
+    Func<ILayoutAnalyzer>? FallbackAnalyzerFactory = null)
 {
+    /// <summary>Where the layout model runs.</summary>
+    public LayoutDevice ResolvedDevice => Device ?? LayoutDevice.Cpu;
+
     /// <summary>
     /// Core's model-free text-layer analyzer. No ONNX runtime, no weights, no native dependency, so
     /// tests and a first run work with nothing downloaded. Every block comes back as plain text, so
@@ -45,19 +55,37 @@ public sealed record ExtractionBackend(
     }
 
     /// <summary>PP-DocLayoutV3 via RailReader.Core.Analysis. Needs the model on disk.</summary>
-    public static ExtractionBackend OnnxLayout(string modelPath, Func<IOcrService>? ocrFactory = null)
+    /// <param name="acceleration">
+    /// <see cref="LayoutAcceleration.Auto"/> puts the model on a WebGPU-capable GPU when one is found
+    /// and the model loads on it (checked here, once), and on the CPU otherwise, with the reason in
+    /// <see cref="LayoutDevice.FallbackReason"/>. Defaults to the CPU so library callers opt in.
+    /// </param>
+    public static ExtractionBackend OnnxLayout(string modelPath, Func<IOcrService>? ocrFactory = null,
+        LayoutAcceleration acceleration = LayoutAcceleration.Cpu)
     {
-        var analyzer = new LayoutAnalyzer(modelPath);
-        var caps = analyzer.Capabilities;
-        analyzer.Dispose();
+        var device = LayoutDevice.Cpu;
+        LayoutAnalyzer? probe = acceleration == LayoutAcceleration.Auto
+            ? LayoutAnalyzerConstruction.TryOnGpu(modelPath, out device)
+            : null;
+        probe ??= LayoutAnalyzerConstruction.OnCpu(modelPath);
+        var caps = probe.Capabilities;
+        probe.Dispose();
+
+        Func<ILayoutAnalyzer> onCpu = () => LayoutAnalyzerConstruction.OnCpu(modelPath);
+        Func<ILayoutAnalyzer> factory = device.IsGpu
+            ? () => LayoutAnalyzerConstruction.TryOnGpu(modelPath, out var d)
+                ?? throw new InvalidOperationException(d.FallbackReason)
+            : onCpu;
         return new ExtractionBackend(
             $"pp-doclayout-v3:{Path.GetFileName(modelPath)}",
-            () => new LayoutAnalyzer(modelPath),
+            factory,
             caps,
             // V3 provides its own reading order; XY-cut would discard a signal the model was trained
             // to produce. Core's AnalysisWorker makes the same choice.
             () => caps.ProvidesReadingOrder ? new ModelOrderResolver() : new XYCutPlusPlusResolver(),
-            ocrFactory);
+            ocrFactory,
+            device,
+            device.IsGpu ? onCpu : null);
     }
 }
 
@@ -126,7 +154,7 @@ public sealed class RailReaderExtractionSource : IExtractionSource, IDisposable
             var requested = request.Pages ?? Enumerable.Range(0, pdf.PageCount).ToList();
             int done = 0;
 
-            using var analyzer = backend.AnalyzerFactory();
+            using var analyzer = AnalyzerSlot.Create(backend);
             var resolver = backend.ResolverFactory?.Invoke();
             IOcrService? ocr = null;
             try
@@ -149,6 +177,7 @@ public sealed class RailReaderExtractionSource : IExtractionSource, IDisposable
                     progress?.Report(new ExtractionProgress(++done, requested.Count,
                         pageIndex == requested[0] ? "Analysing layout" : "Extracting text and geometry"));
                 }
+                if (analyzer.UsedFallback) _layoutDeviceFellBack = true;
             }
             finally
             {
@@ -176,13 +205,24 @@ public sealed class RailReaderExtractionSource : IExtractionSource, IDisposable
     /// <summary>The reason OCR could not be initialised, or null. Surfaced so a scan is not silently unreadable.</summary>
     public string? OcrStartupError => _ocrError;
 
+    private volatile bool _layoutDeviceFellBack;
+
+    /// <summary>
+    /// True once an extraction in this process had to leave the backend's layout device for its CPU
+    /// fallback. Sticky, so a cache can stop storing snapshots whose key names a device that part of
+    /// them did not run on. The next extraction still starts on the backend's device and falls back
+    /// again if it has to.
+    /// </summary>
+    public bool LayoutDeviceFellBack => _layoutDeviceFellBack;
+
     private PageExtraction ExtractPage(
         IPdfService pdf, int pageIndex, int viewRotation, ExtractionRequest request,
-        ExtractionBackend backend, ILayoutAnalyzer analyzer, IReadingOrderResolver? resolver,
+        ExtractionBackend backend, AnalyzerSlot analyzer, IReadingOrderResolver? resolver,
         IOcrService? ocr, CoordinateFrameId frame)
     {
         var (pageW, pageH) = pdf.GetPageSize(pageIndex, viewRotation);
         var warnings = new List<string>();
+        if (analyzer.TakePendingNote() is { } switched) warnings.Add(switched);
 
         // --- text layer ---------------------------------------------------------------
         PageText native = _textService.ExtractPageText(pdf.PdfBytes, pageIndex, viewRotation, request.Password);
@@ -242,8 +282,7 @@ public sealed class RailReaderExtractionSource : IExtractionSource, IDisposable
         float scaleX = pxW > 0 ? (float)(pageW / pxW) : 1f;
         float scaleY = pxH > 0 ? (float)(pageH / pxH) : 1f;
 
-        PageAnalysis analysis;
-        try
+        PageAnalysis Analyse()
         {
             // A layout model takes the page at exactly its input size (max side == InputSize) and
             // rejects anything larger rather than crop it. Rendering it the high-resolution raster
@@ -253,9 +292,25 @@ public sealed class RailReaderExtractionSource : IExtractionSource, IDisposable
                 && Math.Max(pxW, pxH) != backend.Capabilities.InputSize)
             {
                 var (modelRgb, modelW, modelH) = pdf.RenderPagePixmap(pageIndex, backend.Capabilities.InputSize, viewRotation);
-                analysis = analyzer.RunAnalysis(modelRgb, modelW, modelH, pageW, pageH, text.CharBoxes);
+                return analyzer.Current.RunAnalysis(modelRgb, modelW, modelH, pageW, pageH, text.CharBoxes);
             }
-            else analysis = analyzer.RunAnalysis(rgb, pxW, pxH, pageW, pageH, text.CharBoxes);
+            return analyzer.Current.RunAnalysis(rgb, pxW, pxH, pageW, pageH, text.CharBoxes);
+        }
+
+        PageAnalysis analysis;
+        try
+        {
+            try { analysis = Analyse(); }
+            // A GPU that fails mid-document would otherwise fail every remaining page the same way:
+            // finish the document on the CPU, starting with this page, and say so. The switch runs
+            // in the handler, not a filter, so the failed call has unwound before its session is
+            // disposed.
+            catch (Exception ex) when (analyzer.CanSwitchToFallback)
+            {
+                analyzer.SwitchToFallback(ex);
+                warnings.Add(analyzer.TakePendingNote()!);
+                analysis = Analyse();
+            }
         }
         catch (Exception ex)
         {

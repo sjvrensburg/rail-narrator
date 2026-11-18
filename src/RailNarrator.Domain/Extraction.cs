@@ -175,6 +175,16 @@ public sealed record ExtractionOptions(
     public static ExtractionOptions ModelFree { get; } = new("text-layout", OcrPolicy.Off, 0, false, ExtractorVersions.Current);
 }
 
+/// <summary>Where the layout model runs.</summary>
+public enum LayoutAcceleration
+{
+    /// <summary>On a WebGPU-capable GPU when one is found and the model loads on it, otherwise the CPU.</summary>
+    Auto,
+
+    /// <summary>Always the CPU.</summary>
+    Cpu,
+}
+
 /// <summary>How much recognition work to do on a page with no usable text layer.</summary>
 public enum OcrPolicy
 {

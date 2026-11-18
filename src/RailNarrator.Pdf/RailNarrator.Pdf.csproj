@@ -12,6 +12,7 @@
     <PackageReference Include="RailReader.Core.Pdfium" />
     <PackageReference Include="RailReader.Renderer.Skia" />
     <PackageReference Include="RailReader.Core.Analysis" />
+    <PackageReference Include="RailReader.Core.Analysis.WebGpu" />
     <PackageReference Include="RailReader.Core.Ocr.RapidOcr" />
     <PackageReference Include="SkiaSharp" />
     <PackageReference Include="SkiaSharp.NativeAssets.Linux" />

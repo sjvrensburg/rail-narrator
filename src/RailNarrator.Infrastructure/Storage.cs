@@ -129,6 +129,7 @@ public sealed record RailNarratorSettings
     public OcrPolicy Ocr { get; init; } = OcrPolicy.Full;
     public string LayoutAnalyzer { get; init; } = "text-layout";
     public string? LayoutModelPath { get; init; }
+    public LayoutAcceleration LayoutAcceleration { get; init; } = LayoutAcceleration.Auto;
 
     public string? AudioDeviceId { get; init; }
     public double PlaybackRate { get; init; } = 1.0;

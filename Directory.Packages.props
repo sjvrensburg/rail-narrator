@@ -15,6 +15,8 @@
     <PackageVersion Include="RailReader.Core.Pdfium" Version="0.90.0" />
     <PackageVersion Include="RailReader.Renderer.Skia" Version="0.90.0" />
     <PackageVersion Include="RailReader.Core.Analysis" Version="0.90.0" />
+    <!-- Opt-out GPU layout analysis (ONNX Runtime WebGPU plugin EP 0.5.0, matched to ORT 1.31.1). See ADR-0006. -->
+    <PackageVersion Include="RailReader.Core.Analysis.WebGpu" Version="0.90.0" />
     <PackageVersion Include="RailReader.Core.Ocr.RapidOcr" Version="0.90.0" />
     <PackageVersion Include="RailReader.Core.Vlm.OpenAI" Version="0.90.0" />
 
