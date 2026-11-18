@@ -1,3 +1,4 @@
+using RailReader.Core.Analysis;
 using RailReader.Core.Analysis.WebGpu;
 using RailReader.Core.Models;
 using RailReader.Core.Services;
@@ -16,7 +17,8 @@ public sealed record LayoutDevice(string Id, string Description, string? Fallbac
 }
 
 /// <summary>
-/// Builds PP-DocLayoutV3 analyzers on the CPU or on a GPU through RailReaderCore's WebGPU plugin.
+/// Builds layout analyzers (Docling Heron or PP-DocLayoutV3) on the CPU or on a GPU through
+/// RailReaderCore's WebGPU plugin, with Core's <see cref="LayoutAnalyzerFactory"/>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -32,8 +34,6 @@ public sealed record LayoutDevice(string Id, string Description, string? Fallbac
 /// </remarks>
 internal static class LayoutAnalyzerConstruction
 {
-    private const LayoutModelArchitecture Architecture = LayoutModelArchitecture.PPDocLayoutV3;
-
     /// <summary>
     /// An exception as one short line for a person. ONNX Runtime's messages lead with source paths
     /// and nest provider errors, and end with the part that says what went wrong ("Failed to get a
@@ -46,16 +46,16 @@ internal static class LayoutAnalyzerConstruction
         return message.Length <= Limit ? message : "…" + message[^Limit..].TrimStart();
     }
 
-    public static LayoutAnalyzer OnCpu(string modelPath)
+    public static ILayoutAnalyzer OnCpu(LayoutModelArchitecture architecture, string modelPath)
     {
-        lock (WebGpuAccelerator.ConstructionLock) return new LayoutAnalyzer(modelPath);
+        lock (WebGpuAccelerator.ConstructionLock) return LayoutAnalyzerFactory.Create(architecture, modelPath);
     }
 
     /// <summary>
     /// Builds the analyzer on the GPU, or returns null with the reason it could not. Never throws for a
     /// missing device, runtime or driver: the GPU is additive, never required.
     /// </summary>
-    public static LayoutAnalyzer? TryOnGpu(string modelPath, out LayoutDevice device)
+    public static ILayoutAnalyzer? TryOnGpu(LayoutModelArchitecture architecture, string modelPath, out LayoutDevice device)
     {
         lock (WebGpuAccelerator.ConstructionLock)
         {
@@ -73,14 +73,14 @@ internal static class LayoutAnalyzerConstruction
             }
 
             string name = WebGpuAccelerator.DeviceDescription ?? "GPU";
-            if (!WebGpuAccelerator.TryEnable(Architecture))
+            if (!WebGpuAccelerator.TryEnable(architecture))
             {
                 device = LayoutDevice.Cpu with { FallbackReason = $"WebGPU could not be enabled on {name}" };
                 return null;
             }
             try
             {
-                var analyzer = new LayoutAnalyzer(modelPath);
+                var analyzer = LayoutAnalyzerFactory.Create(architecture, modelPath);
                 device = new LayoutDevice("webgpu", name);
                 return analyzer;
             }
@@ -91,7 +91,7 @@ internal static class LayoutAnalyzerConstruction
             }
             finally
             {
-                WebGpuAccelerator.Disable(Architecture);
+                WebGpuAccelerator.Disable(architecture);
             }
         }
     }

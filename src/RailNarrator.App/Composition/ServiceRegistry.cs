@@ -48,6 +48,15 @@ public sealed class ServiceRegistry : IAsyncDisposable
     /// <summary>The Kokoro provider when one is registered, for its device in the diagnostics.</summary>
     public required KokoroTtsProvider? Kokoro { get; init; }
 
+    /// <summary>"Docling Heron (docling-layout-heron-int8.onnx)" from a backend's analyzer id.</summary>
+    private static string LayoutModelName(string analyzerId)
+    {
+        int colon = analyzerId.IndexOf(':');
+        string id = colon < 0 ? analyzerId : analyzerId[..colon];
+        string file = colon < 0 ? "" : $" ({analyzerId[(colon + 1)..]})";
+        return (id == LayoutModelResolver.Heron ? "Docling Heron" : id == LayoutModelResolver.PPDocLayoutV3 ? "PP-DocLayoutV3" : id) + file;
+    }
+
     /// <summary>
     /// Kokoro on the GPU (ADR-0007): only with <c>KokoroAcceleration</c> Auto, the converted model
     /// installed and a WebGPU device found. The session hook is Core's, so Kokoro joins the one GPU
@@ -228,7 +237,7 @@ public sealed class ServiceRegistry : IAsyncDisposable
             StartupNotes = notes,
             Kokoro = kokoro,
             LayoutSummary = backend.Capabilities.Classes.Count > 0
-                ? $"PP-DocLayoutV3 on {backend.ResolvedDevice.Description}"
+                ? $"{LayoutModelName(backend.AnalyzerId)} on {backend.ResolvedDevice.Description}"
                 : "model-free (no layout model)",
         };
     }
@@ -253,9 +262,11 @@ public sealed class ServiceRegistry : IAsyncDisposable
             .Select(a => $"{a.Name}/{a.Version}")
             .OrderBy(s => s, StringComparer.Ordinal));
 
-        if (ResolveLayoutModelPath(settings) is not { } path) return code;
+        if (ResolveLayoutModel(settings) is not { } model) return code;
+        // The file that actually runs: Heron's FP32 export on a GPU, its INT8 one on the CPU.
+        string path = device.IsGpu && model.GpuModelPath is { } gpu ? gpu : model.CpuModelPath;
         var info = new FileInfo(path);
-        return code + "|" + (info.Exists ? $"{info.FullName}|{info.Length}|{info.LastWriteTimeUtc.Ticks}" : path)
+        return code + "|" + model.Id + "|" + (info.Exists ? $"{info.FullName}|{info.Length}|{info.LastWriteTimeUtc.Ticks}" : path)
             + "|device=" + device.Id;
     }
 
@@ -297,25 +308,20 @@ public sealed class ServiceRegistry : IAsyncDisposable
         => new(
             // The analyzer actually used, not the one named in settings: a discovered layout model
             // must change the extraction's identity, or its cached model-free snapshots are reused.
-            ResolveLayoutModelPath(settings) is not null ? "pp-doclayout-v3" : "text-layout",
+            ResolveLayoutModel(settings)?.Id ?? "text-layout",
             settings.Ocr,
             AnalysisRenderSize: settings.Ocr == OcrPolicy.Off ? 1024 : 1920,
             DeskewLines: false,
             ExtractorVersions.Current);
 
     /// <summary>
-    /// The layout model to use: the configured path if it exists, else one the user downloaded into
-    /// the models directory from the Models menu (used without further setup — block roles are what
-    /// let narration skip page furniture, footnotes, references, figures and table cells, and
-    /// recognise formulas). Never fetched implicitly.
+    /// The layout model to use and its files: Docling Heron when installed, else PP-DocLayoutV3,
+    /// unless the <c>LayoutAnalyzer</c> setting names one (block roles are what let narration skip
+    /// page furniture, footnotes, references, figures and table cells, and recognise formulas).
+    /// Never fetched implicitly. See <see cref="LayoutModelResolver"/> and ADR-0008.
     /// </summary>
-    public static string? ResolveLayoutModelPath(RailNarratorSettings settings)
-    {
-        if (settings.LayoutModelPath is { Length: > 0 } configured)
-            return File.Exists(configured) ? configured : null;
-        string installed = Path.Combine(XdgPaths.Models, ModelManifest.LayoutPpDocV3.FileName);
-        return File.Exists(installed) ? installed : null;
-    }
+    public static LayoutModelChoice? ResolveLayoutModel(RailNarratorSettings settings)
+        => LayoutModelResolver.Resolve(settings.LayoutAnalyzer, settings.LayoutModelPath);
 
     private static ExtractionBackend BuildBackend(RailNarratorSettings settings, List<string> notes)
     {
@@ -326,11 +332,17 @@ public sealed class ServiceRegistry : IAsyncDisposable
             ? null
             : () => new RailReader.Core.Ocr.RapidOcr.RapidOcrService();
 
-        if (ResolveLayoutModelPath(settings) is { } modelPath)
+        if (ResolveLayoutModel(settings) is { } model)
         {
+            string modelPath = model.CpuModelPath;
             try
             {
-                var backend = ExtractionBackend.OnnxLayout(modelPath, ocrFactory, settings.LayoutAcceleration);
+                var architecture = model.Id == LayoutModelResolver.Heron
+                    ? RailReader.Core.Models.LayoutModelArchitecture.Heron
+                    : RailReader.Core.Models.LayoutModelArchitecture.PPDocLayoutV3;
+                var backend = ExtractionBackend.OnnxLayout(
+                    new LayoutModelFiles(architecture, model.Id, model.GpuModelPath, model.CpuModelPath),
+                    ocrFactory, settings.LayoutAcceleration);
                 if (backend.ResolvedDevice.FallbackReason is { } reason)
                     notes.Add($"Layout analysis runs on the CPU because {reason}. It is slower there but gives the same reading.");
                 return backend;
@@ -344,7 +356,7 @@ public sealed class ServiceRegistry : IAsyncDisposable
 
         notes.Add("No layout model is installed, so every block is treated as plain text: headers, footnotes, " +
                   "references and tables cannot be told apart from prose. Models and endpoints > Download layout model " +
-                  $"({ModelManifest.LayoutPpDocV3.HumanSize}) enables them.");
+                  $"(Docling Heron, {ModelManifest.LayoutHeronInt8.HumanSize}) enables them.");
         return ExtractionBackend.ModelFree(ocrFactory);
     }
 

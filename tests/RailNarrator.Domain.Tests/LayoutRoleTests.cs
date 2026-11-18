@@ -74,6 +74,72 @@ public sealed class LayoutRoleTests
 
     private static IReadOnlyList<ReadingUnit> Units(ExtractionSnapshot snapshot) => new ReadingUnitBuilder().Build(snapshot);
 
+    // ---- reference lists under a heading (models without a reference class: Docling Heron) ----
+
+    /// <summary>
+    /// Heron labels a bibliography as text and list items. Under a "References" heading, up to the
+    /// next heading, it is the reference list, which narration skips by default; the appendix after
+    /// it is read. Across a page break, in reading order.
+    /// </summary>
+    [Fact]
+    public void WithoutAReferenceClass_TheListUnderAReferencesHeadingIsNotRead()
+    {
+        var snapshot = new LayoutPage()
+            .Block(BlockKind.Heading, "1. Introduction")
+            .Block(BlockKind.Text, "The introduction is read aloud as usual.")
+            .Block(BlockKind.Heading, "References")
+            .Block(BlockKind.Text, "[1] A. Author. A first title. Journal of Things, 2020.")
+            .Block(BlockKind.Text, "[2] B. Author. A second title. Journal of Things, 2021.")
+            .Snapshot(new LayoutPage(1)
+                .Block(BlockKind.Text, "[3] C. Author. A third title. Journal of Things, 2022.")
+                .Block(BlockKind.Heading, "Appendix A. Proofs")
+                .Block(BlockKind.Text, "The appendix is read aloud again."));
+
+        var text = string.Join(" | ", Units(snapshot).Select(u => u.OriginalText));
+
+        Assert.Contains("The introduction is read aloud as usual.", text);
+        Assert.Contains("The appendix is read aloud again.", text);
+        Assert.DoesNotContain("Author", text);
+    }
+
+    /// <summary>A model that labels references itself is trusted, as with every other role.</summary>
+    [Fact]
+    public void AModelThatLabelsReferences_IsTrusted()
+    {
+        var snapshot = new LayoutPage()
+            .Block(BlockKind.Heading, "References")
+            .Block(BlockKind.Text, "Text the model chose to call prose stays prose.")
+            .Block(BlockKind.Reference, "[1] A. Author. A title. 2020.")
+            .Snapshot();
+
+        Assert.Same(snapshot, ReferenceSections.Apply(snapshot, out int relabelled));
+        Assert.Equal(0, relabelled);
+    }
+
+    [Fact]
+    public void WithoutModelRoles_NothingIsRelabelled()
+    {
+        var snapshot = new LayoutPage()
+            .Block(BlockKind.Text, "References")
+            .Block(BlockKind.Text, "[1] A. Author. A title. 2020.")
+            .Snapshot();
+
+        Assert.Same(snapshot, ReferenceSections.Apply(snapshot, out _));
+    }
+
+    [Theory]
+    [InlineData("References", true)]
+    [InlineData("REFERENCES", true)]
+    [InlineData("7. References", true)]
+    [InlineData("VII References", true)]
+    [InlineData("Bibliography:", true)]
+    [InlineData("Works Cited", true)]
+    [InlineData("References and Notes", true)]
+    [InlineData("References to earlier work", false)]
+    [InlineData("Related work", false)]
+    public void AReferencesHeadingIsRecognisedByItsWholeText(string heading, bool expected)
+        => Assert.Equal(expected, ReferenceSections.IsReferencesHeading(heading));
+
     [Fact]
     public void WithAModel_AProseLineCarryingSymbolsIsNotPromotedToAnEquation()
     {

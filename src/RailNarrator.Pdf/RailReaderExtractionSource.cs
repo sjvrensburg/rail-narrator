@@ -54,42 +54,67 @@ public sealed record ExtractionBackend(
             () => new XYCutPlusPlusResolver(), ocrFactory);
     }
 
-    /// <summary>PP-DocLayoutV3 via RailReader.Core.Analysis. Needs the model on disk.</summary>
-    /// <param name="acceleration">
-    /// <see cref="LayoutAcceleration.Auto"/> puts the model on a WebGPU-capable GPU when one is found
-    /// and the model loads on it (checked here, once), and on the CPU otherwise, with the reason in
-    /// <see cref="LayoutDevice.FallbackReason"/>. Defaults to the CPU so library callers opt in.
-    /// </param>
+    /// <summary>PP-DocLayoutV3 via RailReader.Core.Analysis, one file for both devices.</summary>
     public static ExtractionBackend OnnxLayout(string modelPath, Func<IOcrService>? ocrFactory = null,
         LayoutAcceleration acceleration = LayoutAcceleration.Cpu)
+        => OnnxLayout(new LayoutModelFiles(LayoutModelArchitecture.PPDocLayoutV3, "pp-doclayout-v3", modelPath, modelPath),
+            ocrFactory, acceleration);
+
+    /// <summary>A layout model via RailReader.Core.Analysis. Needs the model files on disk.</summary>
+    /// <param name="model">The architecture and its files for each device.</param>
+    /// <param name="acceleration">
+    /// <see cref="LayoutAcceleration.Auto"/> puts the model on a WebGPU-capable GPU when one is found,
+    /// the GPU file exists and the model loads on it (checked here, once), and on the CPU otherwise,
+    /// with the reason in <see cref="LayoutDevice.FallbackReason"/>. Defaults to the CPU so library
+    /// callers opt in.
+    /// </param>
+    public static ExtractionBackend OnnxLayout(LayoutModelFiles model, Func<IOcrService>? ocrFactory = null,
+        LayoutAcceleration acceleration = LayoutAcceleration.Cpu)
     {
+        ArgumentNullException.ThrowIfNull(model);
         var device = LayoutDevice.Cpu;
-        LayoutAnalyzer? probe = acceleration == LayoutAcceleration.Auto
-            ? LayoutAnalyzerConstruction.TryOnGpu(modelPath, out device)
-            : null;
-        probe ??= LayoutAnalyzerConstruction.OnCpu(modelPath);
+        ILayoutAnalyzer? probe = null;
+        if (acceleration == LayoutAcceleration.Auto)
+        {
+            if (model.GpuModelPath is { } gpuPath && File.Exists(gpuPath))
+                probe = LayoutAnalyzerConstruction.TryOnGpu(model.Architecture, gpuPath, out device);
+            else
+                device = LayoutDevice.Cpu with { FallbackReason = "the GPU model file is not installed" };
+        }
+        probe ??= LayoutAnalyzerConstruction.OnCpu(model.Architecture, model.CpuModelPath);
         var caps = probe.Capabilities;
 
-        Func<ILayoutAnalyzer> onCpu = () => LayoutAnalyzerConstruction.OnCpu(modelPath);
+        Func<ILayoutAnalyzer> onCpu = () => LayoutAnalyzerConstruction.OnCpu(model.Architecture, model.CpuModelPath);
         Func<ILayoutAnalyzer> build = device.IsGpu
-            ? () => LayoutAnalyzerConstruction.TryOnGpu(modelPath, out var d)
+            ? () => LayoutAnalyzerConstruction.TryOnGpu(model.Architecture, model.GpuModelPath!, out var d)
                 ?? throw new InvalidOperationException(d.FallbackReason)
             : onCpu;
         // The probe is kept and lent to every extraction rather than rebuilt for each: a GPU session
         // costs about 8 s to build and warm up. See SharedAnalyzer.
         var shared = new SharedAnalyzer(probe, build);
+        string file = Path.GetFileName(device.IsGpu ? model.GpuModelPath! : model.CpuModelPath);
         return new ExtractionBackend(
-            $"pp-doclayout-v3:{Path.GetFileName(modelPath)}",
+            $"{model.Id}:{file}",
             shared.Rent,
             caps,
-            // V3 provides its own reading order; XY-cut would discard a signal the model was trained
-            // to produce. Core's AnalysisWorker makes the same choice.
+            // A model with its own reading order (PP-DocLayoutV3) keeps it; one without (Heron) is
+            // ordered by Core's XY-cut++, the pairing RailReader2 and Core's AnalysisWorker use.
             () => caps.ProvidesReadingOrder ? new ModelOrderResolver() : new XYCutPlusPlusResolver(),
             ocrFactory,
             device,
             device.IsGpu ? onCpu : null);
     }
 }
+
+/// <summary>A layout model and the file each device runs, as RailReaderCore's registry routes them.</summary>
+/// <param name="Architecture">Which analyzer runs the files.</param>
+/// <param name="Id">Short stable name for the extraction's identity: <c>heron</c> or <c>pp-doclayout-v3</c>.</param>
+/// <param name="GpuModelPath">
+/// The file for the GPU, or null for none. Core routes Heron to its FP32 export there (INT8 has no
+/// GPU benefit) and PP-DocLayoutV3 to its one FP32 file; the FP16 exports under-detect on a GPU.
+/// </param>
+/// <param name="CpuModelPath">The file for the CPU: Heron's INT8 export, or PP-DocLayoutV3's FP32 file.</param>
+public sealed record LayoutModelFiles(LayoutModelArchitecture Architecture, string Id, string? GpuModelPath, string CpuModelPath);
 
 /// <summary>
 /// Extracts narration-ready snapshots from a PDF using RailReaderCore's own pipeline.

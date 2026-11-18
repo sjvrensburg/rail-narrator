@@ -113,7 +113,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         TestMathEndpoint = new RelayCommand(() => TestMathEndpointAsync(), () => !Busy, OnCommandError);
         TestVisionEndpoint = new RelayCommand(() => TestVisionEndpointAsync(), () => !Busy, OnCommandError);
         DownloadKokoroModel = new RelayCommand(() => DownloadModelAsync(ModelManifest.KokoroFp16), () => !Busy, OnCommandError);
-        DownloadLayoutModel = new RelayCommand(() => DownloadModelAsync(ModelManifest.LayoutPpDocV3), () => !Busy, OnCommandError);
+        DownloadLayoutModel = new RelayCommand(() => DownloadModelAsync(ModelManifest.LayoutHeronInt8), () => !Busy, OnCommandError);
+        DownloadLayoutModelGpu = new RelayCommand(() => DownloadModelAsync(ModelManifest.LayoutHeron), () => !Busy, OnCommandError);
         RegenerateMaths = new RelayCommand(() => RegenerateMathsAsync(), () => MathsReview is { CanRegenerate: true }, OnCommandError);
         ApplyMathsEdit = new RelayCommand(() => ApplyMathsEditAsync(), () => !Busy, OnCommandError);
     }
@@ -413,7 +414,11 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public RelayCommand TestMathEndpoint { get; }
     public RelayCommand TestVisionEndpoint { get; }
     public RelayCommand DownloadKokoroModel { get; }
+    /// <summary>Docling Heron INT8, the layout model on the CPU.</summary>
     public RelayCommand DownloadLayoutModel { get; }
+
+    /// <summary>Docling Heron FP32, the layout model on a GPU.</summary>
+    public RelayCommand DownloadLayoutModelGpu { get; }
     public RelayCommand RegenerateMaths { get; }
     public RelayCommand ApplyMathsEdit { get; }
 
@@ -926,6 +931,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         TestVisionEndpoint.RaiseCanExecuteChanged();
         DownloadKokoroModel.RaiseCanExecuteChanged();
         DownloadLayoutModel.RaiseCanExecuteChanged();
+        DownloadLayoutModelGpu.RaiseCanExecuteChanged();
         ApplyMathsEdit.RaiseCanExecuteChanged();
     }
 

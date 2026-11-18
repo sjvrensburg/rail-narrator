@@ -151,7 +151,39 @@ public static class ModelManifest
         Required: false,
         FileName: "PP-DocLayoutV3.onnx");
 
-    public static IReadOnlyList<ModelAsset> All { get; } = [KokoroFp16, KokoroFp32, KokoroWebGpu, KokoroVoices, ZonosBackbone, ZonosDecoderFull, LayoutPpDocV3];
+    /// <summary>
+    /// Docling Heron, INT8 backbone: the layout model on the CPU, and RailReaderCore's recommended
+    /// default (2.6-3x faster than FP32 at about 0.99 detection agreement). URL and checksum are
+    /// Core's <c>LayoutModelRegistry.HeronInt8</c>. ADR-0008.
+    /// </summary>
+    public static ModelAsset LayoutHeronInt8 { get; } = new(
+        Id: "heron-int8",
+        Description: "Docling Heron layout model, INT8 (17 classes; reading order from Core's XY-cut++). For the CPU.",
+        Url: "https://huggingface.co/stefanj0/docling-layout-heron-int8-onnx/resolve/main/docling-layout-heron-int8.onnx",
+        Revision: "Docling Heron INT8 backbone (RailReaderCore LayoutModelRegistry.HeronInt8)",
+        Bytes: 69_498_410,
+        Sha256: "087ed4fa1ae3ee03003d8f02f8e5c4d1497cb45e4122e62dfa531acbbe841364",
+        Licence: "Apache-2.0 (Docling model)",
+        Required: false,
+        FileName: "docling-layout-heron-int8.onnx");
+
+    /// <summary>
+    /// Docling Heron, FP32: the layout model on a GPU (Core routes GPU requests here; its FP16 export
+    /// under-detects on a GPU). Core's registry has no checksum for it; the digest is of the file
+    /// RailReader2 downloaded, measured on this machine.
+    /// </summary>
+    public static ModelAsset LayoutHeron { get; } = new(
+        Id: "heron",
+        Description: "Docling Heron layout model, FP32. For the GPU (WebGPU); also runs on the CPU.",
+        Url: "https://huggingface.co/docling-project/docling-layout-heron-onnx/resolve/main/model.onnx",
+        Revision: "Docling Heron FP32 (RailReaderCore LayoutModelRegistry.Heron)",
+        Bytes: 171_220_471,
+        Sha256: "59c81a3a2923042d85034ffc487f8f47e4854117e879aef89b2b9f728fb4922a",
+        Licence: "Apache-2.0 (Docling model)",
+        Required: false,
+        FileName: "docling-layout-heron.onnx");
+
+    public static IReadOnlyList<ModelAsset> All { get; } = [KokoroFp16, KokoroFp32, KokoroWebGpu, KokoroVoices, ZonosBackbone, ZonosDecoderFull, LayoutHeronInt8, LayoutHeron, LayoutPpDocV3];
 
     public static ModelAsset? Find(string id) => All.FirstOrDefault(a => a.Id == id);
 
@@ -531,4 +563,62 @@ public sealed record SidecarOptions(
     public TimeSpan ShutdownTimeoutValue => ShutdownTimeout ?? TimeSpan.FromSeconds(5);
 
     public IReadOnlyList<string> Arguments => ExtraArguments ?? [];
+}
+
+/// <summary>The layout model chosen and the file each device runs.</summary>
+/// <param name="Id"><c>heron</c> or <c>pp-doclayout-v3</c>.</param>
+/// <param name="GpuModelPath">The file for a GPU, or null when none is installed.</param>
+/// <param name="CpuModelPath">The file for the CPU.</param>
+public sealed record LayoutModelChoice(string Id, string? GpuModelPath, string CpuModelPath);
+
+/// <summary>
+/// Picks the layout model from the <c>LayoutAnalyzer</c> setting and the files installed. ADR-0008.
+/// </summary>
+/// <remarks>
+/// Docling Heron is preferred: RailReader2 has run it with Core's geometric reading order for months,
+/// and it is faster than PP-DocLayoutV3 on both devices. Its files follow Core's registry routing:
+/// FP32 for a GPU, the INT8 backbone for the CPU (FP32 there when INT8 is missing). Files are looked
+/// for in the application's models directory, then in RailReader2's, read only. Nothing is downloaded.
+/// </remarks>
+public static class LayoutModelResolver
+{
+    public const string Heron = "heron";
+    public const string PPDocLayoutV3 = "pp-doclayout-v3";
+
+    /// <summary>The model to use, or null for the model-free analyzer.</summary>
+    /// <param name="setting">The <c>LayoutAnalyzer</c> setting.</param>
+    /// <param name="explicitPath">The <c>LayoutModelPath</c> setting: one file used on both devices.</param>
+    /// <param name="searchDirectories">Where to look, in order; defaults to the application's and RailReader2's model directories.</param>
+    public static LayoutModelChoice? Resolve(string? setting, string? explicitPath, IReadOnlyList<string>? searchDirectories = null)
+    {
+        string choice = (setting ?? "").Trim().ToLowerInvariant();
+        if (choice == "none") return null;
+
+        if (explicitPath is { Length: > 0 })
+        {
+            if (!File.Exists(explicitPath)) return null;
+            bool heron = choice == Heron || (choice != PPDocLayoutV3
+                && Path.GetFileName(explicitPath).Contains("heron", StringComparison.OrdinalIgnoreCase));
+            return new LayoutModelChoice(heron ? Heron : PPDocLayoutV3, explicitPath, explicitPath);
+        }
+
+        var dirs = searchDirectories ?? [XdgPaths.Models, XdgPaths.RailReader2Models];
+        string? Find(string fileName) => dirs.Select(d => Path.Combine(d, fileName)).FirstOrDefault(File.Exists);
+
+        LayoutModelChoice? HeronModel()
+        {
+            string? fp32 = Find(ModelManifest.LayoutHeron.FileName);
+            string? cpu = Find(ModelManifest.LayoutHeronInt8.FileName) ?? fp32;
+            return cpu is null ? null : new LayoutModelChoice(Heron, fp32, cpu);
+        }
+        LayoutModelChoice? V3Model()
+            => Find(ModelManifest.LayoutPpDocV3.FileName) is { } v3 ? new LayoutModelChoice(PPDocLayoutV3, v3, v3) : null;
+
+        return choice switch
+        {
+            Heron => HeronModel(),
+            PPDocLayoutV3 => V3Model(),
+            _ => HeronModel() ?? V3Model(),
+        };
+    }
 }

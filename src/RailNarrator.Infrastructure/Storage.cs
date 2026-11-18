@@ -40,6 +40,13 @@ public static class XdgPaths
         Base("XDG_STATE_HOME", Path.Combine(Home, ".local", "state")), ApplicationId);
 
     public static string Models => Path.Combine(Data, "models");
+
+    /// <summary>
+    /// Where RailReader2 keeps the layout models it downloads (<c>$XDG_CONFIG_HOME/railreader2/models</c>).
+    /// Read, never written: a reader who already has Heron for RailReader2 need not download it again.
+    /// </summary>
+    public static string RailReader2Models => Path.Combine(
+        Base("XDG_CONFIG_HOME", Path.Combine(Home, ".config")), "railreader2", "models");
     public static string SpeechCache => Path.Combine(Cache, "speech");
     public static string ExtractionCache => Path.Combine(Cache, "extraction");
     public static string Logs => Path.Combine(State, "logs");
@@ -137,7 +144,13 @@ public sealed record RailNarratorSettings
 
     public NarrationFilterSettings Filters { get; init; } = NarrationFilterSettings.Default;
     public OcrPolicy Ocr { get; init; } = OcrPolicy.Full;
-    public string LayoutAnalyzer { get; init; } = "text-layout";
+    /// <summary>
+    /// Which layout model to use: <c>heron</c> (Docling Heron), <c>pp-doclayout-v3</c>, <c>none</c> (the
+    /// model-free analyzer), or anything else for automatic: Heron if installed, else PP-DocLayoutV3,
+    /// else none. <c>text-layout</c>, the old default that older settings files still carry, means
+    /// automatic. See ADR-0008 and <see cref="LayoutModelResolver"/>.
+    /// </summary>
+    public string LayoutAnalyzer { get; init; } = "auto";
     public string? LayoutModelPath { get; init; }
     public LayoutAcceleration LayoutAcceleration { get; init; } = LayoutAcceleration.Auto;
 

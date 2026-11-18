@@ -7,7 +7,7 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 464 passing, 7 opt-in skips, 0 warnings
+## Verified by automated tests — 484 passing, 9 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
@@ -701,3 +701,12 @@ threads meeting.
     to the last page went from about 19 s to about 4 s. NVIDIA's driver caches compiled shaders under
     `$XDG_CACHE_HOME/nvidia`: with an empty cache (as in an isolated test run) the first inference
     takes 8 s instead of 2 s, so test runs with fresh XDG directories overstate first-open time.
+62. **Docling Heron is the layout model** (ADR-0008). Chosen and built through Core's registry and
+    factory as RailReader2 does: FP32 on the GPU, INT8 on the CPU, XY-cut++ reading order; files
+    from the application's models directory or RailReader2's. On four RailDLA papers it extracted
+    1.5-2x faster than PP-DocLayoutV3 on the GPU and 2.1-2.4x faster on the CPU, with the same
+    content read apart from page furniture each model handles differently and one Elsevier sentence
+    Heron dropped. Without a reference class, a References section is found by its heading
+    (`ReferenceSections`); on three of the papers it caught 60, 21 and 41 blocks, and no script
+    read a bibliography. Opt-in tests: Heron INT8 through the adapter (left column first), Heron
+    FP32 on the GPU matching the CPU.

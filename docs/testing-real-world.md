@@ -9,6 +9,7 @@ half: running the real models, the real GUI and the real audio path. All the mea
 | Thing | Where it came from | Setting / variable |
 |---|---|---|
 | Kokoro TTS (`kokoro-fp16.onnx`) | `docs/model-manifest.json` | `KokoroModelPath`, or `~/.local/share/rail-narrator/models/kokoro-fp16.onnx`; tests: `RAIL_NARRATOR_KOKORO_MODEL` |
+| Docling Heron layout model (default; ADR-0008) | Models menu, or RailReader2's downloads in `~/.config/railreader2/models` (found there automatically) | `LayoutAnalyzer: "heron"` or automatic; tests: `RAIL_NARRATOR_HERON_MODEL` (INT8), `RAIL_NARRATOR_HERON_GPU_MODEL` (FP32) |
 | PP-DocLayoutV3 layout model (`.onnx`) | RailReader2's model download (was at `~/.config/railreader2/models/PP-DocLayoutV3.onnx`) | `LayoutAnalyzer: "pp-doclayout-v3"`, `LayoutModelPath`; tests: `RAIL_NARRATOR_LAYOUT_MODEL` |
 | A multimodal LLM behind an OpenAI-compatible endpoint | llama.cpp `llama-server` (Vulkan build), loading `Ornith-1.5-35B-Q4_K_M.gguf` with `--mmproj mmproj-Ornith-1.5-35B-A3B-f16.gguf --jinja --parallel 1 --ctx-size 131072 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --alias ornith-1.5-35b-a3b --port 8088`. `--jinja` is needed for the thinking switch (`chat_template_kwargs.enable_thinking`) and `--mmproj` for page images | `MathLlmBaseUrl`, `MathLlmModel`, `MathLlmThinking` |
 | MFA word alignment (optional, several GB) | `bash tools/setup-word-alignment.sh` | `MfaExecutable`, `MfaDictionaryPath`, `MfaAcousticModelPath`, `MfaG2pModelPath`; tests: `RN_MFA_*` including `RN_MFA_G2P` |

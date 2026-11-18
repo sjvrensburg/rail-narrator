@@ -71,7 +71,8 @@
       </MenuItem>
       <MenuItem Header="_Models and endpoints">
         <MenuItem Header="Download _Kokoro model…" Command="{Binding DownloadKokoroModel}" />
-        <MenuItem Header="Download _layout model (PP-DocLayoutV3, 131 MB)…" Command="{Binding DownloadLayoutModel}" />
+        <MenuItem Header="Download _layout model (Docling Heron INT8, 69 MB)…" Command="{Binding DownloadLayoutModel}" />
+        <MenuItem Header="Download layout model for the _GPU (Docling Heron FP32, 171 MB)…" Command="{Binding DownloadLayoutModelGpu}" />
         <MenuItem Header="_Test text LLM endpoint" Command="{Binding TestMathEndpoint}" />
         <MenuItem Header="Test _vision endpoint" Command="{Binding TestVisionEndpoint}" />
       </MenuItem>
