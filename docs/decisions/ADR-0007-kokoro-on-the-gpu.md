@@ -78,6 +78,12 @@ way).
 - The diagnostics panel says where Kokoro runs ("kokoro on NVIDIA GPU (device 0x25BA) (WebGPU)"),
   and a fallback adds a note with its reason.
 
+## Rechecked on ONNX Runtime 1.32 and plugin 0.6 (Core 0.91.0)
+
+Stock exports still abort the process on WebGPU (`Invalid memory type: -1`); fp16 with int32 tokens
+still gives NaN samples (65 529 in a 4.17 s clip, now at RTF 0.25); fp32 with int32 tokens still
+gives real audio at RTF 0.26–0.28, and the opt-in GPU test still passes. Nothing here changes.
+
 ## Not done, and why
 
 - **The fp16 model on the GPU.** It is twice as fast but its output is NaN on this device; the check

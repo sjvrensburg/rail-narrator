@@ -16,7 +16,7 @@ narration.
 
 Since PR #10:
 
-- **Core 0.90.0** (PR #12), and the layout model runs on the GPU when one is usable, falling
+- **Core 0.90.0** (PR #12), since moved to **0.91.0** (ONNX Runtime 1.32, WebGPU plugin 0.6), and the layout model runs on the GPU when one is usable, falling
   back to the CPU (PR #14, ADR-0006).
 - **Word highlighting for words the dictionary lacks** (PR #15): acronyms are spelled from the
   dictionary's letter names, other words get a G2P pronunciation, and both are still
