@@ -84,15 +84,14 @@ public sealed class KokoroTtsProvider : ITtsProvider
     /// <summary>The graph output that carries per-phoneme durations, when an export provides it.</summary>
     public const string DurationsOutputName = "durations";
 
-    /// <summary>
-    /// Upper bound on one synthesis. KokoroSharp gives no awaitable completion, so a worker thread
-    /// that dies mid-job would otherwise leave the caller polling forever.
-    /// </summary>
-    public const int SynthesisTimeoutMs = 120_000;
+    /// <summary>Upper bound on one synthesis on the CPU engine. See <see cref="KokoroEngineRunner"/>.</summary>
+    public const int SynthesisTimeoutMs = KokoroEngineRunner.SynthesisTimeoutMs;
 
     private readonly KokoroProviderSettings _settings;
+    private readonly KokoroGpuOptions? _gpu;
     private readonly SemaphoreSlim _initGate = new(1, 1);
-    private KokoroEngine? _engine;
+    private KokoroRunnerChain? _chain;
+    private SessionOptions? _cpuOptions;
     private string? _initError;
     private bool _voicesLoaded;
     private TimingProvenance _observedTiming = TimingProvenance.None;
@@ -100,8 +99,31 @@ public sealed class KokoroTtsProvider : ITtsProvider
     private string _modelFingerprint = "unavailable";
     private bool _disposed;
 
-    public KokoroTtsProvider(KokoroProviderSettings settings)
-        => _settings = settings ?? throw new ArgumentNullException(nameof(settings));
+    /// <param name="settings">Model, voices and CPU threading.</param>
+    /// <param name="gpu">
+    /// Run on a GPU through WebGPU when this is given, the converted model exists and a warm-up clip
+    /// comes out as real audio; otherwise, and from the first bad GPU clip, on the CPU. ADR-0007.
+    /// </param>
+    public KokoroTtsProvider(KokoroProviderSettings settings, KokoroGpuOptions? gpu = null)
+    {
+        _settings = settings ?? throw new ArgumentNullException(nameof(settings));
+        _gpu = gpu;
+    }
+
+    /// <summary>"webgpu" or "cpu": where synthesis runs now. "cpu" until initialised.</summary>
+    public string Device => _chain?.Active.Device ?? "cpu";
+
+    /// <summary>The GPU's name when synthesis runs on it.</summary>
+    public string? GpuDevice => Device == "webgpu" ? _gpu?.DeviceDescription : null;
+
+    /// <summary>Why synthesis is on the CPU although a GPU was configured; null otherwise.</summary>
+    public string? GpuFallbackReason => _chain?.FallbackReason;
+
+    /// <summary>Raised once if synthesis moves from the GPU to the CPU, with the reason.</summary>
+    public event Action<string>? FellBackToCpu;
+
+    /// <summary>Raised once the model is loaded and the device is settled (see <see cref="Device"/>).</summary>
+    public event Action? Initialised;
 
     public string ProviderId => "kokoro";
 
@@ -140,8 +162,14 @@ public sealed class KokoroTtsProvider : ITtsProvider
             Unavailable: null);
     }
 
-    private string ModelRevision =>
-        $"kokoro-sharp/{KokoroSharpVersion}/trim-2:{_modelFingerprint}";
+    /// <summary>
+    /// What produced the audio, for the speech-cache key. The CPU form is unchanged from before the
+    /// GPU path, so audio already cached stays valid; GPU audio is close to the CPU's but not the
+    /// same bytes, so it is cached apart.
+    /// </summary>
+    private string ModelRevision => _chain?.Active is { Device: not "cpu" } gpu
+        ? $"kokoro-sharp/{KokoroSharpVersion}/trim-2/{gpu.Revision}"
+        : $"kokoro-sharp/{KokoroSharpVersion}/trim-2:{_modelFingerprint}";
 
     private const string KokoroSharpVersion = "0.8.4";
 
@@ -181,7 +209,7 @@ public sealed class KokoroTtsProvider : ITtsProvider
         string? error = await EnsureInitialisedAsync(ct).ConfigureAwait(false);
         if (error is not null) throw new InvalidOperationException($"Kokoro is unavailable: {error}");
 
-        var engine = _engine ?? throw new InvalidOperationException("Kokoro engine was not created.");
+        var chain = _chain ?? throw new InvalidOperationException("Kokoro engine was not created.");
         KokoroVoice voice;
         lock (_initGate)
         {
@@ -217,60 +245,11 @@ public sealed class KokoroTtsProvider : ITtsProvider
         if (segments.Count == 0 || segments.All(s => s.Length == 0))
             throw new InvalidOperationException("Kokoro produced no phonemes for this text; it may be entirely unpunctuated symbols.");
 
-        var samples = new List<float>();
-        var timestamps = new List<TimedCue>();
-        bool sawTimings = false;
-        var gate = new object();
-
-        var job = KokoroJob.Create(segments, voice, 1.0f, null);
-        // Callbacks are wired before the job is queued: KokoroSharp's engine dispatches from a
-        // background thread as soon as it is enqueued, so attaching afterwards is a race that would
-        // silently drop the first segment's audio.
-        foreach (var step in job.Steps)
-        {
-            step.OnStepComplete = stepSamples =>
-            {
-                lock (gate)
-                {
-                    long offsetBefore = samples.Count;
-                    samples.AddRange(stepSamples);
-                    if (step.Timestamps is { Length: > 0 } ts)
-                    {
-                        sawTimings = true;
-                        // Steps are concatenated without trimming. Offset in that raw timeline;
-                        // the single actual clip trim below is then applied exactly once.
-                        foreach (var t in ts)
-                            timestamps.Add(PhonemeCue(t, offsetBefore));
-                    }
-                }
-            };
-        }
-
-        // Cancellation disposes the registration whether or not the job finished, and cancelling a
-        // completed job is harmless.
-        var registration = ct.CanBeCanceled
-            ? ct.Register(() => { try { job.Cancel(); } catch { /* already finished */ } })
-            : default(CancellationTokenRegistration);
-        try
-        {
-            engine.EnqueueJob(job);
-            await WaitForJobAsync(job, ct).ConfigureAwait(false);
-        }
-        finally
-        {
-            registration.Dispose();
-        }
-
+        var output = await chain.RunAsync(segments, voice.Features, ct).ConfigureAwait(false);
         ct.ThrowIfCancellationRequested();
-        if (job.State == KokoroJobState.Canceled) throw new OperationCanceledException(ct);
-
-        float[] audio;
-        bool timingsObserved;
-        lock (gate)
-        {
-            audio = samples.ToArray();
-            timingsObserved = sawTimings;
-        }
+        float[] audio = output.Samples;
+        var timestamps = output.Timestamps.ToList();
+        bool timingsObserved = timestamps.Count > 0;
         if (timingsObserved) _observedTiming = TimingProvenance.NativeDuration;
 
         if (audio.Length == 0)
@@ -377,27 +356,6 @@ public sealed class KokoroTtsProvider : ITtsProvider
         }
     }
 
-    private static async Task WaitForJobAsync(KokoroJob job, CancellationToken ct)
-    {
-        // KokoroSharp exposes no awaitable completion, so the dispatch thread is polled. The delay is
-        // short enough to keep first-audio latency low and long enough not to spin a core.
-        long deadline = Environment.TickCount64 + SynthesisTimeoutMs;
-        while (!job.isDone)
-        {
-            ct.ThrowIfCancellationRequested();
-            if (Environment.TickCount64 > deadline)
-            {
-                // A worker that threw leaves isDone false forever; without this bound the caller hangs
-                // instead of reporting a failure the reader can retry.
-                try { job.Cancel(); } catch { /* already finished */ }
-                throw new InvalidOperationException(
-                    $"Kokoro did not finish synthesising within {SynthesisTimeoutMs / 1000} s. The model may be " +
-                    "incompatible with this runtime, or the machine may be out of memory.");
-            }
-            await Task.Delay(5, CancellationToken.None).ConfigureAwait(false);
-        }
-    }
-
     public async Task<ProviderSelfTestResult> SelfTestAsync(string voiceId, CancellationToken ct = default)
     {
         var start = Environment.TickCount64;
@@ -426,13 +384,13 @@ public sealed class KokoroTtsProvider : ITtsProvider
 
     private async Task<string?> EnsureInitialisedAsync(CancellationToken ct)
     {
-        if (_engine is not null) return null;
+        if (_chain is not null) return null;
         if (_initError is not null) return _initError;
 
         await _initGate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            if (_engine is not null) return null;
+            if (_chain is not null) return null;
             if (_initError is not null) return _initError;
 
             if (!File.Exists(_settings.ModelPath))
@@ -479,7 +437,16 @@ public sealed class KokoroTtsProvider : ITtsProvider
                     return _initError;
                 }
 
-                _engine = new KokoroEngine(_settings.ModelPath, options);
+                _cpuOptions = options;
+                var (gpuRunner, gpuReason) = await TryCreateGpuRunnerAsync(ct).ConfigureAwait(false);
+                var chain = new KokoroRunnerChain(gpuRunner,
+                    () => new KokoroEngineRunner(_settings.ModelPath, _cpuOptions!,
+                        $"kokoro-sharp/{KokoroSharpVersion}/trim-2:{_modelFingerprint}"),
+                    gpuReason);
+                chain.FellBack += reason => FellBackToCpu?.Invoke(reason);
+                if (gpuRunner is null) _ = chain.Active;   // build the CPU engine now, as before
+                _chain = chain;
+                Initialised?.Invoke();
                 return null;
             }
             catch (Exception ex)
@@ -494,16 +461,54 @@ public sealed class KokoroTtsProvider : ITtsProvider
         }
     }
 
+    /// <summary>
+    /// Builds the WebGPU session and proves it with a warm-up clip, or says why not. The warm-up
+    /// also compiles the GPU's shaders (several seconds), so the first real passage does not pay it.
+    /// </summary>
+    private async Task<(IKokoroRunner? Runner, string? Reason)> TryCreateGpuRunnerAsync(CancellationToken ct)
+    {
+        if (_gpu is null) return (null, null);
+        if (!File.Exists(_gpu.ModelPath))
+            return (null, $"the WebGPU Kokoro model is not at '{_gpu.ModelPath}' (make it with tools/kokoro-webgpu-model.sh)");
+        KokoroSessionRunner? runner = null;
+        try
+        {
+            var options = new SessionOptions { EnableMemoryPattern = true };
+            _gpu.ConfigureSession(options);
+            string fingerprint = await Task.Run(() => CacheKey.Sha256HexOfFile(_gpu.ModelPath), ct).ConfigureAwait(false);
+            runner = await Task.Run(() => new KokoroSessionRunner(_gpu.ModelPath, options, "webgpu", fingerprint), ct).ConfigureAwait(false);
+            if (!runner.TakesInt32Tokens)
+                throw new InvalidOperationException("the model still takes int64 tokens, which the WebGPU plugin cannot accept; convert it with tools/kokoro-webgpu-model.sh");
+
+            var voice = KokoroVoiceManager.GetVoice(_settings.DefaultVoice) ?? KokoroVoiceManager.Voices[0];
+            int[] tokens = Tokenizer.Tokenize("Ready to read.", voice.GetLangCode(), true);
+            var warmUp = await runner.RunAsync([tokens], voice.Features, ct).ConfigureAwait(false);
+            if (KokoroOutputCheck.Problem(warmUp.Samples) is { } problem)
+                throw new InvalidOperationException($"the warm-up clip was unusable: {problem}");
+            return (runner, null);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            runner?.Dispose();
+            throw;
+        }
+        catch (Exception ex)
+        {
+            runner?.Dispose();
+            return (null, $"Kokoro on the GPU is unavailable, using the CPU: {ex.Message}");
+        }
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (_disposed) return;
         _disposed = true;
-        var engine = _engine;
-        _engine = null;
-        if (engine is not null)
+        var chain = _chain;
+        _chain = null;
+        if (chain is not null)
         {
             // Disposal touches native ONNX state; keep it off the caller's thread.
-            await Task.Run(engine.Dispose).ConfigureAwait(false);
+            await Task.Run(chain.Dispose).ConfigureAwait(false);
         }
         _initGate.Dispose();
     }

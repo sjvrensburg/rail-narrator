@@ -83,6 +83,11 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
         _services.Coordinator.SnapshotChanged += OnSnapshotChanged;
         _services.Coordinator.SegmentResolved += OnSegmentResolved;
+        if (_services.Kokoro is { } kokoro)
+        {
+            kokoro.Initialised += OnKokoroDeviceSettled;
+            kokoro.FellBackToCpu += OnKokoroFellBack;
+        }
         _services.Coordinator.ActiveCueChanged += OnActiveCueChanged;
         _services.Coordinator.FollowRequested += OnFollowRequested;
 
@@ -362,8 +367,25 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         ? $"{url} / {_services.CurrentSettings.VlmModel}"
         : "not configured";
 
+    /// <summary>Kokoro has loaded: say where it runs, and why not on the GPU when that was wanted.</summary>
+    private void OnKokoroDeviceSettled() => Dispatcher.UIThread.Post(() =>
+    {
+        OnPropertyChanged(nameof(SpeechProviderSummary));
+        if (_services.Kokoro?.GpuFallbackReason is { } reason) Notes.Add(reason);
+    });
+
+    /// <summary>A GPU clip was not real audio: synthesis moved to the CPU for the rest of the run.</summary>
+    private void OnKokoroFellBack(string reason) => Dispatcher.UIThread.Post(() =>
+    {
+        OnPropertyChanged(nameof(SpeechProviderSummary));
+        Notes.Add($"Kokoro moved to the CPU: {reason}");
+    });
+
     public string SpeechProviderSummary
-        => string.Join(", ", _services.SpeechProviders.RegisteredIds);
+        => string.Join(", ", _services.SpeechProviders.RegisteredIds.Select(id =>
+            id == "kokoro" && _services.Kokoro is { } k
+                ? k.GpuDevice is { } gpu ? $"kokoro on {gpu} (WebGPU)" : "kokoro on the CPU"
+                : id));
 
     /// <summary>The layout analyzer and its device. Fixed for the run: the backend is built once at startup.</summary>
     public string LayoutSummary => _services.LayoutSummary;
@@ -913,6 +935,11 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         _services.Coordinator.SegmentResolved -= OnSegmentResolved;
         _services.Coordinator.ActiveCueChanged -= OnActiveCueChanged;
         _services.Coordinator.FollowRequested -= OnFollowRequested;
+        if (_services.Kokoro is { } kokoro)
+        {
+            kokoro.Initialised -= OnKokoroDeviceSettled;
+            kokoro.FellBackToCpu -= OnKokoroFellBack;
+        }
         await SavePositionAsync();
     }
 }

@@ -13,6 +13,7 @@ half: running the real models, the real GUI and the real audio path. All the mea
 | A multimodal LLM behind an OpenAI-compatible endpoint | llama.cpp `llama-server` (Vulkan build), loading `Ornith-1.5-35B-Q4_K_M.gguf` with `--mmproj mmproj-Ornith-1.5-35B-A3B-f16.gguf --jinja --parallel 1 --ctx-size 131072 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --alias ornith-1.5-35b-a3b --port 8088`. `--jinja` is needed for the thinking switch (`chat_template_kwargs.enable_thinking`) and `--mmproj` for page images | `MathLlmBaseUrl`, `MathLlmModel`, `MathLlmThinking` |
 | MFA word alignment (optional, several GB) | `bash tools/setup-word-alignment.sh` | `MfaExecutable`, `MfaDictionaryPath`, `MfaAcousticModelPath`, `MfaG2pModelPath`; tests: `RN_MFA_*` including `RN_MFA_G2P` |
 | `libportaudio.so.2` | distro package | — |
+| WebGPU Kokoro model (optional) | `bash tools/kokoro-webgpu-model.sh` (downloads the fp32 export, converts it; ADR-0007) | `KokoroAcceleration: "Auto"` (default), `KokoroGpuModelPath`; tests: `RN_WEBGPU_INTEGRATION=1` with `RAIL_NARRATOR_KOKORO_MODEL` and `RAIL_NARRATOR_KOKORO_GPU_MODEL` |
 | A WebGPU-capable GPU (optional) | Vulkan loader (`libvulkan.so.1`) and driver; the plugin is bundled | `LayoutAcceleration: "Auto"` (default) or `"Cpu"`; tests: `RN_WEBGPU_INTEGRATION=1` with the layout model |
 
 Models are never bundled and never downloaded implicitly. Copy them, or download them on

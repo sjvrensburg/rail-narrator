@@ -30,6 +30,37 @@
       }
     },
     {
+      "id": "kokoro-fp32",
+      "component": "Source of the WebGPU Kokoro model",
+      "file": "kokoro.onnx",
+      "source": "https://github.com/Lyrcaxis/KokoroSharpBinaries/releases/download/v2.0.0/kokoro.onnx",
+      "revision": "KokoroSharpBinaries v2.0.0",
+      "bytes": 325508342,
+      "sha256": "0cfd5e79aab70a3d8c1a57dc639835110ddb32c9f5ff4fdd1f4db202ea43bb05",
+      "licence": "Apache-2.0 (Kokoro-82M weights)",
+      "required": false,
+      "optional": true,
+      "notes": "fp32 export from the same release as kokoro-fp16. Not used directly: fetched and converted only by tools/kokoro-webgpu-model.sh. Digest matches GitHub's published asset digest. On the CPU it is no faster than fp16 (RTF 1.31 vs 1.18 on the i7-12700H laptop). ADR-0007."
+    },
+    {
+      "id": "kokoro-fp32-webgpu",
+      "component": "Kokoro on the GPU through WebGPU (optional)",
+      "file": "kokoro-fp32-webgpu.onnx",
+      "source": "derived from kokoro-fp32 by tools/kokoro-webgpu-model.sh (tools/kokoro_int32_tokens.py, onnx 1.20.1)",
+      "revision": "kokoro-fp32 with the 'tokens' input taken as int32 and cast to int64 in the graph",
+      "bytes": 325508425,
+      "sha256": "c2a6bfb65778efa324ffe575d54baabed0bd568bf6d65310998e0c5ccbe628db",
+      "licence": "Apache-2.0 (Kokoro-82M weights)",
+      "required": false,
+      "optional": true,
+      "notes": "Made locally, never downloaded; the digest is the tool's output, identical on two runs. The WebGPU plugin aborts the process on Kokoro's int64 'tokens' input, and the fp16 export gives NaN samples on WebGPU, hence fp32 with int32 tokens. Used when KokoroAcceleration is Auto and a WebGPU device is found. ADR-0007.",
+      "measured": {
+        "synthesisRtf": 0.3,
+        "device": "NVIDIA RTX A2000 8 GB Laptop GPU through WebGPU (Vulkan), i7-12700H laptop, 18 Nov 2026",
+        "warmUpSeconds": "about 8 s session build plus about 6 s first-clip shader compilation"
+      }
+    },
+    {
       "id": "kokoro-voices",
       "component": "Kokoro voice vectors",
       "file": "voices/",

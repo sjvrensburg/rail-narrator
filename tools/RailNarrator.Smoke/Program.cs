@@ -52,7 +52,7 @@ internal static class Program
               fixture <name> <out.pdf>     write a synthetic fixture PDF
               extract <pdf> [--pages N]    dump extraction: coverage, blocks, lines, char boxes
               plan    <pdf>                extract, build units and a narration plan, dump the script
-              speak   <pdf> [--provider kokoro|zonos3|fake] [--model PATH] [--voice V]
+              speak   <pdf> [--provider kokoro|zonos3|fake] [--model PATH] [--voice V] [--threads N] [--gpu-model PATH]
                                            synthesise the plan with a real provider and report
                                            measured latency, RTF, peak and format
               audio   [--device N] [--silent] enumerate devices and report the presentation clock
@@ -260,13 +260,23 @@ internal static class Program
 
     private static async Task<int> SpeakAsync(string[] args)
     {
-        if (args.Length < 1) return Fail("usage: speak <pdf> [--provider kokoro|zonos3|fake] [--model PATH] [--voice V] [--url URL] [--segments N]");
+        if (args.Length < 1) return Fail("usage: speak <pdf> [--provider kokoro|zonos3|fake] [--model PATH] [--voice V] [--url URL] [--segments N] [--threads N] [--gpu-model PATH]");
         string path = args[0];
         string provider = ArgValue(args, "--provider") ?? "kokoro";
         string? model = ArgValue(args, "--model") ?? Environment.GetEnvironmentVariable("RAIL_NARRATOR_KOKORO_MODEL");
         string? voice = ArgValue(args, "--voice");
         string? url = ArgValue(args, "--url");
         int segments = ArgInt(args, "--segments") ?? 3;
+        int threads = ArgInt(args, "--threads") ?? 0;   // 0: the provider's default
+        // Kokoro on the GPU through WebGPU (ADR-0007), with the model from tools/kokoro-webgpu-model.sh.
+        string? gpuModel = ArgValue(args, "--gpu-model");
+        KokoroGpuOptions? gpu = null;
+        if (gpuModel is not null)
+        {
+            var hook = RailReader.Core.Analysis.WebGpu.WebGpuAccelerator.TryBuildSessionHook();
+            if (hook is null) return Fail("--gpu-model given, but no WebGPU device was found.");
+            gpu = new KokoroGpuOptions(gpuModel, hook, RailReader.Core.Analysis.WebGpu.WebGpuAccelerator.DeviceDescription);
+        }
         string? outDir = ArgValue(args, "--out");
 
         var snapshot = await ExtractSnapshotAsync(path).ConfigureAwait(false);
@@ -279,7 +289,7 @@ internal static class Program
         ITtsProvider tts = provider switch
         {
             "kokoro" => new KokoroTtsProvider(new KokoroProviderSettings(
-                model ?? throw new ArgumentException("--model is required for the kokoro provider (or set RAIL_NARRATOR_KOKORO_MODEL)."))),
+                model ?? throw new ArgumentException("--model is required for the kokoro provider (or set RAIL_NARRATOR_KOKORO_MODEL).")) { IntraOpThreads = threads }, gpu),
             "zonos3" => new ZonosHttpTtsProvider(new ZonosProviderSettings(BaseUrl: url ?? "http://127.0.0.1:19191")),
             "fake" => new FakeTtsProvider(),
             _ => throw new ArgumentException($"Unknown provider '{provider}'."),
@@ -289,6 +299,9 @@ internal static class Program
         {
             var caps = await tts.GetCapabilitiesAsync().ConfigureAwait(false);
             Console.WriteLine($"provider: {caps.ProviderId} rev={caps.ModelRevision} available={caps.IsAvailable}");
+            if (tts is KokoroTtsProvider kokoro)
+                Console.WriteLine($"  device: {kokoro.Device}{(kokoro.GpuDevice is { } g ? $" ({g})" : "")}" +
+                                  (kokoro.GpuFallbackReason is { } why ? $"; {why}" : ""));
             if (!caps.IsAvailable) return Fail($"Provider unavailable: {caps.Unavailable}");
             Console.WriteLine($"  formats: {string.Join(", ", caps.Formats)}");
             Console.WriteLine($"  nativeTiming={caps.NativeTiming} streaming={caps.SupportsStreaming} maxChars={caps.MaxTextChars}");

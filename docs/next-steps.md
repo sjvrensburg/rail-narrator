@@ -43,9 +43,13 @@ Since PR #10:
 
 In rough priority order:
 
-- **Kokoro is slower than real time on the current laptop** (RTF 1.7, `status.md` open defects),
-  so reading pauses every few passages. Try an fp32 or int8 Kokoro export (needs a download, so
-  ask first), and check ONNX Runtime's thread settings in the provider.
+- **Kokoro on an Intel or AMD integrated GPU.** ADR-0007 measured only the NVIDIA card. Run the
+  opt-in `OnTheGpu_KokoroGivesTheCpusAudio` test and the smoke tool's `speak --gpu-model` on one;
+  the output check falls back to the CPU if it gives NaN or silence, but the speed is unknown.
+- **The 47 s document open with the layout model on the GPU** (`status.md` open defects): ADR-0006
+  measured 24 pages in 11.7 s on the same laptop.
+- **Kokoro's CPU thread default.** 4–6 threads were about 10 % faster than the provider's 8 on the
+  i7-12700H; re-measure on the reference machine before changing it.
 - **A resize resets the zoom to fit-width** (opening the script panel, resizing the window). Keep
   the reader's magnification and only re-fit when the zoom was "fit".
 

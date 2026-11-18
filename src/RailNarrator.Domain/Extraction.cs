@@ -185,6 +185,19 @@ public enum LayoutAcceleration
     Cpu,
 }
 
+/// <summary>Where the speech model runs.</summary>
+public enum SpeechAcceleration
+{
+    /// <summary>
+    /// On a WebGPU-capable GPU when the converted model is installed, a device is found and a warm-up
+    /// clip comes out as real audio; otherwise, and from the first bad GPU clip, the CPU. ADR-0007.
+    /// </summary>
+    Auto,
+
+    /// <summary>Always the CPU.</summary>
+    Cpu,
+}
+
 /// <summary>How much recognition work to do on a page with no usable text layer.</summary>
 public enum OcrPolicy
 {

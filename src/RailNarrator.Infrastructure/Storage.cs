@@ -85,6 +85,15 @@ public sealed record RailNarratorSettings
     public string? KokoroModelPath { get; init; }
     public string? KokoroVoicesDirectory { get; init; }
     public string? KokoroVoiceId { get; init; }
+
+    /// <summary>
+    /// Where Kokoro runs. <c>Auto</c> uses the GPU (WebGPU, so Vulkan on Linux) when the converted
+    /// model from <c>tools/kokoro-webgpu-model.sh</c> is installed; <c>Cpu</c> never does. ADR-0007.
+    /// </summary>
+    public SpeechAcceleration KokoroAcceleration { get; init; } = SpeechAcceleration.Auto;
+
+    /// <summary>The WebGPU Kokoro model; defaults to <c>kokoro-fp32-webgpu.onnx</c> in the models directory.</summary>
+    public string? KokoroGpuModelPath { get; init; }
     public string? ZonosBaseUrl { get; init; } = "http://127.0.0.1:19191";
     public string? ZonosSpeakerId { get; init; }
     public double ZonosSpeakerCfgScale { get; init; } = 1.5;

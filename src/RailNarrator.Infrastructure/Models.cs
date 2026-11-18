@@ -66,6 +66,37 @@ public static class ModelManifest
         FileName: "kokoro-fp16.onnx");
 
     /// <summary>
+    /// The fp32 Kokoro export from the same release. Not used directly: it is the source of
+    /// <see cref="KokoroWebGpu"/>, fetched only by <c>tools/kokoro-webgpu-model.sh</c>.
+    /// </summary>
+    public static ModelAsset KokoroFp32 { get; } = new(
+        Id: "kokoro-fp32",
+        Description: "Kokoro-82M text-to-speech model, fp32 ONNX export. Source of the WebGPU model.",
+        Url: "https://github.com/Lyrcaxis/KokoroSharpBinaries/releases/download/v2.0.0/kokoro.onnx",
+        Revision: "KokoroSharpBinaries v2.0.0",
+        Bytes: 325_508_342,
+        Sha256: "0cfd5e79aab70a3d8c1a57dc639835110ddb32c9f5ff4fdd1f4db202ea43bb05",
+        Licence: "Apache-2.0 (model weights)",
+        Required: false,
+        FileName: "kokoro.onnx");
+
+    /// <summary>
+    /// <see cref="KokoroFp32"/> with its <c>tokens</c> input taken as int32, for the WebGPU plugin,
+    /// which aborts on int64 inputs. Made locally by <c>tools/kokoro-webgpu-model.sh</c> (onnx 1.20.1),
+    /// never downloaded; the digest is that tool's output, reproduced twice. ADR-0007.
+    /// </summary>
+    public static ModelAsset KokoroWebGpu { get; } = new(
+        Id: "kokoro-fp32-webgpu",
+        Description: "Kokoro-82M, fp32 with int32 tokens, for the GPU through WebGPU. Optional.",
+        Url: "derived://kokoro-fp32/tools/kokoro-webgpu-model.sh",
+        Revision: "kokoro-fp32 (KokoroSharpBinaries v2.0.0), tokens rewritten to int32",
+        Bytes: 325_508_425,
+        Sha256: "c2a6bfb65778efa324ffe575d54baabed0bd568bf6d65310998e0c5ccbe628db",
+        Licence: "Apache-2.0 (model weights)",
+        Required: false,
+        FileName: "kokoro-fp32-webgpu.onnx");
+
+    /// <summary>
     /// Kokoro voices. Shipped inside the KokoroSharp NuGet package rather than downloaded, because the
     /// package already carries them and fetching a separate copy would be redundant.
     /// </summary>
@@ -120,7 +151,7 @@ public static class ModelManifest
         Required: false,
         FileName: "PP-DocLayoutV3.onnx");
 
-    public static IReadOnlyList<ModelAsset> All { get; } = [KokoroFp16, KokoroVoices, ZonosBackbone, ZonosDecoderFull, LayoutPpDocV3];
+    public static IReadOnlyList<ModelAsset> All { get; } = [KokoroFp16, KokoroFp32, KokoroWebGpu, KokoroVoices, ZonosBackbone, ZonosDecoderFull, LayoutPpDocV3];
 
     public static ModelAsset? Find(string id) => All.FirstOrDefault(a => a.Id == id);
 
