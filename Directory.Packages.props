@@ -5,18 +5,18 @@
     csproj is what makes "the build is reproducible" a checkable claim: one file lists every
     third-party version this product ships with.
 
-    RailReaderCore is pinned to 0.89.0, the version published on nuget.org from upstream commit
-    e7d41208454dcd4d25ab4a778309f6e483f1c953 - the same snapshot docs/Rail Narrator
-    implementation investigation.md inspected. See docs/decisions/ADR-0001.
+    RailReaderCore is pinned to 0.90.0, the version published on nuget.org from upstream commit
+    b8b9dcfb4db84aa317032ed05c2f7f7077465b4a. The investigation in docs/Rail Narrator
+    implementation investigation.md inspected 0.89.0 (e7d41208). See docs/decisions/ADR-0001.
   -->
   <ItemGroup>
     <!-- PDF foundation: RailReaderCore. Never replaced by a second PDF stack. -->
-    <PackageVersion Include="RailReader.Core" Version="0.89.0" />
-    <PackageVersion Include="RailReader.Core.Pdfium" Version="0.89.0" />
-    <PackageVersion Include="RailReader.Renderer.Skia" Version="0.89.0" />
-    <PackageVersion Include="RailReader.Core.Analysis" Version="0.89.0" />
-    <PackageVersion Include="RailReader.Core.Ocr.RapidOcr" Version="0.89.0" />
-    <PackageVersion Include="RailReader.Core.Vlm.OpenAI" Version="0.89.0" />
+    <PackageVersion Include="RailReader.Core" Version="0.90.0" />
+    <PackageVersion Include="RailReader.Core.Pdfium" Version="0.90.0" />
+    <PackageVersion Include="RailReader.Renderer.Skia" Version="0.90.0" />
+    <PackageVersion Include="RailReader.Core.Analysis" Version="0.90.0" />
+    <PackageVersion Include="RailReader.Core.Ocr.RapidOcr" Version="0.90.0" />
+    <PackageVersion Include="RailReader.Core.Vlm.OpenAI" Version="0.90.0" />
 
     <!-- Pinned to the same 3.119.* RailReader.Renderer.Skia uses, so one native binary serves both. -->
     <PackageVersion Include="SkiaSharp" Version="3.119.4" />
