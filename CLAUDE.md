@@ -24,6 +24,10 @@ dotnet run --project src/RailNarrator.App -c Release -- path/to/document.pdf
 dotnet build tools/RailNarrator.Smoke -c Release
 tools/RailNarrator.Smoke/bin/Release/net10.0/rail-narrator-smoke all --kokoro-model <path>
 
+# Maths interpretation on a real PDF through the real model (no cache; an hour for a whole paper)
+dotnet build tools/RailNarrator.MathBench -c Release
+tools/RailNarrator.MathBench/bin/Release/net10.0/rail-narrator-mathbench paper.pdf PP-DocLayoutV3.onnx [--pages 2-8] [--only 12,24] [--thinking off|equations|always]
+
 ./packaging/build-release.sh                       # self-contained linux-x64 archive into dist/
 bash tools/setup-word-alignment.sh                 # optional MFA runtime (needs micromamba, several GB)
 ```
@@ -46,7 +50,7 @@ Dependency versions live only in `Directory.Packages.props` (central package man
 
 ## Architecture
 
-Read `docs/architecture.md` first; ADRs in `docs/decisions/` record the measurement behind each decision, and `docs/status.md` separates what is *verified* from what is merely *implemented*.
+Read `docs/next-steps.md` for the current state, the work in progress and the open product decisions; `docs/testing-real-world.md` for running the real models, GUI and audio (headless compositor, XTEST input, isolated XDG dirs, checking the sink is quiet before playing). For the design read `docs/architecture.md`; ADRs in `docs/decisions/` record the measurement behind each decision, and `docs/status.md` separates what is *verified* from what is merely *implemented*.
 
 ### The central idea: three representations, two separate mappings
 

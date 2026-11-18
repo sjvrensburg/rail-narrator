@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>RailNarrator.MathBench</RootNamespace>
+    <AssemblyName>rail-narrator-mathbench</AssemblyName>
+    <Description>Runs every maths passage of a real PDF through the real interpreter and fallback reader and prints source, spoken text, provenance and timing.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/RailNarrator.Domain/RailNarrator.Domain.csproj" />
+    <ProjectReference Include="../../src/RailNarrator.Pdf/RailNarrator.Pdf.csproj" />
+    <ProjectReference Include="../../src/RailNarrator.Inference/RailNarrator.Inference.csproj" />
+  </ItemGroup>
+</Project>
