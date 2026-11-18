@@ -43,6 +43,11 @@ Since PR #10:
 
 In rough priority order:
 
+- **Heron with maths interpretation, end to end.** ADR-0008 compared the layout models without an
+  LLM endpoint. Run a maths-heavy paper with the interpreter and compare what is sent and read.
+- **The spoken "References" heading.** The list is skipped under both models but its heading is
+  still read; drop a heading whose section is entirely skipped.
+
 - **Kokoro on an Intel or AMD integrated GPU.** ADR-0007 measured only the NVIDIA card. Run the
   opt-in `OnTheGpu_KokoroGivesTheCpusAudio` test and the smoke tool's `speak --gpu-model` on one;
   the output check falls back to the CPU if it gives NaN or silence, but the speed is unknown.

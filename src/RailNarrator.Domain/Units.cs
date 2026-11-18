@@ -53,6 +53,72 @@ public sealed record ReadingUnitBuilderOptions(
 /// "Stable URL". A reader turns past it; read aloud it is a DOI spelled digit by digit and a list of
 /// view counts.
 /// </summary>
+/// <summary>
+/// Finds a document's reference list by its heading when the layout model has no reference class.
+/// </summary>
+/// <remarks>
+/// <para>
+/// PP-DocLayoutV3 labels bibliography entries itself; Docling Heron has no such class and calls them
+/// text and list items. Narration skips references by default, so with Heron a reference list
+/// would otherwise be read out entry by entry. From a heading or title that reads "References",
+/// "Bibliography", "Works Cited" and the like, every prose block up to the next heading or title
+/// is relabelled as a reference, across pages, in reading order.
+/// </para>
+/// <para>
+/// It applies only when the snapshot has model roles (there are headings to go by) and no block is
+/// already a reference (a model that labels references is trusted, as with every other role).
+/// The model-free analyzer has no headings, so it is left alone. Only prose blocks change: a
+/// figure, table, footnote or caption inside the section keeps its role.
+/// </para>
+/// </remarks>
+public static class ReferenceSections
+{
+    private static readonly System.Text.RegularExpressions.Regex Heading = new(
+        @"^\s*(?:(?:[0-9]+|[IVXLC]+|[A-Z])[.)]?\s+)?(references|bibliography|works\s+cited|literature\s+cited|cited\s+literature|reference\s+list|references\s+and\s+notes|list\s+of\s+references)\s*:?\s*$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>True when a heading's text names a reference section.</summary>
+    public static bool IsReferencesHeading(string text) => Heading.IsMatch(text ?? "");
+
+    /// <summary>The snapshot with the reference section's prose blocks labelled as references.</summary>
+    /// <param name="relabelled">How many blocks were relabelled.</param>
+    public static ExtractionSnapshot Apply(ExtractionSnapshot snapshot, out int relabelled)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        relabelled = 0;
+        if (!snapshot.HasSemanticRoles) return snapshot;
+        if (snapshot.Pages.Any(p => p.Blocks.Any(b => b.Kind == BlockKind.Reference))) return snapshot;
+
+        bool inside = false;
+        var pages = new List<PageExtraction>(snapshot.Pages.Count);
+        foreach (var page in snapshot.Pages)
+        {
+            var blocks = page.Blocks.ToArray();
+            foreach (int i in Enumerable.Range(0, blocks.Length).OrderBy(i => blocks[i].Order))
+            {
+                var block = blocks[i];
+                if (block.Kind is BlockKind.Heading or BlockKind.Title)
+                {
+                    inside = IsReferencesHeading(TextOf(page, block));
+                    continue;
+                }
+                if (inside && block.Kind is BlockKind.Text or BlockKind.Unknown)
+                {
+                    blocks[i] = block with { Kind = BlockKind.Reference };
+                    relabelled++;
+                }
+            }
+            pages.Add(page with { Blocks = blocks });
+        }
+        return relabelled == 0 ? snapshot : snapshot with { Pages = pages };
+    }
+
+    private static string TextOf(PageExtraction page, ExtractedBlock block)
+        => string.Join(" ", block.LineIndices
+            .Where(i => i >= 0 && i < page.Lines.Count)
+            .Select(i => page.TextOf(page.Lines[i].Text) ?? ""));
+}
+
 public static class PublisherCoverPages
 {
     private static readonly string[] Markers =
@@ -375,6 +441,12 @@ public sealed class ReadingUnitBuilder
     {
         ArgumentNullException.ThrowIfNull(snapshot);
         var diag = new List<string>();
+
+        // A layout model without a reference class (Docling Heron) labels a bibliography as prose and
+        // list items; without this the reference list would be read aloud. ADR-0008.
+        snapshot = ReferenceSections.Apply(snapshot, out int referenceBlocks);
+        if (referenceBlocks > 0)
+            diag.Add($"Treated {referenceBlocks} block(s) under a References heading as the reference list.");
 
         var running = _options.DetectRunningElements
             ? RunningElementDetector.Detect(snapshot, _options.RunningElementMinPages)

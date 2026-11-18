@@ -124,3 +124,87 @@ public sealed class SettingsStoreFollowModeTests : IDisposable
         Assert.Equal(FollowMode.Off, store.Load().FollowMode);
     }
 }
+
+/// <summary>Which layout model runs, and on which file per device (ADR-0008).</summary>
+public sealed class LayoutModelResolverTests : IDisposable
+{
+    private readonly string _app = Directory.CreateTempSubdirectory("rn-models-").FullName;
+    private readonly string _rr2 = Directory.CreateTempSubdirectory("rr2-models-").FullName;
+
+    public void Dispose()
+    {
+        Directory.Delete(_app, recursive: true);
+        Directory.Delete(_rr2, recursive: true);
+    }
+
+    private string Put(string dir, string file) { string p = Path.Combine(dir, file); File.WriteAllText(p, "x"); return p; }
+
+    private LayoutModelChoice? Resolve(string? setting, string? explicitPath = null)
+        => LayoutModelResolver.Resolve(setting, explicitPath, [_app, _rr2]);
+
+    private const string HeronFp32 = "docling-layout-heron.onnx", HeronInt8 = "docling-layout-heron-int8.onnx", V3 = "PP-DocLayoutV3.onnx";
+
+    [Theory]
+    [InlineData("auto")]
+    [InlineData("text-layout")]   // the old default that settings files still carry
+    [InlineData(null)]
+    public void Automatic_PrefersHeron_FP32OnTheGpu_Int8OnTheCpu(string? setting)
+    {
+        string fp32 = Put(_rr2, HeronFp32), int8 = Put(_rr2, HeronInt8);
+        Put(_app, V3);
+
+        var choice = Resolve(setting);
+
+        Assert.Equal(new LayoutModelChoice("heron", fp32, int8), choice);
+    }
+
+    [Fact]
+    public void Automatic_FallsBackToPPDocLayoutV3_ThenToNone()
+    {
+        Assert.Null(Resolve("auto"));
+        string v3 = Put(_app, V3);
+        Assert.Equal(new LayoutModelChoice("pp-doclayout-v3", v3, v3), Resolve("auto"));
+    }
+
+    [Fact]
+    public void NamingAModel_UsesOnlyThatModel()
+    {
+        Put(_app, HeronInt8);
+        Assert.Null(Resolve("pp-doclayout-v3"));
+        string v3 = Put(_app, V3);
+        Assert.Equal("pp-doclayout-v3", Resolve("pp-doclayout-v3")!.Id);
+        Assert.Equal("heron", Resolve("heron")!.Id);
+        Assert.Null(Resolve("none"));
+        _ = v3;
+    }
+
+    [Fact]
+    public void HeronWithOnlyOneFile_UsesWhatIsThere()
+    {
+        string int8 = Put(_app, HeronInt8);
+        Assert.Equal(new LayoutModelChoice("heron", null, int8), Resolve("heron"));
+
+        File.Delete(int8);
+        string fp32 = Put(_app, HeronFp32);
+        Assert.Equal(new LayoutModelChoice("heron", fp32, fp32), Resolve("heron"));
+    }
+
+    [Fact]
+    public void TheApplicationsModelsComeBeforeRailReader2s()
+    {
+        string mine = Put(_app, HeronInt8);
+        Put(_rr2, HeronInt8);
+        Assert.Equal(mine, Resolve("heron")!.CpuModelPath);
+    }
+
+    [Fact]
+    public void AnExplicitFile_IsUsedOnBothDevices_ItsArchitectureFromTheSettingOrItsName()
+    {
+        string heron = Put(_app, "my-heron-export.onnx");
+        string other = Put(_app, "layout.onnx");
+        Assert.Equal(new LayoutModelChoice("heron", heron, heron), Resolve("auto", heron));
+        Assert.Equal("pp-doclayout-v3", Resolve("auto", other)!.Id);
+        Assert.Equal("heron", Resolve("heron", other)!.Id);
+        Assert.Null(Resolve("auto", Path.Combine(_app, "missing.onnx")));
+    }
+}

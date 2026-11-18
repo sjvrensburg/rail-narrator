@@ -110,6 +110,7 @@ Recorded in `docs/decisions/`, each with the measurement that drove it:
 - **[ADR-0005](docs/decisions/ADR-0005-geometry-and-word-spacing.md)** — coordinate frames, and why word boundaries need both the text layer and the geometry
 - **[ADR-0006](docs/decisions/ADR-0006-layout-on-the-gpu.md)** — layout analysis on the GPU when one is usable (about twice as fast on a 24-page chapter), the CPU otherwise
 - **[ADR-0007](docs/decisions/ADR-0007-kokoro-on-the-gpu.md)** — Kokoro on the GPU through WebGPU (Vulkan), never CUDA or ROCm; fp32 with int32 tokens, every clip checked, CPU fallback
+- **[ADR-0008](docs/decisions/ADR-0008-heron-layout-model.md)** — Docling Heron as the layout model (FP32 on the GPU, INT8 on the CPU, XY-cut++ order), references found by their heading; 1.5–2.4× faster than PP-DocLayoutV3
 
 ## Guarantees worth stating plainly
 
