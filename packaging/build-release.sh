@@ -49,6 +49,12 @@ Required
 Required for scanned documents
   PP-OCRv5 models     Bundled by RailReader.Core.Ocr.RapidOcr beside the application.
 
+Optional: layout analysis on the GPU (setting LayoutAcceleration, default Auto)
+  libvulkan.so.1      Vulkan loader plus a GPU driver. Fedora: vulkan-loader.
+                      Debian/Ubuntu: libvulkan1. The WebGPU plugin
+                      (libonnxruntime_providers_webgpu.so) is bundled. Without a
+                      usable GPU the layout model runs on the CPU and the app says why.
+
 Downloaded on explicit user approval (never bundled, never fetched implicitly)
   Kokoro ONNX model   163.6 MB, Apache-2.0. See docs/model-manifest.json.
   ZONOS3-Mini GGUFs   ~2.9 GB total, Apache-2.0 weights / MIT runtime. Only if the

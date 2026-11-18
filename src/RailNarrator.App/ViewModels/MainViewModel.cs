@@ -269,6 +269,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public string SpeechProviderSummary
         => string.Join(", ", _services.SpeechProviders.RegisteredIds);
 
+    /// <summary>The layout analyzer and its device. Fixed for the run: the backend is built once at startup.</summary>
+    public string LayoutSummary => _services.LayoutSummary;
+
     public long CacheBytes => _services.AssetStore.TotalBytes() + _services.CachedExtraction.TotalBytes();
     private string _timingSummary = "Sentence highlighting until word alignment is available.";
     public string TimingSummary { get => _timingSummary; private set => Set(ref _timingSummary, value); }

@@ -45,6 +45,9 @@ public sealed class ServiceRegistry : IAsyncDisposable
     public required IMathInterpreter? MathInterpreter { get; init; }
     public required IReadOnlyList<string> StartupNotes { get; init; }
 
+    /// <summary>Which layout analyzer extraction uses and on which device, for the side panel.</summary>
+    public required string LayoutSummary { get; init; }
+
     /// <summary>Builds the object graph from persisted settings.</summary>
     public static ServiceRegistry Create()
     {
@@ -56,7 +59,8 @@ public sealed class ServiceRegistry : IAsyncDisposable
         if (settingsStore.LastError is { } error) notes.Add(error);
 
         var extraction = new RailReaderExtractionSource();
-        extraction.WithBackend(BuildBackend(settings, notes));
+        var backend = BuildBackend(settings, notes);
+        extraction.WithBackend(backend);
 
         var assetStore = new DiskSpeechAssetStore();
         var planStore = new DiskPlanStore();
@@ -179,8 +183,10 @@ public sealed class ServiceRegistry : IAsyncDisposable
             Extraction = extraction,
             CachedExtraction = new CachingExtractionSource(
                 extraction,
-                backendFingerprint: ExtractionBackendFingerprint(settings),
-                isDegraded: () => extraction.OcrStartupError is not null),
+                backendFingerprint: ExtractionBackendFingerprint(settings, backend.ResolvedDevice),
+                // A snapshot made after the layout GPU fell back to the CPU is not what the cache
+                // key (device=webgpu) names, so it is not stored.
+                isDegraded: () => extraction.OcrStartupError is not null || extraction.LayoutDeviceFellBack),
             SpeechProviders = registry,
             AudioDevice = audioDevice,
             AudioEngine = audioEngine,
@@ -193,15 +199,23 @@ public sealed class ServiceRegistry : IAsyncDisposable
             MathTranscriber = transcriber,
             MathInterpreter = interpreter,
             StartupNotes = notes,
+            LayoutSummary = backend.Capabilities.Classes.Count > 0
+                ? $"PP-DocLayoutV3 on {backend.ResolvedDevice.Description}"
+                : "model-free (no layout model)",
         };
     }
 
     /// <summary>
     /// Identifies what shapes extraction but <see cref="ExtractionOptions"/> does not carry — the
-    /// extractor and Core assembly versions and the layout model file an analyser id resolves to —
-    /// so replacing any of them does not reuse snapshots made by the old one.
+    /// extractor and Core assembly versions, the layout model file an analyser id resolves to and
+    /// the device it runs on — so replacing any of them does not reuse snapshots made by the old one.
     /// </summary>
-    private static string ExtractionBackendFingerprint(RailNarratorSettings settings)
+    /// <remarks>
+    /// The device is in the key because CPU and GPU snapshots are equivalent but not identical: on a
+    /// 24-page chapter, blocks, roles and reading sequence matched while geometry differed by up to
+    /// 0.02 pt (ADR-0006). A cached snapshot is meant to be what this configuration produces.
+    /// </remarks>
+    private static string ExtractionBackendFingerprint(RailNarratorSettings settings, LayoutDevice device)
     {
         // The extractor and the RailReaderCore packages it runs: upgrading either can change a
         // snapshot without anyone remembering to bump ExtractorVersions.Current.
@@ -213,7 +227,8 @@ public sealed class ServiceRegistry : IAsyncDisposable
 
         if (ResolveLayoutModelPath(settings) is not { } path) return code;
         var info = new FileInfo(path);
-        return code + "|" + (info.Exists ? $"{info.FullName}|{info.Length}|{info.LastWriteTimeUtc.Ticks}" : path);
+        return code + "|" + (info.Exists ? $"{info.FullName}|{info.Length}|{info.LastWriteTimeUtc.Ticks}" : path)
+            + "|device=" + device.Id;
     }
 
     /// <summary>Builds a planner from the current settings.</summary>
@@ -285,7 +300,13 @@ public sealed class ServiceRegistry : IAsyncDisposable
 
         if (ResolveLayoutModelPath(settings) is { } modelPath)
         {
-            try { return ExtractionBackend.OnnxLayout(modelPath, ocrFactory); }
+            try
+            {
+                var backend = ExtractionBackend.OnnxLayout(modelPath, ocrFactory, settings.LayoutAcceleration);
+                if (backend.ResolvedDevice.FallbackReason is { } reason)
+                    notes.Add($"Layout analysis runs on the CPU because {reason}. It is slower there but gives the same reading.");
+                return backend;
+            }
             catch (Exception ex)
             {
                 notes.Add($"The layout model at '{modelPath}' could not be loaded ({ex.Message}); using the model-free analyzer.");
