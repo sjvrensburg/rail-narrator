@@ -109,6 +109,7 @@ Recorded in `docs/decisions/`, each with the measurement that drove it:
 - **[ADR-0004](docs/decisions/ADR-0004-alignment-policy.md)** — local word alignment with validated sentence/equation fallback
 - **[ADR-0005](docs/decisions/ADR-0005-geometry-and-word-spacing.md)** — coordinate frames, and why word boundaries need both the text layer and the geometry
 - **[ADR-0006](docs/decisions/ADR-0006-layout-on-the-gpu.md)** — layout analysis on the GPU when one is usable (about twice as fast on a 24-page chapter), the CPU otherwise
+- **[ADR-0007](docs/decisions/ADR-0007-kokoro-on-the-gpu.md)** — Kokoro on the GPU through WebGPU (Vulkan), never CUDA or ROCm; fp32 with int32 tokens, every clip checked, CPU fallback
 
 ## Guarantees worth stating plainly
 

@@ -30,6 +30,7 @@ tools/RailNarrator.MathBench/bin/Release/net10.0/rail-narrator-mathbench paper.p
 
 ./packaging/build-release.sh                       # self-contained linux-x64 archive into dist/
 bash tools/setup-word-alignment.sh                 # optional MFA runtime (needs micromamba, several GB)
+bash tools/kokoro-webgpu-model.sh                  # optional: Kokoro on the GPU via WebGPU (ADR-0007)
 ```
 
 There is no separate lint step: `TreatWarningsAsErrors` is on for every project except `RailNarrator.App` (the Avalonia XAML compiler emits advisories), so the build is the lint and it is expected to stay at 0 warnings.
@@ -45,6 +46,7 @@ Opt-in integration tests are skipped unless their environment is set:
 | `RN_AUDIO_INTEGRATION=1` | `DeviceIntegrationTests` against a real output device (silent PCM) |
 | `RAIL_NARRATOR_LAYOUT_MODEL` | `LayoutModelTests`: a real PP-DocLayoutV3 `.onnx` through the extraction adapter |
 | `RN_WEBGPU_INTEGRATION=1` (+ layout model) | `LayoutAccelerationTests.OnTheGpu_…`: GPU and CPU layout give the same reading (needs a WebGPU-capable GPU) |
+| `RN_WEBGPU_INTEGRATION=1`, `RAIL_NARRATOR_KOKORO_MODEL`, `RAIL_NARRATOR_KOKORO_GPU_MODEL` | `KokoroAccelerationTests.OnTheGpu_KokoroGivesTheCpusAudio`: Kokoro on WebGPU matches the CPU |
 
 Runtime prerequisites: `libportaudio.so.2`, and the Kokoro model at `~/.local/share/rail-narrator/models/kokoro-fp16.onnx` (see `docs/model-manifest.json`). Models are never bundled and never fetched implicitly — keep it that way.
 
@@ -104,6 +106,7 @@ New external dependencies go behind a port in Domain so domain tests keep runnin
 - **Layout roles decide when a model supplied them** (`ExtractionSnapshot.HasSemanticRoles`). The geometric display-maths and running-element heuristics are the fallback for the model-free analyzer, which labels every block Text; running them over a model's Text blocks turned prose lines into "equations". A layout model takes a raster at exactly its `Capabilities.InputSize`. Inline maths never becomes a unit of its own: it flags its sentence (`ReadingUnit.ContainsMaths`). Tables and algorithms are one unit each, planned as a `StructureAnnouncement`.
 - **Caching is per stage** (`Domain/Caching.cs`), each key folding in exactly the inputs that affect that stage. When changing output-affecting logic, bump the matching version constant — `ExtractorVersions.Current`, `NarrationVersions.{MathPrompt,LocalMathReader,ProsePipeline}`, or the worker revision in `MfaForcedAligner` — or stale cached snapshots/plans/audio/timings will be reused. Extraction snapshots are cached on disk by `CachingExtractionSource` (Infrastructure); the app extracts through `ServiceRegistry.CachedExtraction` and keeps `Extraction` for rendering and hit-testing.
 - **Layout on the GPU goes through `LayoutAnalyzerConstruction` only** (ADR-0006). Core's WebGPU switch is a static `LayoutAnalyzer.ConfigureSession` hook, so every `LayoutAnalyzer` construction, CPU ones included, holds `WebGpuAccelerator.ConstructionLock` for enable → construct → disable. Never `new LayoutAnalyzer(...)` elsewhere. The device (`LayoutDevice.Id`) is part of the extraction cache key: CPU and GPU give the same reading but not byte-identical geometry. A GPU that fails at start-up or mid-document hands over to the CPU with a page warning; OCR stays on the CPU.
+- **Kokoro on the GPU goes through WebGPU only, never CUDA or ROCm** (ADR-0007). The GPU model is the fp32 export with int32 `tokens` (the plugin aborts on int64 inputs; fp16 gives NaN on it), run by `KokoroSessionRunner` with inputs built exactly as KokoroSharp builds them (`KokoroInputs`). Every GPU clip passes `KokoroOutputCheck` or synthesis falls back to the CPU for the run (`KokoroRunnerChain`). The CPU model revision must stay unchanged so cached audio stays valid; the GPU's names the device.
 - **Host services are supplied, not inherited from Core.** Core's `AppConfig` hard-codes `~/.config/railreader2`; this app uses its own XDG directories (`XdgPaths`) and an inert `NullAnnotationStore`. Highlights are transient overlays and must never be written into the PDF.
 - **Providers are registered only when implemented and configured**, so the UI never offers an inert selector. API keys are read from environment variables named in settings, never persisted.
 

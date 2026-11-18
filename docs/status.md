@@ -7,7 +7,7 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 444 passing, 6 opt-in skips, 0 warnings
+## Verified by automated tests — 456 passing, 7 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
@@ -276,12 +276,13 @@ Not fixed yet. Each was observed in the run described above.
   new pipeline version), the saved id can name a different passage than the one the reader left.
 - **The silence between passages has not been re-measured with a recording since gapless
   queueing** (item 56); by ear the gap is gone.
-- **Kokoro cannot keep up with playback on the current development laptop.** The smoke tool
-  measured `kokoro-fp16.onnx` at an aggregate RTF of 1.71 (11.07 s of audio in 18.96 s; 1.43–2.16
-  per clip) on the Ubuntu 24.04 / Iris Xe machine, against 0.11–0.20 on the previous reference
-  machine. Reading pauses with "Synthesising speech" every few passages. ONNX Runtime also warns
-  that it has no CPU kernel for some fp16 nodes, so an fp32 or quantised export may be much faster
-  on a CPU; not yet tried.
+- **On the CPU, Kokoro cannot keep up with playback on the current development laptop**
+  (i7-12700H): RTF 0.75 at best and 1–2 typically; fp32, int8 and thread counts were all tried
+  (ADR-0007). With the converted model installed it runs on the laptop's GPU instead (item 60);
+  without it, reading still pauses every few passages there.
+- **Opening a four-page document took about 47 s before narration preparation began** with the
+  layout model on the GPU under Xvfb, whether Kokoro then ran on the GPU or the CPU. Not yet
+  investigated; ADR-0006 measured 11.7 s for 24 pages on the same laptop, so something here is off.
 - **A resize of the reading area resets the zoom to fit-width.** Opening the script panel changed
   235 % to 173 %; at 400 % or 800 % it would discard the reader's magnification.
   Before it, about 0.4 s was inserted at every boundary (on top of the ~0.5 s each Kokoro clip
@@ -667,3 +668,16 @@ threads meeting.
     the GUI: four Ctrl+Right went from passage 1 to 5 and six from 8 to 14, each showing the card on
     the target's page; Cancel during "Preparing passage 14 of 16" stopped it, and it stayed stopped
     8 s later; View > Show script opened the panel.
+60. **Kokoro on the GPU, through WebGPU** (ADR-0007). With `tools/kokoro-webgpu-model.sh` run once
+    (it takes the fp32 export and rewrites its `tokens` input to int32) and `KokoroAcceleration`
+    Auto, Kokoro runs on a WebGPU device, Vulkan on Linux, sharing the GPU binding with layout
+    analysis; no CUDA or ROCm. On the RTX A2000: RTF 0.30–0.32 through the provider against 1.72
+    on the CPU in the same session; audio matching the CPU's (envelope correlation 1.000). Every GPU
+    clip is checked for NaN and silence, and the first bad one moves synthesis to the CPU for the
+    rest of the run and is redone there; the fp16 export gives NaN on WebGPU, which is why fp32 is
+    used. Covered by tests of the input construction (identical to KokoroSharp's), the output
+    check and the fallback chain, plus an opt-in real-GPU test (`RN_WEBGPU_INTEGRATION=1` with
+    `RAIL_NARRATOR_KOKORO_MODEL` and `RAIL_NARRATOR_KOKORO_GPU_MODEL`) that passed on the A2000. In
+    the window (layout model also on the GPU, audio on a null sink) all 16 passages of a four-page
+    document played to the end with no "Synthesising speech" wait. Only the NVIDIA card was
+    measured; Intel and AMD integrated GPUs are untested.

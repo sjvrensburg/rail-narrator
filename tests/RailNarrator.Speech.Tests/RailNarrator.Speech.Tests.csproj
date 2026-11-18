@@ -11,6 +11,8 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../../src/RailNarrator.Speech/RailNarrator.Speech.csproj" />
+    <!-- Only for the opt-in WebGPU Kokoro test: Core's WebGPU session hook comes with the PDF adapter. -->
+    <ProjectReference Include="../../src/RailNarrator.Pdf/RailNarrator.Pdf.csproj" />
     <ProjectReference Include="../RailNarrator.TestFixtures/RailNarrator.TestFixtures.csproj" />
   </ItemGroup>
 </Project>

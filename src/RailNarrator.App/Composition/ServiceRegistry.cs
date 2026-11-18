@@ -45,6 +45,29 @@ public sealed class ServiceRegistry : IAsyncDisposable
     public required IMathInterpreter? MathInterpreter { get; init; }
     public required IReadOnlyList<string> StartupNotes { get; init; }
 
+    /// <summary>The Kokoro provider when one is registered, for its device in the diagnostics.</summary>
+    public required KokoroTtsProvider? Kokoro { get; init; }
+
+    /// <summary>
+    /// Kokoro on the GPU (ADR-0007): only with <c>KokoroAcceleration</c> Auto, the converted model
+    /// installed and a WebGPU device found. The session hook is Core's, so Kokoro joins the one GPU
+    /// binding per process that layout analysis uses. The provider still falls back to the CPU if the
+    /// session will not build or a clip is not real audio.
+    /// </summary>
+    private static KokoroGpuOptions? KokoroGpu(RailNarratorSettings settings, List<string> notes)
+    {
+        if (settings.KokoroAcceleration != SpeechAcceleration.Auto) return null;
+        string model = settings.KokoroGpuModelPath ?? Path.Combine(XdgPaths.Models, ModelManifest.KokoroWebGpu.FileName);
+        if (!File.Exists(model)) return null;   // not installed: the CPU, as before, without a note
+        var hook = RailReader.Core.Analysis.WebGpu.WebGpuAccelerator.TryBuildSessionHook();
+        if (hook is null)
+        {
+            notes.Add("Kokoro runs on the CPU: no WebGPU device was found for the GPU model.");
+            return null;
+        }
+        return new KokoroGpuOptions(model, hook, RailReader.Core.Analysis.WebGpu.WebGpuAccelerator.DeviceDescription);
+    }
+
     /// <summary>Which layout analyzer extraction uses and on which device, for the side panel.</summary>
     public required string LayoutSummary { get; init; }
 
@@ -70,13 +93,16 @@ public sealed class ServiceRegistry : IAsyncDisposable
         var registry = new SpeechProviderRegistry();
         SidecarManager? sidecar = null;
 
+        KokoroTtsProvider? kokoro = null;
         string? kokoroModel = settings.KokoroModelPath ?? Path.Combine(XdgPaths.Models, ModelManifest.KokoroFp16.FileName);
         if (File.Exists(kokoroModel))
         {
-            registry.Register(new KokoroTtsProvider(new KokoroProviderSettings(
+            kokoro = new KokoroTtsProvider(new KokoroProviderSettings(
                 ModelPath: kokoroModel,
                 VoicesDirectory: settings.KokoroVoicesDirectory,
-                DefaultVoice: settings.KokoroVoiceId ?? "af_heart")));
+                DefaultVoice: settings.KokoroVoiceId ?? "af_heart"),
+                KokoroGpu(settings, notes));
+            registry.Register(kokoro);
         }
         else
         {
@@ -200,6 +226,7 @@ public sealed class ServiceRegistry : IAsyncDisposable
             MathTranscriber = transcriber,
             MathInterpreter = interpreter,
             StartupNotes = notes,
+            Kokoro = kokoro,
             LayoutSummary = backend.Capabilities.Classes.Count > 0
                 ? $"PP-DocLayoutV3 on {backend.ResolvedDevice.Description}"
                 : "model-free (no layout model)",
