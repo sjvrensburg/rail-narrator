@@ -27,6 +27,21 @@ dotnet publish "$ROOT/src/RailNarrator.App/RailNarrator.App.csproj" \
   -p:PublishSingleFile=false -p:DebugType=none -p:DebugSymbols=false \
   -o "$OUT/$NAME/usr/lib/rail-narrator"
 
+# Phonon's runtime (ADR-0009): Gradium's C library, built from a pinned commit by the same script
+# readers use, and shipped beside the application, which looks for it there first. It is code, MIT
+# OR Apache-2.0; the Phonon model and voices are not bundled. Without cargo the archive goes out
+# without it, and tools/setup-phonon.sh builds it on the reader's machine.
+if [[ "${WITH_PHONON:-auto}" != "no" ]] && command -v cargo >/dev/null; then
+  PHONON_STAGE="$(mktemp -d)"
+  PHONON_RUNTIME_ONLY=1 "$ROOT/tools/setup-phonon.sh" "$PHONON_STAGE"
+  cp "$PHONON_STAGE/libptts_ffi.so" "$OUT/$NAME/usr/lib/rail-narrator/libptts_ffi.so"
+  rm -rf "$PHONON_STAGE"
+elif [[ "${WITH_PHONON:-auto}" == "yes" ]]; then
+  echo "WITH_PHONON=yes needs a Rust toolchain (cargo)." >&2; exit 1
+else
+  echo "==> No cargo: the archive leaves out Phonon's runtime (tools/setup-phonon.sh builds it)."
+fi
+
 # Layout follows the Filesystem Hierarchy Standard so it can be staged into a
 # prefix, and the launcher resolves its own directory so relocation works.
 mkdir -p "$OUT/$NAME/usr/bin" "$OUT/$NAME/usr/share/applications"
@@ -60,6 +75,11 @@ Optional: layout analysis on the GPU (setting LayoutAcceleration, default Auto)
                       usable GPU the layout model runs on the CPU and the app says why.
 
 Downloaded on explicit user approval (never bundled, never fetched implicitly)
+  Phonon model        phonon-31m-en and 25 English voices, 70 MB, Apache-2.0, by
+                      Gradium. Installed by tools/setup-phonon.sh from the source
+                      tree; its runtime, libptts_ffi.so (MIT OR Apache-2.0), is
+                      bundled when the archive was built with Rust, else that
+                      script builds it too. Speech engine "phonon"; ADR-0009.
   Kokoro ONNX model   163.6 MB, Apache-2.0. See docs/model-manifest.json.
   ZONOS3-Mini GGUFs   ~2.9 GB total, Apache-2.0 weights / MIT runtime. Only if the
                       ZONOS3 provider is selected; a sidecar built from source.
