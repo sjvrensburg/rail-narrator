@@ -7,7 +7,7 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 569 passing, 12 opt-in skips, 0 warnings
+## Verified by automated tests — 589 passing, 17 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
@@ -15,8 +15,8 @@ claims, and only the second one is worth relying on.
 | `RailNarrator.Pdf.Tests` | 62 (+5 opt-in) | Maths crops rendered as a region giving the old crop to within a pixel, and a narrow equation its full width; A layout model's own reading order kept when its blocks arrive most confident first, with and without a duplicate block for Core to remove; Fit-width as a mode: the zoom following the page shown and the view's width, a zoom the reader chose surviving a resize and a page turn, fitting again on request, limits and unusable stored values; Page rasters for the reading surface rendered on a worker: page sizes read at open, rasters delivered in the order asked and once each, a render the reader has paged past abandoned (and one that cannot be cancelled dropped, not handed over), a render still wanted carried on, a page that cannot be rendered reported once, colour filters applied there and blank paper's colour matching each filter's own; Layout analysis that fails to start, or fails mid-document, finishes on the CPU fallback from the page that failed and says so once, and the source then reports it so the snapshot is not cached under the GPU key; opt-in, the `Cpu` setting never uses the GPU, and (`RN_WEBGPU_INTEGRATION=1`) the GPU gives the same blocks, kinds, reading units and geometry within 0.1 pt as the CPU; A passage crop is a PNG of its ink; **Real PDFs** through the real RailReaderCore pipeline, including a cached snapshot building the same plan as a fresh one; opt-in, the real PP-DocLayoutV3 model through the adapter |
 | `RailNarrator.Speech.Tests` | 49 (+6 opt-in) | Phonon without its install reporting why instead of throwing; opt-in (`RAIL_NARRATOR_PHONON_DIR`), real Phonon through Gradium's C library speaking at 24 kHz in Maeve by default with British voices first, another engine's voice spoken in Maeve with a warning, and a cancelled passage stopping with the provider still usable; Opt-in, real Kokoro speech holding acronyms and words the dictionary lacks aligned word by word; PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
 | `RailNarrator.Audio.Tests` | 43 (+1 opt-in) | Resampler (polyphase path equal to the direct sinc filter on four rate pairs), time-stretcher (fast grain search equal to the direct search at three rates), playback engine against a controllable fake device, engine lock ordering, coordinator-plus-engine transition stress |
-| `RailNarrator.Infrastructure.Tests` | 26 | Recent documents kept newest first, bounded, with progress kept in place and a damaged list read as empty; The settings file written owner-only (and an older, wider one narrowed), a stored API key winning over the environment variable; Cache round-trips and waveform integrity, including same-length replacement; extraction-cache keying, degraded and encrypted documents never stored, corrupt entries treated as misses |
-| `RailNarrator.Inference.Tests` | 118 | Spoken maths with notation written as words beside its meaning accepted, written symbols and glued letters refused, an answer mostly reading notation or far longer than its passage refused; The Settings dialogue's endpoint test telling a listed model, an unlisted one, a refused key, a wrong address and nothing answering apart, without the key in its message; ClearSpeak-style reading of LaTeX (powers, fractions, roots, quantities, derivatives, sums, functions, cases, Unicode, text with `$…$`, malformed input); thinking-policy and out-of-tokens retry; transcription fallback; Maths interpretation: notation validator, image and thinking-switch fallbacks, one repair turn, cut-off responses refused; golden maths semantics, response validator, endpoint client |
+| `RailNarrator.Infrastructure.Tests` | 27 | The maths services OpenAI-compatible unless Claude is chosen, for a settings file from before the choice too, and saved by name; Recent documents kept newest first, bounded, with progress kept in place and a damaged list read as empty; The settings file written owner-only (and an older, wider one narrowed), a stored API key winning over the environment variable; Cache round-trips and waveform integrity, including same-length replacement; extraction-cache keying, degraded and encrypted documents never stored, corrupt entries treated as misses |
+| `RailNarrator.Inference.Tests` | 137 (+5 opt-in) | Maths through Claude, with the Anthropic SDK's transport stubbed below it: the passage sent as a Messages request (image first, the prompt as the system text, Claude Opus when no model is named, no sampling or thinking fields), the thinking policy setting the effort (medium where the other endpoint would think, low elsewhere), a refusal fallback asked for only against Anthropic's own API and a model that takes it, notation given one repair as a new request carrying the rejected answer and refused after it, a declined passage refused at once, a cut-off answer refused, the effort field dropped for a model that rejects it and remembered, a refused key ending the passage with the key in no message, the clients built and the passage saying why when there is no key anywhere, Claude's answers cached apart by address and model, a refused equation transcribed and read by rule, verbalisation asked for as structured output without string-length keywords and still validated, a gateway that refuses the schema asked without it, the vision transcriber needing no address for Claude and testing its connection once, and the Settings test telling a known model, an unknown one, a refused key and nothing answering apart; opt-in (`RN_CLAUDE_INTEGRATION=1`), the same against Anthropic's real API; Spoken maths with notation written as words beside its meaning accepted, written symbols and glued letters refused, an answer mostly reading notation or far longer than its passage refused; The Settings dialogue's endpoint test telling a listed model, an unlisted one, a refused key, a wrong address and nothing answering apart, without the key in its message; ClearSpeak-style reading of LaTeX (powers, fractions, roots, quantities, derivatives, sums, functions, cases, Unicode, text with `$…$`, malformed input); thinking-policy and out-of-tokens retry; transcription fallback; Maths interpretation: notation validator, image and thinking-switch fallbacks, one repair turn, cut-off responses refused; golden maths semantics, response validator, endpoint client |
 
 Run them with (and see `testing-real-world.md` for the real models, GUI and audio):
 
@@ -24,7 +24,7 @@ Run them with (and see `testing-real-world.md` for the real models, GUI and audi
 dotnet test RailNarrator.slnx -c Release
 ```
 
-The default run needs no GPU, network, model file or sound card. Two opt-in
+The default run needs no GPU, network, model file or sound card. The opt-in
 integration tests are skipped unless their dependencies are explicitly enabled. The Audio suite
 runs stable across repeated invocations; an earlier flake (a test that drained the
 device before the writer thread had finished queuing) was fixed by waiting for the
@@ -249,6 +249,7 @@ chapter that showed some sentences highlighted word by word and others whole.
 | **Scanned-document OCR at 300 dpi** | A 131 ppi scan with handwriting was run and reads as sentences; the handwriting is recognised as stray words | Check a clean 300 dpi scan for coverage, warnings and reading order |
 | **Clean-machine install** | The archive was built and run here, not on a fresh system | Install on a stock Fedora/Debian with only `libportaudio2` added |
 | **Long-document endurance** | Runs of three to seven minutes of a 27-page paper, 1.5–1.7 GB resident; played clips are now released, but a whole document has not been played through | Play a 40-page paper to the end: peak RSS, preparation lag versus playback, cache growth |
+| **Claude on a real paper** | Run against the real API on one drawn equation only (item 84) | `rail-narrator-mathbench --provider claude` on the GARCH paper for the tally, time and cost a passage, beside item 39's numbers for the local model; then listen |
 | **Layout on other GPUs** | GPU layout ran on one NVIDIA laptop GPU (Vulkan) | Run `LayoutAccelerationTests` with `RN_WEBGPU_INTEGRATION=1` on AMD and Intel GPUs, including the Fedora reference machine's Radeon 8060S |
 | **File > Open dialog** | The GUI run loaded documents from the command line only | Open a document through the picker under a desktop portal |
 
@@ -1032,3 +1033,43 @@ threads meeting.
       Cached interpretations are asked for again.
     *Not verified:* the new prompt against the model (no endpoint calls were made), and
     listening.
+
+83. **RailReaderCore 0.94.0** (ADR-0001, amended). The seven packages moved from 0.93.0, and
+    `RailReader.Core.Vlm.Anthropic` was added. 0.94.0 changes nothing this application already
+    used: its VLM block crops became regions (#228; not called here), and it gained a client for
+    Claude (item 84). The packages' third-party dependencies are the same as 0.93.0's. Measured
+    2026-11-19: the build has 0 warnings; the order survey (Heron INT8 on the CPU, OCR off) gives
+    the same output on both versions, finding for finding (1 of 94 headings and 0 of 762 other
+    blocks read after the block below, over 92 pages of five econometrics papers); the Pdf suite
+    passes with Heron and PP-DocLayoutV3 on, on the CPU and on the Radeon 8060S through WebGPU.
+    The survey covers fewer pages than item 80's 767: the 44 RailDLA papers were not on the
+    machine. *Not run against 0.94.0:* real Kokoro, MFA and the audio device, which do not touch
+    Core.
+84. **Claude as an option for maths** (ADR-0010; the reader's decision of 2026-11-19). Each maths
+    endpoint has a choice of service in Settings ▸ Maths (`MathLlmProvider`, `VlmProvider`):
+    an OpenAI-compatible endpoint, as before and by default, or Claude through Anthropic's API.
+    With Claude, interpretation, the reading by rule and verbalisation go through
+    `ClaudeMathInterpreter` and `ClaudeMathVerbaliser` (Anthropic's .NET SDK), and the vision
+    transcriber through Core's `AnthropicVlmClient`. The prompts, validators and the reading by
+    rule are the ones the other endpoint uses. The address is optional, an empty model means
+    `claude-opus-5-5`, and a key not given here is found by the SDK. The thinking policy sets the
+    effort (medium or low). A passage Claude declines is rejected, after Anthropic's own
+    fallback model has had it where that is offered. `rail-narrator-mathbench --provider claude`
+    measures it on a document. Verified by 19 tests with the SDK's transport stubbed, so the
+    requests checked are the ones the SDK sends. Seen in the running application (headless
+    compositor, isolated settings): with Claude chosen and no key the application starts as
+    usual, Settings ▸ Maths shows the Service row with Claude's placeholders, and Test, which
+    asks Anthropic's real Models API, reports "api.anthropic.com wants an API key, and none was
+    found".
+    Run against Anthropic's real API with `claude-opus-5-5` (five opt-in tests,
+    `RN_CLAUDE_INTEGRATION=1`, 2026-11-19): an equation drawn as a page crop interpreted from its
+    image ("The response y equals the intercept a, plus the slope b times the regressor x, plus
+    the error e.", about 1 s), the same crop transcribed and read by rule ("y equals a plus b x
+    plus e"), an expression verbalised through structured output ("beta hat equals the inverse
+    of the quantity X transpose X, times X transpose, times y."), Core's client transcribing the
+    crop, and the Settings test finding the model. No optional field was refused: effort, the
+    refusal fallback and the response schema went as sent.
+    *Not verified:* Claude on a real paper: how its interpretations read against the local
+    model's, and what a passage costs in time and money (`rail-narrator-mathbench --provider
+    claude`). Not listened to. The vision model's Service row (advanced settings) uses the same
+    editor and was not opened.

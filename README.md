@@ -3,7 +3,7 @@
 A Linux desktop application that reads a PDF aloud, highlights the passage being
 spoken in the original document, and follows the reading position — including
 mathematics: a language model you point it at (any OpenAI-compatible endpoint, local
-by default) looks at each equation and each sentence with maths in it, and the
+by default, or Claude) looks at each equation and each sentence with maths in it, and the
 narrator says what it *means* in the paper's own terms instead of reading notation.
 With a layout model installed it also skips what a first reading skips: page
 furniture, footnotes, references, figures and table cells.
@@ -95,7 +95,7 @@ $S all --kokoro-model <path>         # whole chain, printed pass/fail summary
 | `RailNarrator.Pdf` | RailReaderCore adapter: extraction snapshots, page rasters rendered off the UI thread, coordinate transforms, hit-testing, overlays | Core, SkiaSharp |
 | `RailNarrator.Speech` | Phonon (Gradium's C library), Kokoro and ZONOS3 adapters, local MFA word alignment, PCM/WAV codecs | Domain, KokoroSharp |
 | `RailNarrator.Audio` | Output device, resampling, pitch-preserving speed, media clock | Domain |
-| `RailNarrator.Inference` | Maths interpretation (page image + context → words), transcription, verbalisation, validation, local rule reader | Domain, Core.Vlm |
+| `RailNarrator.Inference` | Maths interpretation (page image + context → words), transcription, verbalisation, validation, local rule reader; over an OpenAI-compatible endpoint or Claude | Domain, Core.Vlm, Anthropic SDK |
 | `RailNarrator.Infrastructure` | XDG settings, caches, model manifest and downloads, sidecar lifecycle | Domain |
 | `RailNarrator.App` | Avalonia views, commands, Skia-backed PDF surface | all of the above |
 
@@ -106,7 +106,7 @@ model or sound card.
 
 Recorded in `docs/decisions/`, each with the measurement that drove it:
 
-- **[ADR-0001](docs/decisions/ADR-0001-stack-and-core-pin.md)** — stack, and why RailReaderCore is pinned to published packages (0.93.0)
+- **[ADR-0001](docs/decisions/ADR-0001-stack-and-core-pin.md)** — stack, and why RailReaderCore is pinned to published packages (0.94.0)
 - **[ADR-0002](docs/decisions/ADR-0002-speech-provider.md)** — Kokoro default, ZONOS3 alternative; both measured, neither inert
 - **[ADR-0003](docs/decisions/ADR-0003-audio-backend.md)** — PortAudio callback DAC timestamps and the presented-frame clock
 - **[ADR-0004](docs/decisions/ADR-0004-alignment-policy.md)** — local word alignment with validated sentence/equation fallback
@@ -115,6 +115,7 @@ Recorded in `docs/decisions/`, each with the measurement that drove it:
 - **[ADR-0007](docs/decisions/ADR-0007-kokoro-on-the-gpu.md)** — Kokoro on the GPU through WebGPU (Vulkan), never CUDA or ROCm; fp32 with int32 tokens, every clip checked, CPU fallback
 - **[ADR-0008](docs/decisions/ADR-0008-heron-layout-model.md)** — Docling Heron as the layout model (FP32 on the GPU, INT8 on the CPU, XY-cut++ order), references found by their heading; 1.5–2.4× faster than PP-DocLayoutV3
 - **[ADR-0009](docs/decisions/ADR-0009-phonon-speech-engine.md)** — Phonon (Gradium, Apache 2.0) as a second speech engine through Gradium's C library: real-time factor 0.061 against Kokoro's 0.224 on the same CPU, word alignment 34/40 passages against 35/40; Maeve by default
+- **[ADR-0010](docs/decisions/ADR-0010-claude-for-maths.md)** — Claude as an option for both maths endpoints, beside any OpenAI-compatible one: Core's client for the vision model, Anthropic's .NET SDK for interpretation; tested against a stubbed transport, not yet against the real API
 
 ## Guarantees worth stating plainly
 
@@ -135,9 +136,13 @@ Recorded in `docs/decisions/`, each with the measurement that drove it:
 - **Your settings are not shared with RailReader2.** Core's `AppConfig` hard-codes
   `~/.config/railreader2` and creates it on access; this app uses its own XDG
   directories and an inert annotation store.
-- **Nothing is uploaded without an explicitly configured remote endpoint.** An API key
+- **Nothing is uploaded without an explicitly configured remote endpoint.** Choosing
+  Claude in Settings is such a configuration: each passage with maths then goes to
+  Anthropic as a page image with the text around it, and the dialogue says so. An API key
   is either read from an environment variable you name, or typed into Settings and
-  stored in `settings.json`, which is then written readable by you only (mode 0600).
+  stored in `settings.json`, which is then written readable by you only (mode 0600);
+  for Claude, a key given neither way is left to Anthropic's SDK to find
+  (`ANTHROPIC_API_KEY`).
 - **A document is loaded, never auto-played.** Including on restore.
 
 ## Release

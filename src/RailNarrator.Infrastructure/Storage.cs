@@ -135,6 +135,13 @@ public sealed record RailNarratorSettings
     public MathMode MathMode { get; init; } = MathMode.Interpret;
     public MathFallbackPolicy MathFallback { get; init; } = MathFallbackPolicy.AnnounceUnreadable;
 
+    /// <summary>
+    /// Which API the maths language model speaks: any OpenAI-compatible endpoint (the default), or
+    /// Claude through Anthropic's own API. With Claude the address is optional (a gateway) and the
+    /// model defaults to Claude Opus.
+    /// </summary>
+    public LlmProvider MathLlmProvider { get; init; } = LlmProvider.OpenAiCompatible;
+
     /// <summary>Text LLM endpoint for verbalisation. Local by default; remote is opt-in.</summary>
     public string? MathLlmBaseUrl { get; init; }
     public string? MathLlmModel { get; init; }
@@ -148,7 +155,8 @@ public sealed record RailNarratorSettings
     /// When a reasoning model may think before interpreting maths: <c>Off</c>, <c>EquationsOnly</c>
     /// (the default: display equations and their lead-ins, where meaning matters most; sentences with
     /// inline maths are answered directly) or <c>Always</c>. Thinking is about ten times slower per
-    /// passage on Ornith-35B and more faithful; endpoints without the switch ignore it.
+    /// passage on Ornith-35B and more faithful; endpoints without the switch ignore it. Claude decides
+    /// its own thinking, so there the policy sets the effort: medium where it says think, low elsewhere.
     /// </summary>
     public MathThinkingPolicy MathLlmThinking { get; init; } = MathThinkingPolicy.EquationsOnly;
 
@@ -157,6 +165,9 @@ public sealed record RailNarratorSettings
 
     [JsonIgnore]
     public MathThinkingPolicy EffectiveMathThinking => MathLlmDisableThinking ? MathThinkingPolicy.Off : MathLlmThinking;
+
+    /// <summary>Which API the vision model speaks; see <see cref="MathLlmProvider"/>.</summary>
+    public LlmProvider VlmProvider { get; init; } = LlmProvider.OpenAiCompatible;
 
     /// <summary>Vision endpoint for equation transcription, configured separately from the text LLM.</summary>
     public string? VlmBaseUrl { get; init; }
@@ -506,6 +517,16 @@ public sealed class DiskPlanStore : IPlanStore
             try { File.Delete(temp); } catch { }
         }
     }
+}
+
+/// <summary>The API a language or vision model is reached through.</summary>
+public enum LlmProvider
+{
+    /// <summary>Any server that speaks the OpenAI chat API: llama.cpp, Ollama, LM Studio, vLLM or a hosted one.</summary>
+    OpenAiCompatible,
+
+    /// <summary>Claude, through Anthropic's Messages API (or a gateway that speaks it).</summary>
+    Anthropic,
 }
 
 /// <summary>Settings-side mirror of the interpreter's thinking policy (Infrastructure does not reference Inference).</summary>

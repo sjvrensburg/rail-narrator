@@ -113,3 +113,32 @@ ADR-0007 stand. The Core assembly versions are part of the extraction cache key
 **Verified:** the build has 0 warnings; all 562 tests pass with the opt-in integrations enabled
 (real Kokoro on the CPU and on WebGPU, Heron and PP-DocLayoutV3 through the adapter on the CPU and
 the GPU, MFA alignment); only the real-audio-device test was left off.
+
+## Amendment 2026-11-19: pin moved to 0.94.0
+
+All seven RailReaderCore packages were moved to **0.94.0**, published from upstream commit
+`9cf331bde5be8951677afb41d5a6c537cd83c1bb` (tag `v0.94.0`, as recorded in the package's nuspec),
+and an eighth, `RailReader.Core.Vlm.Anthropic`, was added at the same version. 0.94.0 holds two
+changes:
+
+- **`RailReader.Core.Vlm.Anthropic`**: an `IVlmService` for Claude over Anthropic's .NET SDK,
+  chosen by `VlmEndpointConfig.Provider`. This application uses it for the vision transcriber when
+  the reader chooses Claude there (ADR-0010).
+- **#228, VLM block crops rendered as regions.** No effect here: this application does not call
+  `BlockCropRenderer`, and its own maths crops have been regions since 0.93.0.
+
+The three requests this project depends on (#222 region rendering, #223 XY-cut++ ordering, #225
+re-inserted blocks following their own column) were already in 0.93.0.
+
+The third-party dependencies of the seven packages are unchanged from 0.93.0 (compared from their
+nuspecs), so ADR-0006 and ADR-0007 stand. The Core assembly versions are part of the extraction
+cache key, so 0.93.0 snapshots are not reused and `ExtractorVersions.Current` needs no bump.
+
+**Verified:** the build has 0 warnings and the default suite passes. The order survey
+(`tools/RailNarrator.OrderSurvey`, Heron INT8 on the CPU, OCR off) gives the same output on 0.93.0
+and 0.94.0, finding for finding: 1 of 94 headings and 0 of 762 other blocks read after the block
+below them, over 92 pages of the five econometrics papers of `local_lev_test/external papers`. The
+44 RailDLA papers of the 0.93.0 survey were not on the machine. The Pdf suite passes with its
+opt-in integrations on (Heron and PP-DocLayoutV3 through the adapter, on the CPU and on the
+Radeon 8060S through WebGPU). *Not run against 0.94.0:* real Kokoro, MFA alignment and the
+real-audio-device test, none of which touches Core.

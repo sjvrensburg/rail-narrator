@@ -248,7 +248,8 @@ public sealed class OpenAiCompatibleMathVerbaliser : IMathVerbaliser, IDisposabl
 }
 
 /// <summary>
-/// Transcribes an equation crop to LaTeX by reusing RailReaderCore's VLM transport.
+/// Transcribes an equation crop to LaTeX by reusing RailReaderCore's VLM transport: its
+/// OpenAI-compatible client or, by <c>VlmEndpointConfig.Provider</c>, its client for Claude.
 /// </summary>
 /// <remarks>
 /// Core's <c>IVlmService.DescribeBlockAsync</c> with <c>BlockAction.LaTeX</c> already does exactly
@@ -263,6 +264,7 @@ public sealed class VlmMathTranscriber : IMathTranscriber
     private readonly VlmEndpointConfig _endpoint;
     private readonly IExtractionSource _extraction;
     private readonly int _cropPixelWidth;
+    private bool _available;
 
     public VlmMathTranscriber(IVlmService vlm, VlmEndpointConfig endpoint, IExtractionSource extraction, int cropPixelWidth = 1024)
     {
@@ -274,14 +276,17 @@ public sealed class VlmMathTranscriber : IMathTranscriber
 
     public async Task<bool> IsAvailableAsync(CancellationToken ct = default)
     {
-        if (string.IsNullOrWhiteSpace(_endpoint.Endpoint) || string.IsNullOrWhiteSpace(_endpoint.Model))
-            return false;
+        // A model, and an address unless the provider has its own (Claude's is Anthropic's API).
+        if (!_endpoint.IsConfigured) return false;
+        // Asked once: Claude's connection test is a small real request, and this is called for
+        // every expression.
+        if (_available) return true;
         try
         {
             // TestConnectionAsync returns null on success and a message otherwise; it does not throw
             // for the expected failures.
             string? error = await _vlm.TestConnectionAsync(_endpoint, ct).ConfigureAwait(false);
-            return error is null;
+            return _available = error is null;
         }
         catch (OperationCanceledException) { throw; }
         catch { return false; }
