@@ -29,6 +29,10 @@
     <ProjectReference Include="../RailNarrator.Infrastructure/RailNarrator.Infrastructure.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <!-- The mark (window icon, welcome screen, splash), loaded as avares://rail-narrator/Assets/…. -->
+    <AvaloniaResource Include="Assets/rail-narrator.png" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="Avalonia" />
     <PackageReference Include="Avalonia.Desktop" />
     <PackageReference Include="Avalonia.Themes.Fluent" />

@@ -80,6 +80,62 @@ public partial class MainWindow : Window
         _viewModel.PageRequested += page => Surface.ShowPageFromTop(page);
         SetUpSidebar();
         SetUpFileDrop();
+        SetUpFlows();
+    }
+
+    // ---- welcome, recent documents, dialogs ---------------------------------------------------
+
+    private void SetUpFlows()
+    {
+        try
+        {
+            using var icon = Avalonia.Platform.AssetLoader.Open(new Uri("avares://rail-narrator/Assets/rail-narrator.png"));
+            Icon = new WindowIcon(icon);
+        }
+        catch (Exception) { /* no icon is a cosmetic loss only */ }
+
+        _viewModel.RecentDocuments.CollectionChanged += (_, _) => RebuildRecentMenu();
+        RebuildRecentMenu();
+        _viewModel.DocumentClosed += () =>
+        {
+            Surface.CloseDocument();
+            Surface.ClearHighlight();
+            PageLabel.Text = "Page –";
+            Surface.InvalidateVisual();
+        };
+        _viewModel.ShortcutsRequested += () => ShowModal(new ShortcutsDialog());
+        _viewModel.AboutRequested += () => ShowModal(new AboutDialog(_viewModel));
+        _viewModel.GoToPageRequested += async () =>
+        {
+            if (Surface.PageCount == 0) return;
+            var dialog = new GoToPageDialog(Surface.PageCount, Surface.CurrentPage) { FontSize = FontSize };
+            if (await dialog.ShowDialog<int?>(this) is { } page) Surface.ShowPageFromTop(page);
+        };
+    }
+
+    /// <summary>A modal dialog at the window's text size, as RailReader2 opens its dialogs.</summary>
+    private void ShowModal(Window dialog)
+    {
+        dialog.FontSize = FontSize;
+        _ = dialog.ShowDialog(this);
+    }
+
+    /// <summary>File ▸ Open recent: one item per recent document, missing files shown disabled.</summary>
+    private void RebuildRecentMenu()
+    {
+        var items = new List<object>();
+        foreach (var recent in _viewModel.RecentDocuments)
+        {
+            items.Add(new MenuItem
+            {
+                Header = recent.Name,
+                Command = _viewModel.OpenRecent,
+                CommandParameter = recent,
+                IsEnabled = recent.Exists,
+                [ToolTip.TipProperty] = recent.Path,
+            });
+        }
+        RecentMenu.ItemsSource = items;
     }
 
     // ---- dropping a PDF onto the window -------------------------------------------------------
@@ -284,6 +340,12 @@ public partial class MainWindow : Window
         {
             await Surface.OpenDocumentAsync(path);
             _viewModel.ShowOutline(Surface.Outline);
+            // The welcome screen's picture of it, once: the first page, small, off this thread.
+            if (_viewModel.PendingThumbnailPath is { } thumbnail)
+            {
+                try { await Surface.SaveFirstPageThumbnailAsync(thumbnail); _viewModel.RefreshRecent(); }
+                catch (Exception) { /* a thumbnail is only a picture: the document is open */ }
+            }
             if (_viewModel.RestoredSegmentId is { } segmentId) Surface.ShowPassage(segmentId);
         }
         catch (Exception ex)

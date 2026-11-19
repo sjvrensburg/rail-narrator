@@ -7,7 +7,7 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 548 passing, 9 opt-in skips, 0 warnings
+## Verified by automated tests — 550 passing, 9 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
@@ -15,7 +15,7 @@ claims, and only the second one is worth relying on.
 | `RailNarrator.Pdf.Tests` | 58 (+5 opt-in) | A layout model's own reading order kept when its blocks arrive most confident first, with and without a duplicate block for Core to remove; Fit-width as a mode: the zoom following the page shown and the view's width, a zoom the reader chose surviving a resize and a page turn, fitting again on request, limits and unusable stored values; Page rasters for the reading surface rendered on a worker: page sizes read at open, rasters delivered in the order asked and once each, a render the reader has paged past abandoned (and one that cannot be cancelled dropped, not handed over), a render still wanted carried on, a page that cannot be rendered reported once, colour filters applied there and blank paper's colour matching each filter's own; Layout analysis that fails to start, or fails mid-document, finishes on the CPU fallback from the page that failed and says so once, and the source then reports it so the snapshot is not cached under the GPU key; opt-in, the `Cpu` setting never uses the GPU, and (`RN_WEBGPU_INTEGRATION=1`) the GPU gives the same blocks, kinds, reading units and geometry within 0.1 pt as the CPU; A passage crop is a PNG of its ink; **Real PDFs** through the real RailReaderCore pipeline, including a cached snapshot building the same plan as a fresh one; opt-in, the real PP-DocLayoutV3 model through the adapter |
 | `RailNarrator.Speech.Tests` | 48 (+3 opt-in) | Opt-in, real Kokoro speech holding acronyms and words the dictionary lacks aligned word by word; PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
 | `RailNarrator.Audio.Tests` | 43 (+1 opt-in) | Resampler (polyphase path equal to the direct sinc filter on four rate pairs), time-stretcher (fast grain search equal to the direct search at three rates), playback engine against a controllable fake device, engine lock ordering, coordinator-plus-engine transition stress |
-| `RailNarrator.Infrastructure.Tests` | 24 | The settings file written owner-only (and an older, wider one narrowed), a stored API key winning over the environment variable; Cache round-trips and waveform integrity, including same-length replacement; extraction-cache keying, degraded and encrypted documents never stored, corrupt entries treated as misses |
+| `RailNarrator.Infrastructure.Tests` | 26 | Recent documents kept newest first, bounded, with progress kept in place and a damaged list read as empty; The settings file written owner-only (and an older, wider one narrowed), a stored API key winning over the environment variable; Cache round-trips and waveform integrity, including same-length replacement; extraction-cache keying, degraded and encrypted documents never stored, corrupt entries treated as misses |
 | `RailNarrator.Inference.Tests` | 116 | The Settings dialogue's endpoint test telling a listed model, an unlisted one, a refused key, a wrong address and nothing answering apart, without the key in its message; ClearSpeak-style reading of LaTeX (powers, fractions, roots, quantities, derivatives, sums, functions, cases, Unicode, text with `$…$`, malformed input); thinking-policy and out-of-tokens retry; transcription fallback; Maths interpretation: notation validator, image and thinking-switch fallbacks, one repair turn, cut-off responses refused; golden maths semantics, response validator, endpoint client |
 
 Run them with (and see `testing-real-world.md` for the real models, GUI and audio):
@@ -31,7 +31,10 @@ device before the writer thread had finished queuing) was fixed by waiting for t
 completion event instead of a fixed delay. On 18 November 2026,
 `CoordinatorLockingTests.NaturalAdvance_SlidesTheLookaheadWindow` failed once in a full-solution
 run, after about 5 s (one of its 5 s waits). It then passed 10 isolated runs and 5 further
-full-solution runs. The cause was not identified, and the failure message was not captured. One Audio test failed once in a full-solution run while the local LLM was busy on
+full-solution runs. The cause was not identified, and the failure message was not captured. It
+failed once more on 19 November 2026, in a full-solution run after about 0.4 s (an assertion, not a
+wait), then passed 6 isolated runs and 6 further full-solution runs; the message again was not
+captured. One Audio test failed once in a full-solution run while the local LLM was busy on
 the same machine and passed in three reruns; it was not identified.
 
 ## Verified by running the real thing
@@ -962,3 +965,17 @@ threads meeting.
     sentence (361 characters) and read through; calling the model was avoided. Seen while trying:
     two instances at once (the reader's and a test one) exhausted the 8 GB GPU at start
     (`VK_ERROR_OUT_OF_DEVICE_MEMORY`); one alone settled at about 2.2 GB with no error.
+79. **Opening and closing follow RailReader2** (the third GUI change). A welcome screen when
+    nothing is open: a Rail Narrator mark drawn in the style of RailReader2's (its rail track, with
+    a speaker in a ring where its magnifier is; also the window and launcher icon, now shipped in
+    the release archive), Open a PDF…, and the recent documents as cards with a first-page
+    thumbnail, how far through and when (`RecentDocumentsStore`, `$XDG_DATA_HOME/rail-narrator/recent.json`;
+    thumbnails rendered once per document off the UI thread). File ▸ Open recent and Close
+    (Ctrl+W, back to the welcome screen after the position is saved); Help ▸ Keyboard shortcuts
+    (F1) and About; View ▸ Go to page (Ctrl+G), with RailReader2's dialog keyboard handling. A
+    splash while the services are put together, now off the UI thread, and a window saying why if
+    they cannot be. Page and zoom controls are disabled with nothing open. Checked under Xvfb: the
+    splash; the welcome screen with a recent card and its thumbnail after Ctrl+W; reopening from
+    the card; F1 (closed by Escape); Go to page 4 by typing and Enter; About. *Not verified:* the
+    start-up error window (no failure was provoked), the recent menu (menus draw black under
+    Xvfb), on the reader's desktop, and the mark at small icon sizes.

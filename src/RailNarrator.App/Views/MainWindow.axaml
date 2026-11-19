@@ -25,6 +25,9 @@
     <KeyBinding Gesture="Ctrl+F" Command="{Binding ToggleFollow}" />
     <KeyBinding Gesture="F9" Command="{Binding ResumeFollow}" />
     <KeyBinding Gesture="F6" Command="{Binding ToggleSidebar}" />
+    <KeyBinding Gesture="Ctrl+W" Command="{Binding CloseDocument}" />
+    <KeyBinding Gesture="Ctrl+G" Command="{Binding GoToPage}" />
+    <KeyBinding Gesture="F1" Command="{Binding ShowShortcuts}" />
   </Window.KeyBindings>
 
   <Window.Styles>
@@ -45,6 +48,10 @@
     <Menu Name="MainMenu" DockPanel.Dock="Top">
       <MenuItem Header="_File">
         <MenuItem Header="_Open PDF…" Click="OnOpenClicked" InputGesture="Ctrl+O" />
+        <!-- Filled in code-behind from the recent documents (MainWindow.RebuildRecentMenu). -->
+        <MenuItem Name="RecentMenu" Header="Open _recent" IsEnabled="{Binding HasRecentDocuments}" />
+        <MenuItem Header="_Close" Command="{Binding CloseDocument}" InputGesture="Ctrl+W" />
+        <Separator />
         <MenuItem Header="_Settings…" Command="{Binding OpenSettings}" InputGesture="Ctrl+OemComma" />
         <Separator />
         <MenuItem Header="E_xit" Click="OnCloseClicked" />
@@ -57,6 +64,8 @@
         <MenuItem Header="_Replay passage" Command="{Binding Replay}" InputGesture="Ctrl+R" />
       </MenuItem>
       <MenuItem Header="_View">
+        <MenuItem Header="_Go to page…" Command="{Binding GoToPage}" InputGesture="Ctrl+G" />
+        <Separator />
         <MenuItem Header="Zoom _in" Command="{Binding ZoomIn}" InputGesture="Ctrl+OemPlus" />
         <MenuItem Header="Zoom _out" Command="{Binding ZoomOut}" InputGesture="Ctrl+OemMinus" />
         <MenuItem Header="_Fit width" ToggleType="CheckBox" IsChecked="{Binding FitWidth, Mode=TwoWay}" />
@@ -92,6 +101,11 @@
         <MenuItem Header="_Endpoints and API keys…" Command="{Binding OpenSettings}" />
         <MenuItem Header="_Test text LLM endpoint" Command="{Binding TestMathEndpoint}" />
         <MenuItem Header="Test _vision endpoint" Command="{Binding TestVisionEndpoint}" />
+      </MenuItem>
+      <MenuItem Header="_Help">
+        <MenuItem Header="_Keyboard shortcuts" Command="{Binding ShowShortcuts}" InputGesture="F1" />
+        <Separator />
+        <MenuItem Header="_About Rail Narrator" Command="{Binding ShowAbout}" />
       </MenuItem>
     </Menu>
 
@@ -231,6 +245,7 @@
           <ProgressBar Width="120" Minimum="0" Maximum="1" Value="{Binding Playback.PlanProgress}" VerticalAlignment="Center"
                        ToolTip.Tip="How far through the document" AutomationProperties.Name="How far through the document" />
           <Border Classes="toolSep" />
+          <StackPanel Orientation="Horizontal" Spacing="4" IsEnabled="{Binding HasDocument}">
           <Button Classes="toolBtn borderless" Click="OnPreviousPageClicked" ToolTip.Tip="Previous page (Page Up). Pauses following."
                   AutomationProperties.Name="Previous page">
             <c:Icon Data="{StaticResource IconChevronLeft}" />
@@ -256,6 +271,7 @@
                         AutomationProperties.Name="Fit width">
             <c:Icon Data="{StaticResource IconMoveHorizontal}" />
           </ToggleButton>
+          </StackPanel>
         </StackPanel>
       </Grid>
     </Border>
@@ -357,6 +373,76 @@
          It does not take input, so the page can still be browsed or clicked underneath. -->
     <Panel Grid.Column="2">
       <views:PdfSurface Name="Surface" Focusable="True" />
+
+      <!-- Nothing open: the welcome screen, as RailReader2's. The mark, how to open a document, the
+           documents read before (with how far through), and the keys that matter most. -->
+      <ScrollViewer Name="Welcome" IsVisible="{Binding !HasDocument}"
+                    Background="{DynamicResource SystemControlBackgroundAltHighBrush}">
+        <StackPanel MaxWidth="780" HorizontalAlignment="Center" Margin="24,40,24,32" Spacing="8">
+          <!-- On white in both themes, as RailReader2's logo, so the black mark stays visible. -->
+          <Border Background="White" CornerRadius="12" Padding="6" HorizontalAlignment="Center">
+            <Image Source="avares://rail-narrator/Assets/rail-narrator.png" Width="120" Height="120" />
+          </Border>
+          <TextBlock Text="Rail Narrator" FontSize="30" FontWeight="SemiBold" HorizontalAlignment="Center" />
+          <TextBlock Text="Reads a PDF aloud and highlights each passage in the page as it is read"
+                     Classes="secondary" HorizontalAlignment="Center" TextAlignment="Center" TextWrapping="Wrap" />
+          <Button Classes="primary" Content="Open a PDF…" Click="OnOpenClicked" HorizontalAlignment="Center"
+                  Padding="22,8" Margin="0,14,0,0" />
+          <TextBlock Text="or press Ctrl+O, or drop a PDF on this window" Classes="secondary" HorizontalAlignment="Center" />
+
+          <StackPanel IsVisible="{Binding HasRecentDocuments}" Spacing="10" Margin="0,28,0,0">
+            <TextBlock Text="Recent documents" FontWeight="Bold" />
+            <ItemsControl ItemsSource="{Binding RecentDocuments}">
+              <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                  <WrapPanel ItemSpacing="12" LineSpacing="12" />
+                </ItemsPanelTemplate>
+              </ItemsControl.ItemsPanel>
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:RecentDocumentView">
+                  <Button Classes="toolBtn" Width="176" Padding="8" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Top"
+                          Command="{Binding $parent[ItemsControl].((vm:MainViewModel)DataContext).OpenRecent}" CommandParameter="{Binding}"
+                          IsEnabled="{Binding Exists}" ToolTip.Tip="{Binding Path}" AutomationProperties.Name="{Binding Name}">
+                    <Button.ContextMenu>
+                      <ContextMenu>
+                        <MenuItem Header="Remove from recent documents"
+                                  Command="{Binding $parent[ItemsControl].((vm:MainViewModel)DataContext).RemoveRecent}" CommandParameter="{Binding}" />
+                      </ContextMenu>
+                    </Button.ContextMenu>
+                    <StackPanel Spacing="6">
+                      <Border Height="200" Background="White" BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}" BorderThickness="1">
+                        <Panel>
+                          <Image Source="{Binding Thumbnail}" Stretch="Uniform" VerticalAlignment="Top" IsVisible="{Binding HasThumbnail}" />
+                          <c:Icon Data="{StaticResource IconFolderOpen}" SizeFactor="2.4" Foreground="#909090"
+                                  HorizontalAlignment="Center" VerticalAlignment="Center" IsVisible="{Binding !HasThumbnail}" />
+                        </Panel>
+                      </Border>
+                      <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                      <ProgressBar Value="{Binding Progress}" Minimum="0" Maximum="1" Height="3" MinHeight="3" IsVisible="{Binding HasProgress}" />
+                      <TextBlock Text="{Binding Detail}" Classes="secondary" FontSize="11" TextWrapping="Wrap" />
+                    </StackPanel>
+                  </Button>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+
+          <Border Height="1" Background="{DynamicResource SystemControlForegroundBaseLowBrush}" Margin="0,24,0,8" />
+          <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" ColumnSpacing="16" RowSpacing="6"
+                HorizontalAlignment="Center">
+            <TextBlock Grid.Row="0" Text="Space" FontWeight="SemiBold" />
+            <TextBlock Grid.Row="0" Grid.Column="1" Text="Play or pause" />
+            <TextBlock Grid.Row="1" Text="Ctrl+← →" FontWeight="SemiBold" />
+            <TextBlock Grid.Row="1" Grid.Column="1" Text="Previous or next passage; click a passage to read from it" />
+            <TextBlock Grid.Row="2" Text="F6" FontWeight="SemiBold" />
+            <TextBlock Grid.Row="2" Grid.Column="1" Text="Sidebar: the outline, the script and maths review" />
+            <TextBlock Grid.Row="3" Text="C" FontWeight="SemiBold" />
+            <TextBlock Grid.Row="3" Grid.Column="1" Text="Cycle colour filters for comfort" />
+            <TextBlock Grid.Row="4" Text="F1" FontWeight="SemiBold" />
+            <TextBlock Grid.Row="4" Grid.Column="1" Text="Every keyboard shortcut" />
+          </Grid>
+        </StackPanel>
+      </ScrollViewer>
       <Border IsVisible="{Binding IsPreparing}" IsHitTestVisible="False"
               HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,16,0,0"
               Padding="16,10" CornerRadius="8" MinWidth="320"

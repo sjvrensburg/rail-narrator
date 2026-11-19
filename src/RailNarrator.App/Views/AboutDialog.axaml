@@ -1,0 +1,26 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="RailNarrator.App.Views.AboutDialog"
+        Title="About Rail Narrator" Width="560" SizeToContent="Height" CanResize="False"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+  <StackPanel Margin="20" Spacing="10">
+    <StackPanel Orientation="Horizontal" Spacing="16">
+      <Border Background="White" CornerRadius="8" Padding="4">
+        <Image Source="avares://rail-narrator/Assets/rail-narrator.png" Width="88" Height="88" />
+      </Border>
+      <StackPanel VerticalAlignment="Center" Spacing="4">
+        <TextBlock Text="Rail Narrator" FontSize="26" FontWeight="SemiBold" />
+        <TextBlock Name="VersionText" Classes="secondary" />
+        <TextBlock Text="Reads a PDF aloud and highlights what is being read, in the page itself."
+                   TextWrapping="Wrap" MaxWidth="380" />
+      </StackPanel>
+    </StackPanel>
+    <TextBlock Text="In use" FontWeight="Bold" Margin="0,8,0,0" />
+    <SelectableTextBlock Name="InUseText" TextWrapping="Wrap" FontSize="12" />
+    <TextBlock Text="Where things are kept" FontWeight="Bold" Margin="0,8,0,0" />
+    <SelectableTextBlock Name="PathsText" TextWrapping="Wrap" FontSize="12" FontFamily="monospace" />
+    <TextBlock Classes="secondary" FontSize="12" TextWrapping="Wrap" Margin="0,8,0,0"
+               Text="Built on RailReaderCore, the PDF rendering, layout and reading-order engine of RailReader2. Icons: Lucide (ISC)." />
+    <Button Content="Close" MinWidth="80" HorizontalAlignment="Right" Click="OnClose" IsCancel="True" IsDefault="True" />
+  </StackPanel>
+</Window>

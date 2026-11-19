@@ -116,6 +116,14 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         Zoom800 = new RelayCommand(() => ApplyZoom(8.0), null, OnCommandError);
         OpenSettings = new RelayCommand(() => SettingsRequested?.Invoke());
         ToggleSidebar = new RelayCommand(() => SidebarVisible = !SidebarVisible);
+        _recent = services.Recent;
+        CloseDocument = new RelayCommand(CloseDocumentAsync, () => HasDocument && !IsLoading, OnCommandError);
+        OpenRecent = new RelayCommand<RecentDocumentView>(r => RunObserved(LoadDocumentAsync(r.Path), "Could not open that document"));
+        RemoveRecent = new RelayCommand<RecentDocumentView>(r => { _recent.Remove(r.Path); RefreshRecent(); });
+        ShowShortcuts = new RelayCommand(() => ShortcutsRequested?.Invoke());
+        ShowAbout = new RelayCommand(() => AboutRequested?.Invoke());
+        GoToPage = new RelayCommand(() => GoToPageRequested?.Invoke(), () => HasDocument);
+        RefreshRecent();
         NoticeAction = new RelayCommand(() => { var action = Notice?.Action; Notice = null; action?.Invoke(); });
         DismissNotice = new RelayCommand(() => Notice = null);
         TestMathEndpoint = new RelayCommand(() => TestMathEndpointAsync(), () => !Busy, OnCommandError);
@@ -525,6 +533,70 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     /// <summary>The application should restart, keeping the open document (the window does it).</summary>
     public event Action? RestartRequested;
 
+    // ---- closing, recent documents, help ----------------------------------------------------
+
+    public RelayCommand CloseDocument { get; }
+
+    /// <summary>The document was closed: the window releases its pages and shows the welcome screen.</summary>
+    public event Action? DocumentClosed;
+
+    /// <summary>
+    /// Closes the document (File ▸ Close, Ctrl+W): where the reader stood is saved first, reading
+    /// stops, and the welcome screen comes back.
+    /// </summary>
+    private async Task CloseDocumentAsync()
+    {
+        if (!HasDocument || IsLoading) return;
+        _pendingStartSegmentId = null;
+        await SavePositionAsync();
+        await Coordinator.StopAsync();
+        _snapshot = null;
+        Plan = null;
+        DocumentPath = null;
+        _documentHash = null;
+        RestoredSegmentId = null;
+        RebuildTranscript();
+        Outline.Clear();
+        _outlineInOrder = [];
+        OnPropertyChanged(nameof(HasOutline));
+        CurrentSection = null;
+        CurrentSectionPath = null;
+        MathsReview = null;
+        StatusMessage = "Open a PDF to begin.";
+        RefreshCommands();
+        RefreshRecent();
+        DocumentClosed?.Invoke();
+    }
+
+    private readonly RecentDocumentsStore _recent;
+
+    /// <summary>Documents opened before, newest first, for the welcome screen and File ▸ Open Recent.</summary>
+    public ObservableCollection<RecentDocumentView> RecentDocuments { get; } = [];
+
+    public bool HasRecentDocuments => RecentDocuments.Count > 0;
+
+    public RelayCommand<RecentDocumentView> OpenRecent { get; }
+
+    public RelayCommand<RecentDocumentView> RemoveRecent { get; }
+
+    public void RefreshRecent()
+    {
+        RecentDocuments.Clear();
+        foreach (var d in _recent.Load()) RecentDocuments.Add(new RecentDocumentView(d, _recent.ThumbnailPath(d.Path)));
+        OnPropertyChanged(nameof(HasRecentDocuments));
+    }
+
+    /// <summary>Where the open document's first-page thumbnail goes; null when it already exists.</summary>
+    public string? PendingThumbnailPath
+        => _documentPath is { } path && _recent.ThumbnailPath(path) is { } thumb && !File.Exists(thumb) ? thumb : null;
+
+    public RelayCommand ShowShortcuts { get; }
+    public RelayCommand ShowAbout { get; }
+    public RelayCommand GoToPage { get; }
+    public event Action? ShortcutsRequested;
+    public event Action? AboutRequested;
+    public event Action? GoToPageRequested;
+
     private ColourEffect _colourEffect;
 
     /// <summary>RailReader's colour filters, applied to the page raster, with their display names.</summary>
@@ -846,6 +918,10 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
                 : $"Ready. {plan.SegmentCount} passages to read.";
             OnPropertyChanged(nameof(MathEndpointSummary));
             OnPropertyChanged(nameof(CacheBytes));
+            _recent.Opened(path, snapshot.Pages.Count);
+            if (position is not null && plan.SegmentCount > 0)
+                _recent.Progressed(path, (double)Coordinator.Snapshot.SegmentIndex / plan.SegmentCount);
+            RefreshRecent();
             DocumentLoaded?.Invoke(path);
         }
         catch (Exception ex)
@@ -1292,6 +1368,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         await _saveGate.WaitAsync();
         try { await _services.PlanStore.SavePositionAsync(position); }
         finally { _saveGate.Release(); }
+        if (_documentPath is { } path && Plan.SegmentCount > 0 && snapshot.SegmentIndex >= 0)
+            _recent.Progressed(path, (double)snapshot.SegmentIndex / Plan.SegmentCount);
     }
 
     // The loaded document's content hash, computed once at load rather than on every save.

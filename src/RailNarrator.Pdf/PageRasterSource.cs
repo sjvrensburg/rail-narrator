@@ -114,6 +114,33 @@ public sealed class PageRasterSource : IDisposable
 
     public int PageCount => _pageSizes.Length;
 
+    /// <summary>
+    /// Writes a small PNG of a page, <paramref name="width"/> pixels wide, for the welcome screen's
+    /// recent documents. Call off the UI thread: it renders through PDFium, which Core serialises
+    /// behind its own lock, so it may wait for the page rasteriser or an extraction.
+    /// </summary>
+    public void SaveThumbnail(int pageIndex, int width, string path)
+    {
+        if (pageIndex < 0 || pageIndex >= _pageSizes.Length || width <= 0) return;
+        double pageWidth = Math.Max(1, _pageSizes[pageIndex].Width);
+        int dpi = Math.Clamp((int)Math.Ceiling(72.0 * width / pageWidth * 1.5), 18, 150);
+        var rendered = _pdf.RenderPage(pageIndex, dpi);
+        try
+        {
+            if (rendered is not SkiaRenderedPage page) return;
+            int height = (int)Math.Round(page.Bitmap.Height * (double)width / page.Bitmap.Width);
+            using var small = page.Bitmap.Resize(new SKImageInfo(width, Math.Max(1, height)), new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.Linear));
+            if (small is null) return;
+            using var image = SKImage.FromBitmap(small);
+            using var png = image.Encode(SKEncodedImageFormat.Png, 90);
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(path)!);
+            string temp = path + ".tmp";
+            using (var file = File.Create(temp)) png.SaveTo(file);
+            File.Move(temp, path, overwrite: true);
+        }
+        finally { (rendered as IDisposable)?.Dispose(); }
+    }
+
     /// <summary>The document's own outline (its bookmarks), read when it was opened; empty when it has none.</summary>
     public IReadOnlyList<OutlineEntry> Outline { get; }
 

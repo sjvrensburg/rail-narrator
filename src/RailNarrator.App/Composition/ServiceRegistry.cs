@@ -43,6 +43,7 @@ public sealed class ServiceRegistry : IAsyncDisposable
     public required NarrationCoordinator Coordinator { get; init; }
     public required DiskSpeechAssetStore AssetStore { get; init; }
     public required DiskPlanStore PlanStore { get; init; }
+    public required RecentDocumentsStore Recent { get; init; }
     public required ModelDownloader Models { get; init; }
     public required SidecarManager? Sidecar { get; init; }
     public required IMathVerbaliser? MathVerbaliser { get; init; }
@@ -220,6 +221,7 @@ public sealed class ServiceRegistry : IAsyncDisposable
 
         return new ServiceRegistry
         {
+            Recent = new RecentDocumentsStore(),
             Settings = settingsStore,
             CurrentSettings = settings,
             Extraction = extraction,

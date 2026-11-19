@@ -1,0 +1,13 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="RailNarrator.App.Views.StartupErrorWindow"
+        Title="Rail Narrator could not start" Width="560" SizeToContent="Height" CanResize="False"
+        WindowStartupLocation="CenterScreen">
+  <StackPanel Margin="20" Spacing="10">
+    <TextBlock Text="Rail Narrator could not start" FontSize="18" FontWeight="SemiBold" />
+    <TextBlock Text="Nothing was changed. The reason is below; the settings file and the models folder are the usual suspects."
+               TextWrapping="Wrap" />
+    <SelectableTextBlock Name="Detail" TextWrapping="Wrap" FontFamily="monospace" FontSize="12" />
+    <Button Content="Quit" MinWidth="80" HorizontalAlignment="Right" Click="OnQuit" IsDefault="True" IsCancel="True" />
+  </StackPanel>
+</Window>
