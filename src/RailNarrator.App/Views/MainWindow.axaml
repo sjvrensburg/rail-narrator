@@ -12,6 +12,7 @@
 
   <Window.KeyBindings>
     <KeyBinding Gesture="Ctrl+O" Command="{Binding OpenDocument}" />
+    <KeyBinding Gesture="Ctrl+OemComma" Command="{Binding OpenSettings}" />
     <!-- Space and Escape are handled in MainWindow.OnPreviewKeyDown, not here: a window-level
          binding also fires while a text box is being typed in or a menu is being dismissed. -->
     <KeyBinding Gesture="Ctrl+P" Command="{Binding PlayPause}" />
@@ -30,6 +31,7 @@
     <Menu Name="MainMenu" DockPanel.Dock="Top">
       <MenuItem Header="_File">
         <MenuItem Header="_Open PDF…" Click="OnOpenClicked" InputGesture="Ctrl+O" />
+        <MenuItem Header="_Settings…" Command="{Binding OpenSettings}" InputGesture="Ctrl+OemComma" />
         <Separator />
         <MenuItem Header="E_xit" Click="OnCloseClicked" />
       </MenuItem>
@@ -73,6 +75,7 @@
         <MenuItem Header="Download _Kokoro model…" Command="{Binding DownloadKokoroModel}" />
         <MenuItem Header="Download _layout model (Docling Heron INT8, 69 MB)…" Command="{Binding DownloadLayoutModel}" />
         <MenuItem Header="Download layout model for the _GPU (Docling Heron FP32, 171 MB)…" Command="{Binding DownloadLayoutModelGpu}" />
+        <MenuItem Header="_Endpoints and API keys…" Command="{Binding OpenSettings}" />
         <MenuItem Header="_Test text LLM endpoint" Command="{Binding TestMathEndpoint}" />
         <MenuItem Header="Test _vision endpoint" Command="{Binding TestVisionEndpoint}" />
       </MenuItem>

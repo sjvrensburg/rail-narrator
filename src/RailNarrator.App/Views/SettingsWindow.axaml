@@ -1,0 +1,273 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:RailNarrator.App.ViewModels"
+        x:Class="RailNarrator.App.Views.SettingsWindow"
+        x:DataType="vm:SettingsViewModel"
+        Title="Settings"
+        Width="780" Height="640" MinWidth="580" MinHeight="420"
+        WindowStartupLocation="CenterOwner"
+        CanResize="True">
+  <!-- Laid out as RailReader2's settings: pages on the left, a bold heading per section with a
+       dimmed hint under it, and every change saved as it is made. Paths and addresses most readers
+       never touch are behind "Show advanced settings". -->
+  <Window.Styles>
+    <Style Selector="TextBlock.section">
+      <Setter Property="FontWeight" Value="Bold" />
+      <Setter Property="Margin" Value="0,16,0,2" />
+    </Style>
+    <Style Selector="TextBlock.section.first">
+      <Setter Property="Margin" Value="0,0,0,2" />
+    </Style>
+    <Style Selector="TextBlock.hint">
+      <Setter Property="TextWrapping" Value="Wrap" />
+      <Setter Property="Opacity" Value="0.7" />
+    </Style>
+    <Style Selector="TextBlock.label">
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="TextBlock.restart">
+      <Setter Property="Opacity" Value="0.7" />
+      <Setter Property="FontStyle" Value="Italic" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+    <Style Selector="TabControl#Pages > TabItem">
+      <Setter Property="Padding" Value="12,6" />
+      <Setter Property="MinHeight" Value="0" />
+      <Setter Property="FontSize" Value="15" />
+    </Style>
+    <Style Selector="Border.advblock">
+      <Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}" />
+      <Setter Property="BorderThickness" Value="2,0,0,0" />
+      <Setter Property="Padding" Value="12,0,0,0" />
+      <Setter Property="Margin" Value="0,12,0,0" />
+    </Style>
+    <Style Selector="TextBlock.pass">
+      <Setter Property="Foreground" Value="#7BD88F" />
+    </Style>
+    <Style Selector="TextBlock.fail">
+      <Setter Property="Foreground" Value="#FF8A80" />
+    </Style>
+  </Window.Styles>
+
+  <Window.Resources>
+    <!-- One endpoint: the language model's and the vision model's are edited alike. -->
+    <DataTemplate x:Key="EndpointEditor" x:DataType="vm:EndpointSettingsViewModel">
+      <Grid ColumnDefinitions="180,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="6">
+        <TextBlock Classes="label" Text="Address" />
+        <TextBox Grid.Column="1" Text="{Binding Url}" Watermark="https://…/v1" />
+
+        <TextBlock Grid.Row="1" Classes="label" Text="Model" />
+        <AutoCompleteBox Grid.Row="1" Grid.Column="1" Text="{Binding Model, Mode=TwoWay}" ItemsSource="{Binding OfferedModels}"
+                         FilterMode="Contains" MinimumPrefixLength="0" Watermark="model name" />
+
+        <TextBlock Grid.Row="2" Classes="label" Text="API key" VerticalAlignment="Top" Margin="0,6,0,0" />
+        <StackPanel Grid.Row="2" Grid.Column="1" Spacing="4">
+          <RadioButton IsChecked="{Binding UsesVariable}" Content="From an environment variable (not stored)" />
+          <TextBox Text="{Binding Variable}" IsEnabled="{Binding UsesVariable}" Margin="28,0,0,0"
+                   Watermark="variable name, e.g. OPENAI_API_KEY" />
+          <RadioButton IsChecked="{Binding UsesStoredKey}" Content="Stored in the settings file" />
+          <Grid ColumnDefinitions="*,Auto" Margin="28,0,0,0" IsEnabled="{Binding UsesStoredKey}">
+            <TextBox Text="{Binding Key}" PasswordChar="•" RevealPassword="{Binding #ShowKey.IsChecked}"
+                     Watermark="paste the key" />
+            <ToggleButton Name="ShowKey" Grid.Column="1" Content="Show" Margin="6,0,0,0" />
+          </Grid>
+        </StackPanel>
+        <TextBlock Grid.Row="3" Grid.Column="1" Classes="hint" Text="{Binding KeyStatus}" />
+
+        <StackPanel Grid.Row="4" Grid.Column="1" Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">
+          <Button Content="Test" Command="{Binding Test}" ToolTip.Tip="Asks the endpoint for its models with these values. Costs no tokens." />
+          <ProgressBar IsIndeterminate="True" Width="80" IsVisible="{Binding Testing}" VerticalAlignment="Center" />
+        </StackPanel>
+        <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding TestResult}" TextWrapping="Wrap"
+                   Classes.pass="{Binding TestSucceeded}" Classes.fail="{Binding TestFailed}" />
+      </Grid>
+    </DataTemplate>
+  </Window.Resources>
+
+  <DockPanel>
+    <Border DockPanel.Dock="Bottom" Padding="16,8"
+            BorderBrush="{DynamicResource SystemControlForegroundBaseMediumLowBrush}" BorderThickness="0,1,0,0">
+      <Grid ColumnDefinitions="Auto,*,Auto" RowDefinitions="Auto,Auto">
+        <ToggleSwitch Grid.Column="0" IsChecked="{Binding Advanced}"
+                      OnContent="Show advanced settings" OffContent="Show advanced settings" />
+        <TextBlock Grid.Column="1" Margin="16,0" VerticalAlignment="Center" TextWrapping="Wrap"
+                   IsVisible="{Binding RestartPending}"
+                   Text="Saved. Speech, maths and document changes apply when Rail Narrator restarts; it reopens where you are." />
+        <Button Grid.Column="2" Content="Restart now" Command="{Binding RestartNow}" IsVisible="{Binding RestartPending}"
+                VerticalAlignment="Center" />
+        <TextBlock Grid.Row="1" Grid.ColumnSpan="3" Text="{Binding SaveError}" Classes="fail" TextWrapping="Wrap"
+                   IsVisible="{Binding SaveError, Converter={x:Static ObjectConverters.IsNotNull}}" />
+      </Grid>
+    </Border>
+
+    <TabControl x:Name="Pages" TabStripPlacement="Left" Margin="8,8,8,0">
+
+      <!-- ================= Reading ================= -->
+      <TabItem Header="Reading">
+        <ScrollViewer Padding="8,0,16,16">
+          <StackPanel Spacing="6">
+            <TextBlock Classes="section first" Text="Highlight" />
+            <TextBlock Classes="hint" Text="The passage being read is highlighted on the page: amber when it is read as printed, violet when it is spoken in other words (an interpreted equation)." />
+            <Grid ColumnDefinitions="180,*" RowDefinitions="Auto,Auto" RowSpacing="6">
+              <TextBlock Classes="label" Text="Opacity" />
+              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                <Slider Minimum="10" Maximum="80" Value="{Binding HighlightOpacityPercent}" Width="220"
+                        TickFrequency="5" IsSnapToTickEnabled="True" />
+                <TextBlock VerticalAlignment="Center" Text="{Binding HighlightOpacityPercent, StringFormat={}{0}%}" />
+              </StackPanel>
+              <CheckBox Grid.Row="1" Grid.Column="1" IsChecked="{Binding HighlightHighContrast}"
+                        Content="Stronger colours with a black outline" />
+            </Grid>
+            <CheckBox IsChecked="{Binding WordHighlighting}" Content="Highlight word by word"
+                      Margin="0,6,0,0" />
+            <TextBlock Classes="hint" Text="Times each word against the speech with the local aligner, when it is installed (tools/setup-word-alignment.sh). A sentence that cannot be timed is highlighted whole; no timing is ever guessed." />
+            <TextBlock Classes="restart" Text="Word highlighting applies after a restart." />
+
+            <TextBlock Classes="section" Text="Following" />
+            <TextBlock Classes="hint" Text="The view glides with the reading. Scrolling, dragging or turning a page pauses it while you look around." />
+            <Grid ColumnDefinitions="180,*" RowDefinitions="Auto,Auto" RowSpacing="6">
+              <TextBlock Classes="label" Text="Resume following after" />
+              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                <NumericUpDown Value="{Binding FollowAutoResumeSeconds}" Minimum="0" Maximum="120" Increment="1"
+                               FormatString="F0" Width="130" />
+                <TextBlock Classes="label" Text="seconds (0: only when you press F9)" />
+              </StackPanel>
+              <CheckBox Grid.Row="1" Grid.Column="1" IsChecked="{Binding ReduceMotion}"
+                        Content="Reduce motion: jump to the reading instead of gliding" />
+            </Grid>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
+      <!-- ================= Speech ================= -->
+      <TabItem Header="Speech">
+        <ScrollViewer Padding="8,0,16,16">
+          <StackPanel Spacing="6">
+            <TextBlock Classes="section first" Text="Voice engine" />
+            <Grid ColumnDefinitions="180,*" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="6">
+              <TextBlock Classes="label" Text="Engine" />
+              <ComboBox Grid.Column="1" ItemsSource="{Binding SpeechProviders}" SelectedItem="{Binding SpeechProvider}" MinWidth="260" />
+              <TextBlock Grid.Row="1" Grid.Column="1" Classes="hint" Text="{Binding SpeechProvider.Description}" />
+              <TextBlock Grid.Row="2" Classes="label" Text="Run Kokoro on" />
+              <ComboBox Grid.Row="2" Grid.Column="1" ItemsSource="{Binding SpeechAccelerations}" SelectedItem="{Binding KokoroAcceleration}" MinWidth="260" />
+              <TextBlock Grid.Row="3" Grid.Column="1" Classes="hint" Text="{Binding KokoroAcceleration.Description}" />
+            </Grid>
+            <TextBlock Classes="hint" Text="The voice and the speed are chosen in the toolbar." />
+
+            <TextBlock Classes="section" Text="Preparing ahead" />
+            <TextBlock Classes="hint" Text="Speech is prepared ahead of the reading, so a slow passage or a model starting up does not stop it. More ahead is smoother and uses more memory (about 6 MB a minute)." />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <NumericUpDown Value="{Binding LookaheadSeconds}" Minimum="10" Maximum="600" Increment="10"
+                             FormatString="F0" Width="130" />
+              <TextBlock Classes="label" Text="seconds of listening" />
+            </StackPanel>
+
+            <Border Classes="advblock" IsVisible="{Binding Advanced}">
+              <StackPanel Spacing="6">
+                <TextBlock Classes="section first" Text="Model files" />
+                <TextBlock Classes="hint" Text="Leave empty for the files in Rail Narrator's models folder." />
+                <Grid ColumnDefinitions="180,*" RowDefinitions="Auto,Auto" RowSpacing="6">
+                  <TextBlock Classes="label" Text="Kokoro model" />
+                  <TextBox Grid.Column="1" Text="{Binding KokoroModelPath}" Watermark="kokoro-fp16.onnx in the models folder" />
+                  <TextBlock Grid.Row="1" Classes="label" Text="Kokoro model for the GPU" />
+                  <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding KokoroGpuModelPath}" Watermark="kokoro-fp32-webgpu.onnx in the models folder" />
+                </Grid>
+                <TextBlock Classes="section" Text="ZONOS3 server" />
+                <Grid ColumnDefinitions="180,*" RowDefinitions="Auto,Auto" RowSpacing="6">
+                  <TextBlock Classes="label" Text="Address" />
+                  <TextBox Grid.Column="1" Text="{Binding ZonosBaseUrl}" Watermark="http://127.0.0.1:19191" />
+                  <TextBlock Grid.Row="1" Classes="label" Text="Speaker" />
+                  <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding ZonosSpeakerId}" Watermark="speaker embedding id" />
+                </Grid>
+              </StackPanel>
+            </Border>
+            <TextBlock Classes="restart" Text="Speech settings apply after a restart." Margin="0,8,0,0" />
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
+      <!-- ================= Maths ================= -->
+      <TabItem Header="Maths">
+        <ScrollViewer Padding="8,0,16,16">
+          <StackPanel Spacing="6">
+            <TextBlock Classes="section first" Text="How maths is read" />
+            <Grid ColumnDefinitions="180,*" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="6">
+              <TextBlock Classes="label" Text="Reading" />
+              <ComboBox Grid.Column="1" ItemsSource="{Binding MathModes}" SelectedItem="{Binding SelectedMathMode}" MinWidth="260" />
+              <TextBlock Grid.Row="1" Grid.Column="1" Classes="hint" Text="{Binding SelectedMathMode.Description}" />
+              <TextBlock Grid.Row="2" Classes="label" Text="Let the model think" />
+              <ComboBox Grid.Row="2" Grid.Column="1" ItemsSource="{Binding ThinkingPolicies}" SelectedItem="{Binding Thinking}" MinWidth="260" />
+              <TextBlock Grid.Row="3" Grid.Column="1" Classes="hint" Text="{Binding Thinking.Description}" />
+            </Grid>
+
+            <TextBlock Classes="section" Text="Language model" />
+            <TextBlock Classes="hint" Text="Any OpenAI-compatible endpoint: a local server (llama.cpp, Ollama, LM Studio) or a hosted one. One that accepts images reads the equation from the page as well as from its text." />
+            <ContentControl Content="{Binding MathEndpoint}" ContentTemplate="{StaticResource EndpointEditor}" />
+
+            <Border Classes="advblock" IsVisible="{Binding Advanced}">
+              <StackPanel Spacing="6">
+                <TextBlock Classes="section first" Text="Vision model for equation images (optional)" />
+                <TextBlock Classes="hint" Text="A separate model that transcribes equation images to LaTeX for the older reading modes. Not needed with 'Say what it means', which sends the image to the language model above." />
+                <ContentControl Content="{Binding VisionEndpoint}" ContentTemplate="{StaticResource EndpointEditor}" />
+              </StackPanel>
+            </Border>
+            <TextBlock Classes="restart" Text="Maths settings apply after a restart. Passages already interpreted keep their reading; use Maths ▸ Regenerate narration to ask again." Margin="0,8,0,0" />
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
+      <!-- ================= Document ================= -->
+      <TabItem Header="Document">
+        <ScrollViewer Padding="8,0,16,16">
+          <StackPanel Spacing="6">
+            <TextBlock Classes="section first" Text="What is read aloud" />
+            <TextBlock Classes="hint" Text="Parts of the page left out are still shown; they are simply not read." />
+            <Grid ColumnDefinitions="*,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" ColumnSpacing="16" RowSpacing="4">
+              <CheckBox Grid.Row="0" Grid.Column="0" IsChecked="{Binding IncludeEquations}" Content="Equations" />
+              <CheckBox Grid.Row="1" Grid.Column="0" IsChecked="{Binding IncludeTables}" Content="Tables and algorithms (announced)" />
+              <CheckBox Grid.Row="2" Grid.Column="0" IsChecked="{Binding IncludeCaptions}" Content="Figure and table captions" />
+              <CheckBox Grid.Row="3" Grid.Column="0" IsChecked="{Binding IncludeFootnotes}" Content="Footnotes" />
+              <CheckBox Grid.Row="4" Grid.Column="0" IsChecked="{Binding IncludeCitations}" Content="Citation markers, such as [12]" />
+              <CheckBox Grid.Row="0" Grid.Column="1" IsChecked="{Binding IncludeReferences}" Content="The list of references" />
+              <CheckBox Grid.Row="1" Grid.Column="1" IsChecked="{Binding ExcludeRunningHeaders}" Content="Skip running headers" />
+              <CheckBox Grid.Row="2" Grid.Column="1" IsChecked="{Binding ExcludeFooters}" Content="Skip page footers" />
+              <CheckBox Grid.Row="3" Grid.Column="1" IsChecked="{Binding ExcludePageNumbers}" Content="Skip page numbers" />
+            </Grid>
+
+            <TextBlock Classes="section" Text="Reading the page" />
+            <Grid ColumnDefinitions="180,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="6">
+              <TextBlock Classes="label" Text="Layout model" />
+              <ComboBox Grid.Column="1" ItemsSource="{Binding LayoutAnalyzers}" SelectedItem="{Binding LayoutAnalyzer}" MinWidth="260" />
+              <TextBlock Grid.Row="1" Grid.Column="1" Classes="hint" Text="{Binding LayoutAnalyzer.Description}" />
+              <TextBlock Grid.Row="2" Classes="label" Text="Run layout on" />
+              <ComboBox Grid.Row="2" Grid.Column="1" ItemsSource="{Binding LayoutAccelerations}" SelectedItem="{Binding SelectedLayoutAcceleration}" MinWidth="260" />
+              <TextBlock Grid.Row="3" Grid.Column="1" Classes="hint" Text="{Binding SelectedLayoutAcceleration.Description}" />
+              <TextBlock Grid.Row="4" Classes="label" Text="Recognise text (OCR)" />
+              <ComboBox Grid.Row="4" Grid.Column="1" ItemsSource="{Binding OcrPolicies}" SelectedItem="{Binding Ocr}" MinWidth="260" />
+              <TextBlock Grid.Row="5" Grid.Column="1" Classes="hint" Text="{Binding Ocr.Description}" />
+            </Grid>
+
+            <Border Classes="advblock" IsVisible="{Binding Advanced}">
+              <Grid ColumnDefinitions="180,*" RowSpacing="6">
+                <TextBlock Classes="label" Text="Layout model file" />
+                <TextBox Grid.Column="1" Text="{Binding LayoutModelPath}" Watermark="found automatically" />
+              </Grid>
+            </Border>
+            <TextBlock Classes="restart" Text="Document settings apply after a restart, to the document as it is opened again." Margin="0,8,0,0" />
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
+      <!-- ================= About the file ================= -->
+      <TabItem Header="Settings file">
+        <ScrollViewer Padding="8,0,16,16">
+          <StackPanel Spacing="6">
+            <TextBlock Classes="section first" Text="Where settings are kept" />
+            <SelectableTextBlock Text="{Binding SettingsFile}" TextWrapping="Wrap" />
+            <TextBlock Classes="hint" Text="Every change is saved as you make it. The file is readable by you only, because it may hold an API key. Name an environment variable for the key instead if you share the file, for example in a bug report." />
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+    </TabControl>
+  </DockPanel>
+</Window>

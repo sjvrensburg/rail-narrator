@@ -70,6 +70,54 @@ public partial class MainWindow : Window
         };
         AddHandler(KeyDownEvent, OnPreviewKeyDown, RoutingStrategies.Tunnel);
         Closing += OnClosing;
+        _viewModel.SettingsRequested += ShowSettings;
+    }
+
+    private SettingsWindow? _settingsWindow;
+    private bool _restartAfterClose;
+
+    /// <summary>
+    /// Opens the Settings dialogue, or brings it forward if it is open. Not modal, as in RailReader2:
+    /// a highlight change can be watched on the page while it is made.
+    /// </summary>
+    private void ShowSettings()
+    {
+        if (_settingsWindow is { } open) { open.Activate(); return; }
+        var settings = new SettingsViewModel(_viewModel);
+        var window = new SettingsWindow(settings);
+        settings.RestartRequested += () =>
+        {
+            _restartAfterClose = true;
+            window.Close();
+            Close();   // OnClosing saves the position, then relaunches
+        };
+        window.Closed += (_, _) => _settingsWindow = null;
+        _settingsWindow = window;
+        window.Show(this);
+    }
+
+    /// <summary>
+    /// Starts Rail Narrator again with the document that was open, after this instance has saved
+    /// where the reader was. The new instance resumes there (a document opened from the command
+    /// line is loaded, never played).
+    /// </summary>
+    private void Relaunch()
+    {
+        try
+        {
+            string? executable = Environment.ProcessPath;
+            if (executable is null) return;
+            var start = new System.Diagnostics.ProcessStartInfo(executable) { UseShellExecute = false };
+            // Run as "dotnet rail-narrator.dll": the host needs the assembly again.
+            if (string.Equals(Path.GetFileNameWithoutExtension(executable), "dotnet", StringComparison.OrdinalIgnoreCase))
+                start.ArgumentList.Add(typeof(MainWindow).Assembly.Location);
+            if (_viewModel.DocumentPath is { } document) start.ArgumentList.Add(document);
+            System.Diagnostics.Process.Start(start);
+        }
+        catch (Exception)
+        {
+            // Nothing to report to: this window is closing. The reader can start the app again.
+        }
     }
 
     /// <summary>
@@ -103,6 +151,7 @@ public partial class MainWindow : Window
         try { await _viewModel.DisposeAsync(); }
         catch (Exception) { /* the position may be lost, but closing must not crash */ }
         _closeReady = true;
+        if (_restartAfterClose) Relaunch();
         Close();
     }
 

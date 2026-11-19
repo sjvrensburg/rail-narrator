@@ -208,3 +208,48 @@ public sealed class LayoutModelResolverTests : IDisposable
         Assert.Null(Resolve("auto", Path.Combine(_app, "missing.onnx")));
     }
 }
+
+/// <summary>
+/// An API key may be typed into the Settings dialogue and stored in the settings file, so the file
+/// is readable by its owner only, and a stored key wins over the environment variable.
+/// </summary>
+public sealed class SettingsStoreKeyTests : IDisposable
+{
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), "rn-settings-keys-" + Guid.NewGuid().ToString("N"));
+
+    public void Dispose() { if (Directory.Exists(_dir)) Directory.Delete(_dir, recursive: true); }
+
+    [Fact]
+    public void TheSettingsFile_IsReadableByItsOwnerOnly_EvenIfItWasNot()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        string path = Path.Combine(_dir, "settings.json");
+        Directory.CreateDirectory(_dir);
+        File.WriteAllText(path, "{}");
+        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+
+        var store = new RailNarrator.Infrastructure.SettingsStore(path);
+        store.Save(RailNarrator.Infrastructure.RailNarratorSettings.Default with { MathLlmApiKey = "sk-test" });
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
+        Assert.Equal("sk-test", store.Load().MathLlmApiKey);
+        Assert.False(File.Exists(path + ".tmp"));
+    }
+
+    [Fact]
+    public void AStoredKey_WinsOverTheEnvironmentVariable_WhichIsUsedOtherwise()
+    {
+        string variable = "RN_TEST_KEY_" + Guid.NewGuid().ToString("N");
+        Environment.SetEnvironmentVariable(variable, "from-environment");
+        try
+        {
+            var settings = RailNarrator.Infrastructure.RailNarratorSettings.Default with { MathLlmApiKeyEnvVar = variable };
+            Assert.Equal("from-environment", settings.ResolveMathApiKey());
+            Assert.Equal("typed", (settings with { MathLlmApiKey = " typed " }).ResolveMathApiKey());
+            Assert.Equal("from-environment", (settings with { MathLlmApiKey = "  " }).ResolveMathApiKey());
+            Assert.Null((settings with { MathLlmApiKeyEnvVar = variable + "_UNSET" }).ResolveMathApiKey());
+            Assert.Null(RailNarrator.Infrastructure.RailNarratorSettings.Default.ResolveVlmApiKey());
+        }
+        finally { Environment.SetEnvironmentVariable(variable, null); }
+    }
+}

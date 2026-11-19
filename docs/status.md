@@ -7,7 +7,7 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 534 passing, 9 opt-in skips, 0 warnings
+## Verified by automated tests — 546 passing, 9 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
@@ -15,8 +15,8 @@ claims, and only the second one is worth relying on.
 | `RailNarrator.Pdf.Tests` | 58 (+5 opt-in) | A layout model's own reading order kept when its blocks arrive most confident first, with and without a duplicate block for Core to remove; Fit-width as a mode: the zoom following the page shown and the view's width, a zoom the reader chose surviving a resize and a page turn, fitting again on request, limits and unusable stored values; Page rasters for the reading surface rendered on a worker: page sizes read at open, rasters delivered in the order asked and once each, a render the reader has paged past abandoned (and one that cannot be cancelled dropped, not handed over), a render still wanted carried on, a page that cannot be rendered reported once, colour filters applied there and blank paper's colour matching each filter's own; Layout analysis that fails to start, or fails mid-document, finishes on the CPU fallback from the page that failed and says so once, and the source then reports it so the snapshot is not cached under the GPU key; opt-in, the `Cpu` setting never uses the GPU, and (`RN_WEBGPU_INTEGRATION=1`) the GPU gives the same blocks, kinds, reading units and geometry within 0.1 pt as the CPU; A passage crop is a PNG of its ink; **Real PDFs** through the real RailReaderCore pipeline, including a cached snapshot building the same plan as a fresh one; opt-in, the real PP-DocLayoutV3 model through the adapter |
 | `RailNarrator.Speech.Tests` | 48 (+3 opt-in) | Opt-in, real Kokoro speech holding acronyms and words the dictionary lacks aligned word by word; PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
 | `RailNarrator.Audio.Tests` | 43 (+1 opt-in) | Resampler (polyphase path equal to the direct sinc filter on four rate pairs), time-stretcher (fast grain search equal to the direct search at three rates), playback engine against a controllable fake device, engine lock ordering, coordinator-plus-engine transition stress |
-| `RailNarrator.Infrastructure.Tests` | 22 | Cache round-trips and waveform integrity, including same-length replacement; extraction-cache keying, degraded and encrypted documents never stored, corrupt entries treated as misses |
-| `RailNarrator.Inference.Tests` | 106 | ClearSpeak-style reading of LaTeX (powers, fractions, roots, quantities, derivatives, sums, functions, cases, Unicode, text with `$…$`, malformed input); thinking-policy and out-of-tokens retry; transcription fallback; Maths interpretation: notation validator, image and thinking-switch fallbacks, one repair turn, cut-off responses refused; golden maths semantics, response validator, endpoint client |
+| `RailNarrator.Infrastructure.Tests` | 24 | The settings file written owner-only (and an older, wider one narrowed), a stored API key winning over the environment variable; Cache round-trips and waveform integrity, including same-length replacement; extraction-cache keying, degraded and encrypted documents never stored, corrupt entries treated as misses |
+| `RailNarrator.Inference.Tests` | 116 | The Settings dialogue's endpoint test telling a listed model, an unlisted one, a refused key, a wrong address and nothing answering apart, without the key in its message; ClearSpeak-style reading of LaTeX (powers, fractions, roots, quantities, derivatives, sums, functions, cases, Unicode, text with `$…$`, malformed input); thinking-policy and out-of-tokens retry; transcription fallback; Maths interpretation: notation validator, image and thinking-switch fallbacks, one repair turn, cut-off responses refused; golden maths semantics, response validator, endpoint client |
 
 Run them with (and see `testing-real-world.md` for the real models, GUI and audio):
 
@@ -896,3 +896,18 @@ threads meeting.
     "maxDynamic…BuffersPerPipelineLayout artificially reduced" warnings, which Dawn writes to
     standard error itself, outside ONNX Runtime's logging; silencing them would mean redirecting
     the process's standard error while the GPU device is created.
+75. **A Settings dialogue** (File ▸ Settings…, Ctrl+,), laid out as RailReader2's: pages on the
+    left (Reading, Speech, Maths, Document, Settings file), every change saved as it is made, model
+    paths and the vision endpoint behind "Show advanced settings". Highlight opacity and contrast,
+    following and reduced motion apply at once; speech, maths, layout and what is read apply after
+    a restart, which the dialogue offers and which reopens the document where the reader was. An
+    endpoint's key comes from a named environment variable or is stored in the settings file,
+    which is then written mode 0600 from creation (an older, wider file is narrowed); a stored key
+    wins over the variable. "Test" asks the endpoint for its models with the values as typed and
+    says which part is wrong (address, key or model), never showing the key. Covered by Inference
+    tests of the probe and Infrastructure tests of the file mode and key precedence. Checked
+    under Xvfb with a local fake endpoint that requires a key: typed address, model and key were
+    saved (`-rw-------`, key stored), Test reported "127.0.0.1 answered and offers local-model",
+    "Restart now" relaunched with the same document and the dialogue then showed no restart
+    pending. *Not verified:* against the reader's Qwen endpoint, and that the restarted
+    application then interprets maths through an endpoint configured this way.

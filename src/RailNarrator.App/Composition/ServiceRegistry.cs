@@ -27,7 +27,12 @@ namespace RailNarrator.App.Composition;
 public sealed class ServiceRegistry : IAsyncDisposable
 {
     public required SettingsStore Settings { get; init; }
-    public required RailNarratorSettings CurrentSettings { get; init; }
+    /// <summary>
+    /// The settings the application started with. The Settings dialogue updates the reading
+    /// preferences in it that apply at once; the engines were built from the rest, which change
+    /// only with a restart.
+    /// </summary>
+    public required RailNarratorSettings CurrentSettings { get; set; }
     public required RailReaderExtractionSource Extraction { get; init; }
 
     /// <summary>Extraction through the on-disk snapshot cache. Use this to extract; <see cref="Extraction"/> for display.</summary>

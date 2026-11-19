@@ -131,8 +131,9 @@ Recorded in `docs/decisions/`, each with the measurement that drove it:
 - **Your settings are not shared with RailReader2.** Core's `AppConfig` hard-codes
   `~/.config/railreader2` and creates it on access; this app uses its own XDG
   directories and an inert annotation store.
-- **Nothing is uploaded without an explicitly configured remote endpoint**, and API
-  keys are read from environment variables, never persisted.
+- **Nothing is uploaded without an explicitly configured remote endpoint.** An API key
+  is either read from an environment variable you name, or typed into Settings and
+  stored in `settings.json`, which is then written readable by you only (mode 0600).
 - **A document is loaded, never auto-played.** Including on restore.
 
 ## Release
