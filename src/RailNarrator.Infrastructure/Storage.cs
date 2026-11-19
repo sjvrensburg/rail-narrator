@@ -77,8 +77,10 @@ public static class XdgPaths
 
 /// <summary>Persisted application settings.</summary>
 /// <remarks>
-/// No credential is stored here. API keys belong in the environment or a mode-0600 file the user
-/// controls, so that a settings file copied for a bug report cannot leak one.
+/// An API key may be stored here when the reader types one into the Settings dialogue
+/// (<see cref="MathLlmApiKey"/>, <see cref="VlmApiKey"/>); the file is then written readable by its
+/// owner only (<see cref="SettingsStore"/>). Naming an environment variable instead keeps the key
+/// out of the file, which is safer when the file is copied for a bug report.
 /// </remarks>
 public sealed record RailNarratorSettings
 {
@@ -120,8 +122,11 @@ public sealed record RailNarratorSettings
     /// <summary>Text LLM endpoint for verbalisation. Local by default; remote is opt-in.</summary>
     public string? MathLlmBaseUrl { get; init; }
     public string? MathLlmModel { get; init; }
-    /// <summary>Name of an environment variable holding the key. The key itself is never persisted.</summary>
+    /// <summary>Name of an environment variable holding the key, used when <see cref="MathLlmApiKey"/> is empty.</summary>
     public string? MathLlmApiKeyEnvVar { get; init; }
+
+    /// <summary>The key itself, typed into the Settings dialogue. Takes precedence over the variable.</summary>
+    public string? MathLlmApiKey { get; init; }
 
     /// <summary>
     /// When a reasoning model may think before interpreting maths: <c>Off</c>, <c>EquationsOnly</c>
@@ -141,6 +146,7 @@ public sealed record RailNarratorSettings
     public string? VlmBaseUrl { get; init; }
     public string? VlmModel { get; init; }
     public string? VlmApiKeyEnvVar { get; init; }
+    public string? VlmApiKey { get; init; }
 
     public NarrationFilterSettings Filters { get; init; } = NarrationFilterSettings.Default;
     public OcrPolicy Ocr { get; init; } = OcrPolicy.Full;
@@ -193,12 +199,19 @@ public sealed record RailNarratorSettings
     public IReadOnlyDictionary<string, string> PronunciationDictionary { get; init; }
         = new Dictionary<string, string>(StringComparer.Ordinal);
 
-    /// <summary>Resolves an API key from the named environment variable, or null.</summary>
-    public string? ResolveMathApiKey()
-        => string.IsNullOrEmpty(MathLlmApiKeyEnvVar) ? null : Environment.GetEnvironmentVariable(MathLlmApiKeyEnvVar);
+    /// <summary>The maths endpoint's key: the stored key, else the named environment variable's value, else null.</summary>
+    public string? ResolveMathApiKey() => ResolveApiKey(MathLlmApiKey, MathLlmApiKeyEnvVar);
 
-    public string? ResolveVlmApiKey()
-        => string.IsNullOrEmpty(VlmApiKeyEnvVar) ? null : Environment.GetEnvironmentVariable(VlmApiKeyEnvVar);
+    public string? ResolveVlmApiKey() => ResolveApiKey(VlmApiKey, VlmApiKeyEnvVar);
+
+    /// <summary>A stored key wins; otherwise the variable is read from this process's environment.</summary>
+    public static string? ResolveApiKey(string? stored, string? environmentVariable)
+    {
+        if (!string.IsNullOrWhiteSpace(stored)) return stored.Trim();
+        if (string.IsNullOrWhiteSpace(environmentVariable)) return null;
+        string? value = Environment.GetEnvironmentVariable(environmentVariable.Trim());
+        return string.IsNullOrWhiteSpace(value) ? null : value;
+    }
 
     public static RailNarratorSettings Default => new();
 }
@@ -250,18 +263,34 @@ public sealed class SettingsStore
     /// <summary>Set when <see cref="Load"/> fell back to defaults, so the UI can say so.</summary>
     public string? LastError { get; private set; }
 
+    /// <summary>
+    /// Writes the settings, readable and writable by their owner only (mode 0600), because the file
+    /// may hold an API key.
+    /// </summary>
     public void Save(RailNarratorSettings settings)
     {
         ArgumentNullException.ThrowIfNull(settings);
         lock (_gate)
         {
             // Write to a temporary file and rename, so a crash mid-write cannot leave a truncated
-            // settings file that resets every preference on next start.
+            // settings file that resets every preference on next start. The temporary file is
+            // created with the final mode, so the key is never on disk readable by others, not even
+            // for the moment before a chmod.
             string temp = _path + ".tmp";
-            File.WriteAllText(temp, JsonSerializer.Serialize(settings, Options));
+            File.Delete(temp);   // a stale one from a crash may have a wider mode
+            var options = new FileStreamOptions { Mode = FileMode.CreateNew, Access = FileAccess.Write };
+            if (!OperatingSystem.IsWindows()) options.UnixCreateMode = OwnerOnly;
+            using (var stream = new FileStream(temp, options))
+            using (var writer = new StreamWriter(stream))
+                writer.Write(JsonSerializer.Serialize(settings, Options));
             File.Move(temp, _path, overwrite: true);
+            // A file written by an older version keeps its mode through the rename above only if
+            // the rename replaced it; make sure, so an existing world-readable file is narrowed.
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(_path, OwnerOnly);
         }
     }
+
+    private const UnixFileMode OwnerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite;
 }
 
 /// <summary>

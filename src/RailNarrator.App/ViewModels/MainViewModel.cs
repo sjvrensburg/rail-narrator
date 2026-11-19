@@ -113,6 +113,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         Zoom200 = new RelayCommand(() => ApplyZoom(2.0), null, OnCommandError);
         Zoom400 = new RelayCommand(() => ApplyZoom(4.0), null, OnCommandError);
         Zoom800 = new RelayCommand(() => ApplyZoom(8.0), null, OnCommandError);
+        OpenSettings = new RelayCommand(() => SettingsRequested?.Invoke());
         TestMathEndpoint = new RelayCommand(() => TestMathEndpointAsync(), () => !Busy, OnCommandError);
         TestVisionEndpoint = new RelayCommand(() => TestVisionEndpointAsync(), () => !Busy, OnCommandError);
         DownloadKokoroModel = new RelayCommand(() => DownloadModelAsync(ModelManifest.KokoroFp16), () => !Busy, OnCommandError);
@@ -512,6 +513,11 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public RelayCommand Zoom200 { get; }
     public RelayCommand Zoom400 { get; }
     public RelayCommand Zoom800 { get; }
+    /// <summary>Opens the Settings dialogue (File ▸ Settings…, Ctrl+,). The window handles it.</summary>
+    public RelayCommand OpenSettings { get; }
+
+    public event Action? SettingsRequested;
+
     public RelayCommand TestMathEndpoint { get; }
     public RelayCommand TestVisionEndpoint { get; }
     public RelayCommand DownloadKokoroModel { get; }
@@ -1089,7 +1095,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         finally { Busy = false; }
     }
 
-    /// <summary>Persists a settings change. Never writes a credential.</summary>
+    /// <summary>Persists a settings change: reads the file, applies <paramref name="update"/>, writes it back (owner-only).</summary>
     public void PersistSettings(Func<RailNarratorSettings, RailNarratorSettings> update)
     {
         var current = _services.Settings.Load();

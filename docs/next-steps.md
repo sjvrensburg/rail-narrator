@@ -139,6 +139,6 @@ ready. The preparing card covers the case that mattered (a start that has to wai
 4. **Sideways pages with no Rotate attribute.** The layout model sees the page unrotated and
    loses a line. Detect the orientation and rotate the raster before layout (application side,
    since Core cannot change)? Or leave it, since such pages are rare?
-5. **Which LLM endpoint on the new system?** Defaults assume a local server on `:8088`. A
-   remote API would need `MathLlmApiKeyEnvVar` and means sending page images off the machine.
-   Say whether that is acceptable.
+5. **Which LLM endpoint on the new system?** Set in Settings ▸ Maths (address, model, and a key
+   from an environment variable or stored in the owner-only settings file). A remote API means
+   sending page images off the machine.
