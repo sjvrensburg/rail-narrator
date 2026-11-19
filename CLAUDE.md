@@ -28,6 +28,10 @@ tools/RailNarrator.Smoke/bin/Release/net10.0/rail-narrator-smoke all --kokoro-mo
 dotnet build tools/RailNarrator.MathBench -c Release
 tools/RailNarrator.MathBench/bin/Release/net10.0/rail-narrator-mathbench paper.pdf PP-DocLayoutV3.onnx [--pages 2-8] [--only 12,24] [--thinking off|equations|always]
 
+# Reading order through the adapter: blocks read after the block below them (run before and after a Core upgrade)
+dotnet build tools/RailNarrator.OrderSurvey -c Release
+tools/RailNarrator.OrderSurvey/bin/Release/net10.0/rail-narrator-order-survey heron <heron-int8.onnx> out.json [--max-pages 20] <pdf-or-dir>...
+
 ./packaging/build-release.sh                       # self-contained linux-x64 archive into dist/
 bash tools/setup-word-alignment.sh                 # optional MFA runtime (needs micromamba, several GB)
 bash tools/kokoro-webgpu-model.sh                  # optional: Kokoro on the GPU via WebGPU (ADR-0007)
