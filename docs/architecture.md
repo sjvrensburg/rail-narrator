@@ -185,6 +185,11 @@ differently:
 2. **Verbalise** — `OpenAiCompatibleMathVerbaliser`, a new service. Core's
    interface semantics are deliberately not stretched to cover narration planning.
 
+Each model is reached through an OpenAI-compatible endpoint or, by the reader's choice, through
+Claude (ADR-0010): Core's `AnthropicVlmClient` for transcription, and `ClaudeMathVerbaliser` and
+`ClaudeMathInterpreter` here. The prompts, the validators and the reading by rule are the same
+either way; only the transport differs.
+
 Between them sits `MathResponseValidator`, the boundary between untrusted model
 output and the plan. It rejects LaTeX in the spoken text, invented source ids,
 coordinates and audio times, over-length output, malformed JSON; it drops an

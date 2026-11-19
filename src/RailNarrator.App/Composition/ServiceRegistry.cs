@@ -204,7 +204,26 @@ public sealed class ServiceRegistry : IAsyncDisposable
         IMathTranscriber? transcriber = null;
         IMathInterpreter? interpreter = null;
         ISegmentResolver? segmentResolver = null;
-        if (!string.IsNullOrWhiteSpace(settings.MathLlmBaseUrl) && !string.IsNullOrWhiteSpace(settings.MathLlmModel))
+        var mathThinking = settings.EffectiveMathThinking switch
+        {
+            MathThinkingPolicy.Off => MathThinking.Off,
+            MathThinkingPolicy.Always => MathThinking.Always,
+            _ => MathThinking.EquationsOnly,
+        };
+        if (settings.MathLlmProvider == LlmProvider.Anthropic)
+        {
+            // Claude: choosing it is the configuration. The address is optional (a gateway), the
+            // model defaults, and without a key here the SDK looks for one itself.
+            var claude = new ClaudeEndpointSettings(settings.MathLlmModel, settings.ResolveMathApiKey(), settings.MathLlmBaseUrl);
+            verbaliser = new ClaudeMathVerbaliser(claude);
+            var claudeInterpreter = new ClaudeMathInterpreter(claude, thinking: mathThinking);
+            interpreter = claudeInterpreter;
+            segmentResolver = new MathInterpretationResolver(interpreter, extraction, new DiskTextCache(),
+                PlannerOptionsFor(settings, interpret: true), reader: claudeInterpreter);
+            notes.Add($"Maths is interpreted by Claude ({claude.EffectiveModel}): each passage with maths is sent to {claude.Address} " +
+                      "as a page image with the text around it.");
+        }
+        else if (!string.IsNullOrWhiteSpace(settings.MathLlmBaseUrl) && !string.IsNullOrWhiteSpace(settings.MathLlmModel))
         {
             verbaliser = new OpenAiCompatibleMathVerbaliser(new MathEndpointSettings(
                 settings.MathLlmBaseUrl, settings.MathLlmModel, settings.ResolveMathApiKey()));
@@ -213,12 +232,7 @@ public sealed class ServiceRegistry : IAsyncDisposable
             interpreter = new OpenAiCompatibleMathInterpreter(new MathEndpointSettings(
                 settings.MathLlmBaseUrl, settings.MathLlmModel, settings.ResolveMathApiKey(),
                 Temperature: 0.2, MaxTokens: 4000, MaxRetries: 1, RequestTimeout: TimeSpan.FromMinutes(3)),
-                thinking: settings.EffectiveMathThinking switch
-                {
-                    MathThinkingPolicy.Off => MathThinking.Off,
-                    MathThinkingPolicy.Always => MathThinking.Always,
-                    _ => MathThinking.EquationsOnly,
-                });
+                thinking: mathThinking);
             // A refused interpretation is read mechanically from the same model's transcription of
             // the passage image, rather than from the garbled text layer.
             segmentResolver = new MathInterpretationResolver(interpreter, extraction, new DiskTextCache(),
@@ -228,10 +242,17 @@ public sealed class ServiceRegistry : IAsyncDisposable
         {
             notes.Add("No LLM is configured for maths. Sentences with maths are read as printed and equations are " +
                       "announced as unreadable; set MathLlmBaseUrl and MathLlmModel (any OpenAI-compatible endpoint, " +
-                      "ideally one that accepts images) to have them interpreted.");
+                      "ideally one that accepts images), or choose Claude, in Settings to have them interpreted.");
         }
 
-        if (!string.IsNullOrWhiteSpace(settings.VlmBaseUrl) && !string.IsNullOrWhiteSpace(settings.VlmModel))
+        if (settings.VlmProvider == LlmProvider.Anthropic)
+        {
+            transcriber = new VlmMathTranscriber(new RailReader.Core.Vlm.Anthropic.AnthropicVlmClient(),
+                new VlmEndpointConfig(settings.VlmBaseUrl, string.IsNullOrWhiteSpace(settings.VlmModel) ? ClaudeEndpointSettings.DefaultModel : settings.VlmModel,
+                    settings.ResolveVlmApiKey()) { Provider = RailReader.Core.Models.VlmProvider.Anthropic },
+                extraction);
+        }
+        else if (!string.IsNullOrWhiteSpace(settings.VlmBaseUrl) && !string.IsNullOrWhiteSpace(settings.VlmModel))
         {
             var vlm = new RailReader.Core.Vlm.OpenAI.OpenAIVlmClient();
             transcriber = new VlmMathTranscriber(vlm,

@@ -123,6 +123,22 @@ public sealed class SettingsStoreFollowModeTests : IDisposable
         Assert.Contains("\"FollowMode\": \"Off\"", File.ReadAllText(path));
         Assert.Equal(FollowMode.Off, store.Load().FollowMode);
     }
+
+    [Fact]
+    public void TheMathsProviders_AreOpenAiCompatibleUnlessChosen_AndSavedByName()
+    {
+        string path = Path.Combine(_dir, "settings.json");
+        var store = new RailNarrator.Infrastructure.SettingsStore(path);
+        // A settings file from before the choice existed keeps its meaning.
+        File.WriteAllText(path, """{ "MathLlmBaseUrl": "http://127.0.0.1:8088/v1", "MathLlmModel": "m" }""");
+        Assert.Equal(RailNarrator.Infrastructure.LlmProvider.OpenAiCompatible, store.Load().MathLlmProvider);
+        Assert.Equal(RailNarrator.Infrastructure.LlmProvider.OpenAiCompatible, store.Load().VlmProvider);
+
+        store.Save(store.Load() with { MathLlmProvider = RailNarrator.Infrastructure.LlmProvider.Anthropic });
+        Assert.Contains("\"MathLlmProvider\": \"Anthropic\"", File.ReadAllText(path));
+        Assert.Equal(RailNarrator.Infrastructure.LlmProvider.Anthropic, store.Load().MathLlmProvider);
+        Assert.Equal(RailNarrator.Infrastructure.LlmProvider.OpenAiCompatible, store.Load().VlmProvider);
+    }
 }
 
 /// <summary>Which layout model runs, and on which file per device (ADR-0008).</summary>

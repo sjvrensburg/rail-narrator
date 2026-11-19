@@ -8,10 +8,12 @@ half: running the real models, the real GUI and the real audio path. All the mea
 
 | Thing | Where it came from | Setting / variable |
 |---|---|---|
+| Phonon TTS (the automatic choice when installed; ADR-0009) | `tools/setup-phonon.sh` (needs git and cargo; builds Gradium's C library, fetches the model and voices into `~/.local/share/rail-narrator/phonon`) | `SpeechProviderId: "auto"` (default), `PhononLibraryPath`, `PhononModelDirectory`, `PhononVoiceId`; tests: `RAIL_NARRATOR_PHONON_DIR` |
 | Kokoro TTS (`kokoro-fp16.onnx`) | `docs/model-manifest.json` | `KokoroModelPath`, or `~/.local/share/rail-narrator/models/kokoro-fp16.onnx`; tests: `RAIL_NARRATOR_KOKORO_MODEL` |
 | Docling Heron layout model (default; ADR-0008) | Models menu, or RailReader2's downloads in `~/.config/railreader2/models` (found there automatically) | `LayoutAnalyzer: "heron"` or automatic; tests: `RAIL_NARRATOR_HERON_MODEL` (INT8), `RAIL_NARRATOR_HERON_GPU_MODEL` (FP32) |
 | PP-DocLayoutV3 layout model (`.onnx`) | RailReader2's model download (was at `~/.config/railreader2/models/PP-DocLayoutV3.onnx`) | `LayoutAnalyzer: "pp-doclayout-v3"`, `LayoutModelPath`; tests: `RAIL_NARRATOR_LAYOUT_MODEL` |
 | A multimodal LLM behind an OpenAI-compatible endpoint | llama.cpp `llama-server` (Vulkan build), loading `Ornith-1.5-35B-Q4_K_M.gguf` with `--mmproj mmproj-Ornith-1.5-35B-A3B-f16.gguf --jinja --parallel 1 --ctx-size 131072 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --alias ornith-1.5-35b-a3b --port 8088`. `--jinja` is needed for the thinking switch (`chat_template_kwargs.enable_thinking`) and `--mmproj` for page images | `MathLlmBaseUrl`, `MathLlmModel`, `MathLlmThinking` |
+| Claude, in place of that endpoint (optional; ADR-0010) | An Anthropic API key, or a profile from `ant auth login`. Each passage with maths is sent to Anthropic | `MathLlmProvider: "Anthropic"` (and `VlmProvider` for the vision model); `MathLlmModel` empty means `claude-opus-5-5`; `MathLlmBaseUrl` only for a gateway; tests: `RN_CLAUDE_INTEGRATION=1` (five tests, a few small paid requests), optionally `RN_CLAUDE_MODEL` |
 | MFA word alignment (optional, several GB) | `bash tools/setup-word-alignment.sh` | `MfaExecutable`, `MfaDictionaryPath`, `MfaAcousticModelPath`, `MfaG2pModelPath`; tests: `RN_MFA_*` including `RN_MFA_G2P` |
 | `libportaudio.so.2` | distro package | — |
 | WebGPU Kokoro model (optional) | `bash tools/kokoro-webgpu-model.sh` (downloads the fp32 export, converts it; ADR-0007) | `KokoroAcceleration: "Auto"` (default), `KokoroGpuModelPath`; tests: `RN_WEBGPU_INTEGRATION=1` with `RAIL_NARRATOR_KOKORO_MODEL` and `RAIL_NARRATOR_KOKORO_GPU_MODEL` |
@@ -21,7 +23,7 @@ Models are never bundled and never downloaded implicitly. Copy them, or download
 purpose.
 
 An example `settings.json` (in `$XDG_CONFIG_HOME/rail-narrator/`). The setting names are the
-properties of `AppSettings` in `src/RailNarrator.Infrastructure/Storage.cs`:
+properties of `RailNarratorSettings` in `src/RailNarrator.Infrastructure/Storage.cs`:
 
 ```json
 {
@@ -44,9 +46,13 @@ that one.
 ```bash
 dotnet build tools/RailNarrator.MathBench -c Release
 tools/RailNarrator.MathBench/bin/Release/net10.0/rail-narrator-mathbench paper.pdf PP-DocLayoutV3.onnx \
-    [--endpoint URL] [--model NAME] [--pages 2-8] [--only 12,24] [--thinking off|equations|always] \
-    [--max-tokens 4000] [--no-images] [--no-reader]
+    [--provider openai|claude] [--endpoint URL] [--model NAME] [--pages 2-8] [--only 12,24] \
+    [--thinking off|equations|always] [--max-tokens 4000] [--no-images] [--no-reader]
 ```
+
+With `--provider claude` the passages go to Anthropic with the SDK's own credentials, `--model`
+defaults to `claude-opus-5-5` and every line costs money as well as time, so try `--pages` or
+`--only` first.
 
 It prints each pending passage (`#index`, kind, page, seconds, provenance), the printed text,
 the spoken text and any warnings, and then a tally. Nothing is cached, so each line costs a

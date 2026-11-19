@@ -52,21 +52,25 @@
   </Window.Styles>
 
   <Window.Resources>
-    <!-- One endpoint: the language model's and the vision model's are edited alike. -->
+    <!-- One endpoint: the language model's and the vision model's are edited alike, whichever service they use. -->
     <DataTemplate x:Key="EndpointEditor" x:DataType="vm:EndpointSettingsViewModel">
-      <Grid ColumnDefinitions="180,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="6">
-        <TextBlock Classes="label" Text="Address" />
-        <TextBox Grid.Column="1" Text="{Binding Url}" PlaceholderText="https://…/v1" />
+      <Grid ColumnDefinitions="180,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="6">
+        <TextBlock Classes="label" Text="Service" />
+        <ComboBox Grid.Column="1" ItemsSource="{Binding Providers}" SelectedItem="{Binding Provider}" MinWidth="260" />
+        <TextBlock Grid.Row="1" Grid.Column="1" Classes="hint" Text="{Binding Provider.Description}" />
 
-        <TextBlock Grid.Row="1" Classes="label" Text="Model" />
-        <AutoCompleteBox Grid.Row="1" Grid.Column="1" Text="{Binding Model, Mode=TwoWay}" ItemsSource="{Binding OfferedModels}"
-                         FilterMode="Contains" MinimumPrefixLength="0" PlaceholderText="model name" />
+        <TextBlock Grid.Row="2" Classes="label" Text="Address" />
+        <TextBox Grid.Row="2" Grid.Column="1" Text="{Binding Url}" PlaceholderText="{Binding UrlPlaceholder}" />
 
-        <TextBlock Grid.Row="2" Classes="label" Text="API key" VerticalAlignment="Top" Margin="0,6,0,0" />
-        <StackPanel Grid.Row="2" Grid.Column="1" Spacing="4">
+        <TextBlock Grid.Row="3" Classes="label" Text="Model" />
+        <AutoCompleteBox Grid.Row="3" Grid.Column="1" Text="{Binding Model, Mode=TwoWay}" ItemsSource="{Binding OfferedModels}"
+                         FilterMode="Contains" MinimumPrefixLength="0" PlaceholderText="{Binding ModelPlaceholder}" />
+
+        <TextBlock Grid.Row="4" Classes="label" Text="API key" VerticalAlignment="Top" Margin="0,6,0,0" />
+        <StackPanel Grid.Row="4" Grid.Column="1" Spacing="4">
           <RadioButton IsChecked="{Binding UsesVariable}" Content="From an environment variable (not stored)" />
           <TextBox Text="{Binding Variable}" IsEnabled="{Binding UsesVariable}" Margin="28,0,0,0"
-                   PlaceholderText="variable name, e.g. OPENAI_API_KEY" />
+                   PlaceholderText="{Binding VariablePlaceholder}" />
           <RadioButton IsChecked="{Binding UsesStoredKey}" Content="Stored in the settings file" />
           <Grid ColumnDefinitions="*,Auto" Margin="28,0,0,0" IsEnabled="{Binding UsesStoredKey}">
             <TextBox Text="{Binding Key}" PasswordChar="•" RevealPassword="{Binding #ShowKey.IsChecked}"
@@ -74,13 +78,13 @@
             <ToggleButton Name="ShowKey" Grid.Column="1" Content="Show" Margin="6,0,0,0" />
           </Grid>
         </StackPanel>
-        <TextBlock Grid.Row="3" Grid.Column="1" Classes="hint" Text="{Binding KeyStatus}" />
+        <TextBlock Grid.Row="5" Grid.Column="1" Classes="hint" Text="{Binding KeyStatus}" />
 
-        <StackPanel Grid.Row="4" Grid.Column="1" Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">
-          <Button Content="Test" Command="{Binding Test}" ToolTip.Tip="Asks the endpoint for its models with these values. Costs no tokens." />
+        <StackPanel Grid.Row="6" Grid.Column="1" Orientation="Horizontal" Spacing="8" Margin="0,4,0,0">
+          <Button Content="Test" Command="{Binding Test}" ToolTip.Tip="Asks the service for its models with these values. Costs no tokens." />
           <ProgressBar IsIndeterminate="True" Width="80" IsVisible="{Binding Testing}" VerticalAlignment="Center" />
         </StackPanel>
-        <TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding TestResult}" TextWrapping="Wrap"
+        <TextBlock Grid.Row="7" Grid.Column="1" Text="{Binding TestResult}" TextWrapping="Wrap"
                    Classes.pass="{Binding TestSucceeded}" Classes.fail="{Binding TestFailed}" />
       </Grid>
     </DataTemplate>
@@ -222,7 +226,7 @@
             </Grid>
 
             <TextBlock Classes="section" Text="Language model" />
-            <TextBlock Classes="hint" Text="Any OpenAI-compatible endpoint: a local server (llama.cpp, Ollama, LM Studio) or a hosted one. One that accepts images reads the equation from the page as well as from its text." />
+            <TextBlock Classes="hint" Text="A local server (llama.cpp, Ollama, LM Studio), a hosted OpenAI-compatible endpoint, or Claude. A model that accepts images reads the equation from the page as well as from its text." />
             <ContentControl Content="{Binding MathEndpoint}" ContentTemplate="{StaticResource EndpointEditor}" />
 
             <Border Classes="advblock" IsVisible="{Binding Advanced}">

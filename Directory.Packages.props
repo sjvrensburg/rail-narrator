@@ -5,20 +5,24 @@
     csproj is what makes "the build is reproducible" a checkable claim: one file lists every
     third-party version this product ships with.
 
-    RailReaderCore is pinned to 0.93.0, the version published on nuget.org from upstream commit
-    5b89cb310c43d2f96c650dbdb7e27d125dc60042 (tag v0.93.0). The investigation in docs/Rail Narrator
+    RailReaderCore is pinned to 0.94.0, the version published on nuget.org from upstream commit
+    9cf331bde5be8951677afb41d5a6c537cd83c1bb (tag v0.94.0). The investigation in docs/Rail Narrator
     implementation investigation.md inspected 0.89.0 (e7d41208). See docs/decisions/ADR-0001.
   -->
   <ItemGroup>
     <!-- PDF foundation: RailReaderCore. Never replaced by a second PDF stack. -->
-    <PackageVersion Include="RailReader.Core" Version="0.93.0" />
-    <PackageVersion Include="RailReader.Core.Pdfium" Version="0.93.0" />
-    <PackageVersion Include="RailReader.Renderer.Skia" Version="0.93.0" />
-    <PackageVersion Include="RailReader.Core.Analysis" Version="0.93.0" />
+    <PackageVersion Include="RailReader.Core" Version="0.94.0" />
+    <PackageVersion Include="RailReader.Core.Pdfium" Version="0.94.0" />
+    <PackageVersion Include="RailReader.Renderer.Skia" Version="0.94.0" />
+    <PackageVersion Include="RailReader.Core.Analysis" Version="0.94.0" />
     <!-- Opt-out GPU layout analysis (ONNX Runtime WebGPU plugin EP 0.6, matched to ORT 1.32). See ADR-0006. -->
-    <PackageVersion Include="RailReader.Core.Analysis.WebGpu" Version="0.93.0" />
-    <PackageVersion Include="RailReader.Core.Ocr.RapidOcr" Version="0.93.0" />
-    <PackageVersion Include="RailReader.Core.Vlm.OpenAI" Version="0.93.0" />
+    <PackageVersion Include="RailReader.Core.Analysis.WebGpu" Version="0.94.0" />
+    <PackageVersion Include="RailReader.Core.Ocr.RapidOcr" Version="0.94.0" />
+    <PackageVersion Include="RailReader.Core.Vlm.OpenAI" Version="0.94.0" />
+    <!-- Claude for maths, by the reader's choice of provider: Core's IVlmService for the transcriber,
+         and the official Anthropic SDK (the version Core 0.94.0 builds against) for interpretation. -->
+    <PackageVersion Include="RailReader.Core.Vlm.Anthropic" Version="0.94.0" />
+    <PackageVersion Include="Anthropic" Version="13.10.0" />
 
     <!-- Pinned to the same 3.119.* RailReader.Renderer.Skia uses, so one native binary serves both. -->
     <PackageVersion Include="SkiaSharp" Version="3.119.4" />
