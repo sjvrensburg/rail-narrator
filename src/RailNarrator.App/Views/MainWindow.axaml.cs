@@ -84,7 +84,7 @@ public partial class MainWindow : Window
     {
         if (_settingsWindow is { } open) { open.Activate(); return; }
         var settings = new SettingsViewModel(_viewModel);
-        var window = new SettingsWindow(settings);
+        var window = new SettingsWindow(settings) { FontSize = FontSize };
         settings.RestartRequested += () =>
         {
             _restartAfterClose = true;

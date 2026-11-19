@@ -911,3 +911,17 @@ threads meeting.
     "Restart now" relaunched with the same document and the dialogue then showed no restart
     pending. *Not verified:* against the reader's Qwen endpoint, and that the restarted
     application then interprets maths through an endpoint configured this way.
+76. **The window follows RailReader2's look** (the first of three GUI changes the reader asked for,
+    after comparing the two applications side by side). Light by default, dark as a setting; a
+    menu and panel text size (75 to 200 %), as RailReader2; both apply at once and at start.
+    RailReader2's Lucide icons and icon control replace the text glyphs; its flat tool buttons and
+    its tooltips placed above their control (on X11 a tooltip under the pointer swallowed clicks)
+    are used throughout. The toolbar holds only what a listener reaches for (transport with an
+    accent Play button, voice, speed, follow, colour filter, settings); page and zoom moved to the
+    status bar, as in RailReader2. The canvas around the page is RailReader2's grey (128) in the
+    light theme, and the opening and preparing cards use theme colours instead of hard-coded dark
+    ones; icon buttons have accessible names. Checked under Xvfb on a real paper: light theme with
+    the page and the grey canvas; Dark mode and 130 % text applied at once to the main window, its
+    canvas and Settings, were saved, and were applied again at the next start. *Not verified:* on
+    the reader's desktop, and the opening and preparing cards in either theme (no screenshot of
+    them since the change).

@@ -174,6 +174,12 @@ public sealed record RailNarratorSettings
     public bool FitWidth { get; init; } = true;
     public bool ReduceMotion { get; init; }
 
+    /// <summary>Dark theme for the window. Light by default, as RailReader2.</summary>
+    public bool DarkMode { get; init; }
+
+    /// <summary>Size of menu, toolbar and panel text, as a multiple of 14 px (0.75 to 2), as RailReader2.</summary>
+    public double UiFontScale { get; init; } = 1.0;
+
     /// <summary>RailReader colour filter for the page, by name: None, HighContrast, HighVisibility, Amber or Invert.</summary>
     public string ColourEffect { get; init; } = "None";
 

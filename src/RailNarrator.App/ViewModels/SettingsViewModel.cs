@@ -229,6 +229,30 @@ public sealed class SettingsViewModel : ViewModelBase
 
     public string SettingsFile => _services.Settings.FilePath;
 
+    // ---- Appearance: applies at once ---------------------------------------------------------
+
+    public bool DarkMode
+    {
+        get => _s.DarkMode;
+        set
+        {
+            SaveLive(s => s with { DarkMode = value });
+            App.ApplyAppearance(_s.DarkMode, _s.UiFontScale);
+        }
+    }
+
+    /// <summary>Menu, toolbar and panel text size as a percentage, 75 to 200.</summary>
+    public double UiTextSizePercent
+    {
+        get => Math.Round(_s.UiFontScale * 100);
+        set
+        {
+            SaveLive(s => s with { UiFontScale = Math.Clamp(Math.Round(value / 5) * 5, 75, 200) / 100.0 });
+            App.ApplyAppearance(_s.DarkMode, _s.UiFontScale);
+            OnPropertyChanged();
+        }
+    }
+
     // ---- Reading: applies at once ------------------------------------------------------------
 
     public double FollowAutoResumeSeconds
@@ -422,6 +446,8 @@ public sealed class SettingsViewModel : ViewModelBase
             ReduceMotion = _s.ReduceMotion,
             HighlightAlpha = _s.HighlightAlpha,
             HighlightHighContrast = _s.HighlightHighContrast,
+            DarkMode = _s.DarkMode,
+            UiFontScale = _s.UiFontScale,
         };
     }
 
@@ -461,6 +487,8 @@ public sealed class SettingsViewModel : ViewModelBase
             HighlightAlpha = 0,
             HighlightHighContrast = false,
             KokoroVoiceId = null,
+            DarkMode = false,
+            UiFontScale = 1,
         });
 
     private static string? Blank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();

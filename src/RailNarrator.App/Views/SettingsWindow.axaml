@@ -33,7 +33,9 @@
     <Style Selector="TabControl#Pages > TabItem">
       <Setter Property="Padding" Value="12,6" />
       <Setter Property="MinHeight" Value="0" />
-      <Setter Property="FontSize" Value="15" />
+      <!-- Fluent's tab headers are 24 px whatever the window's text size; follow the window instead,
+           so the page names scale with the text-size setting like everything else. -->
+      <Setter Property="FontSize" Value="{Binding $parent[Window].FontSize}" />
     </Style>
     <Style Selector="Border.advblock">
       <Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseLowBrush}" />
@@ -101,6 +103,25 @@
     </Border>
 
     <TabControl x:Name="Pages" TabStripPlacement="Left" Margin="8,8,8,0">
+
+      <!-- ================= Appearance ================= -->
+      <TabItem Header="Appearance">
+        <ScrollViewer Padding="8,0,16,16">
+          <StackPanel Spacing="6">
+            <TextBlock Classes="section first" Text="Theme" />
+            <CheckBox IsChecked="{Binding DarkMode}" Content="Dark mode" />
+            <TextBlock Classes="hint" Text="For the window, menus and panels. The page keeps its own colours; use the colour filter for that." />
+
+            <TextBlock Classes="section" Text="Menu and panel text size" />
+            <TextBlock Classes="hint" Text="Menus, the toolbar, panels and dialogues, icons included. The page is zoomed separately." />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <Slider Minimum="75" Maximum="200" Value="{Binding UiTextSizePercent}" Width="260"
+                      TickFrequency="5" IsSnapToTickEnabled="True" />
+              <TextBlock VerticalAlignment="Center" Text="{Binding UiTextSizePercent, StringFormat={}{0}%}" />
+            </StackPanel>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
 
       <!-- ================= Reading ================= -->
       <TabItem Header="Reading">

@@ -109,6 +109,8 @@ public sealed class PdfSurface : Control
         ClipToBounds = true;
 
         AttachedToVisualTree += (_, _) => RequestFrame();
+        // Light or dark chosen in Settings: the canvas around the page takes the new colour.
+        ActualThemeVariantChanged += (_, _) => InvalidateVisual();
         DetachedFromVisualTree += (_, _) => CloseDocument();
     }
 
@@ -638,7 +640,7 @@ public sealed class PdfSurface : Control
     public override void Render(DrawingContext context)
     {
         var bounds = new Rect(0, 0, Bounds.Width, Bounds.Height);
-        context.FillRectangle(Brushes.Black, bounds);
+        context.FillRectangle(CanvasBrush(), bounds);
         if (_source is not { } source || Bounds.Width <= 0) return;
 
         try
@@ -669,6 +671,15 @@ public sealed class PdfSurface : Control
             DrawRenderError(context, ex.Message);
         }
     }
+
+    /// <summary>
+    /// Around the page: the theme's canvas colour (RailReader2's mid grey in the light theme), so the
+    /// page reads as a sheet on a desk rather than floating in black.
+    /// </summary>
+    private IBrush CanvasBrush()
+        => this.TryFindResource("ReadingCanvasColor", ActualThemeVariant, out var value) && value is Color colour
+            ? new SolidColorBrush(colour)
+            : Brushes.Gray;
 
     private static void DrawRenderError(DrawingContext context, string message)
         => context.DrawText(new FormattedText($"Render error: {message}",
