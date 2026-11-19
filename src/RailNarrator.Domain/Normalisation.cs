@@ -331,6 +331,14 @@ public static class TextNormaliser
         int i = 0;
         while (i < input.Length)
         {
+            if (Dois.At(input, i) is int doiLength)
+            {
+                // The whole identifier, prefix and all, is one source range for "DOI link".
+                mappings.Add(new TextMapping(new TextRange(sb.Length, Dois.Spoken.Length), new TextRange(i, doiLength)));
+                sb.Append(Dois.Spoken);
+                i += doiLength;
+                continue;
+            }
             var match = SpeechExpansions.LongestMatchAt(input, i, table);
             if (match is { } m)
             {
@@ -612,6 +620,55 @@ internal static class EnglishNumbers
         foreach (var (scale, label) in new[] { (1_000_000_000L, "billion"), (1_000_000L, "million"), (1000L, "thousand"), (100L, "hundred") })
             if (n >= scale) return Integer(n / scale) + " " + label + (n % scale == 0 ? "" : " " + Integer(n % scale));
         throw new InvalidOperationException();
+    }
+}
+
+/// <summary>
+/// Digital Object Identifiers, read as "DOI link" rather than spelled out ("ten point one zero
+/// nine three slash…"), which no listener can use. The reader's choice, 2026-11-19.
+/// </summary>
+/// <remarks>
+/// Recognised as a doi.org link (with or without the scheme, "dx." or "www."), as "doi:" or
+/// "DOI" followed by the identifier, or as a bare identifier: "10.", a registrant code of four to
+/// nine digits, a slash and a suffix. Sentence punctuation after it stays: "…/nbag025." keeps
+/// its full stop.
+/// </remarks>
+public static class Dois
+{
+    public const string Spoken = "DOI link";
+
+    private static readonly System.Text.RegularExpressions.Regex Pattern = new(
+        @"\G(?:(?:https?://)?(?:dx\.|www\.)?doi\.org/|(?:doi|DOI)\s*:?\s*)?10\.\d{4,9}/\S+",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>The length of a DOI starting at <paramref name="offset"/>, or null.</summary>
+    public static int? At(string text, int offset)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        if (offset > 0 && (char.IsLetterOrDigit(text[offset - 1]) || text[offset - 1] is '/' or '.')) return null;
+        char c = text[offset];
+        if (c is not ('1' or 'h' or 'H' or 'd' or 'D' or 'w')) return null;
+        var m = Pattern.Match(text, offset);
+        if (!m.Success) return null;
+        int length = m.Length;
+        // Trailing punctuation belongs to the sentence, a closing bracket to the text around it
+        // unless the DOI opened one itself (suffixes such as "(02)00043-8" exist).
+        while (length > 0)
+        {
+            char last = text[offset + length - 1];
+            if (last is '.' or ',' or ';' or ':' or '"' or '\'' or '\u201D' or '\u2019') { length--; continue; }
+            if (last is ')' or ']')
+            {
+                var span = text.AsSpan(offset, length);
+                char open = last == ')' ? '(' : '[';
+                if (span.Count(open) < span.Count(last)) { length--; continue; }
+            }
+            break;
+        }
+        // The identifier must still have its suffix after the slash.
+        string kept = text.Substring(offset, length);
+        int slash = kept.IndexOf('/', kept.IndexOf("10.", StringComparison.Ordinal));
+        return slash >= 0 && slash < length - 1 ? length : null;
     }
 }
 

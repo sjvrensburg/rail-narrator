@@ -16,6 +16,11 @@ narration.
 
 Since PR #10:
 
+- **Phonon** (PR #37, ADR-0009) is a second speech engine and the automatic choice when
+  installed: Gradium's C library in process, real-time factor 0.061 on the laptop's CPU against
+  Kokoro's 0.224. A GPU build was measured and set aside (CUDA 0.017 but vendor-specific; Vulkan
+  no faster than the CPU, though it frees the CPU).
+
 - **Core 0.90.0** (PR #12), since moved to **0.91.0** (ONNX Runtime 1.32, WebGPU plugin 0.6), and the layout model runs on the GPU when one is usable, falling
   back to the CPU (PR #14, ADR-0006).
 - **Word highlighting for words the dictionary lacks** (PR #15): acronyms are spelled from the
@@ -116,19 +121,13 @@ ready. The preparing card covers the case that mattered (a start that has to wai
    562 DPI on the CPU, about 20 s a page here, to catch scans with a stray text layer. Keep it, lower
    the DPI, or OCR only when the page has ink outside its text?
 
-1. **How should equations be read by default?** The interpreter still makes meaning errors
-   even with the page image (the order of the transition polynomial was twice called "the
-   number of regimes"). The choices:
-   - keep interpretation as the default (current);
-   - read the notation for display equations and interpret only inline maths;
-   - interpret, but follow every interpreted equation with a short notation reading.
-2. **DOIs.** They are currently read as "ten point one zero one six slash …". Skip them, spell
-   them, or say "DOI link" in their place?
-3. **Author affiliations** on the first page are still read. Skip them like the other front
-   matter, or keep them, since some readers want to know where the work is from?
-4. **Sideways pages with no Rotate attribute.** The layout model sees the page unrotated and
+1. **Spoken maths, after the prompt change** (`status.md` item 82). The reader chose plain
+   language first, with notation spoken as words where the model is unsure or where a symbol
+   recurs, and shorter answers. Run it against the model (`rail-narrator-mathbench --only …`)
+   and listen; adjust `MaxNotationShare` and the length cap from what is heard.
+2. **Sideways pages with no Rotate attribute.** The layout model sees the page unrotated and
    loses a line. Detect the orientation and rotate the raster before layout (application side,
    since Core cannot change)? Or leave it, since such pages are rare?
-5. **Which LLM endpoint on the new system?** Set in Settings ▸ Maths (address, model, and a key
+3. **Which LLM endpoint on the new system?** Set in Settings ▸ Maths (address, model, and a key
    from an environment variable or stored in the owner-only settings file). A remote API means
    sending page images off the machine.

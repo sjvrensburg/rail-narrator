@@ -22,15 +22,12 @@ public sealed class InterpreterTests
         "en-GB");
 
     [Theory]
-    [InlineData("The short-run component h t equals a constant plus past shocks.", "h")]
-    [InlineData("The variance sigma squared depends on past shocks.", "sigma")]
-    [InlineData("It has a finite moment of order two plus phi for some positive phi.", "phi")]
     [InlineData("It equals x_t plus one.", "x_t")]
     [InlineData("The return equals its mean = zero.", "=")]
     [InlineData("The weight α is positive.", "α")]
+    [InlineData("The variance is \\sigma^2.", "\\")]
     [InlineData("The component ht is smooth.", "ht")]
-    [InlineData("The return at time t minus one is known.", "t")]
-    public void NotationIsRejected(string spoken, string culprit)
+    public void WrittenNotationAndGluedLetters_AreRejected(string spoken, string culprit)
     {
         var problems = SpokenMathsValidator.Problems(spoken, Request());
         Assert.NotEmpty(problems);
@@ -41,8 +38,27 @@ public sealed class InterpreterTests
     [InlineData("The short-run component of the variance equals a constant plus a weighted sum of past squared shocks, with an extra weight when a shock was negative.")]
     [InlineData("I think a listener hears what the weights do: by the time a shock is a week old, its effect has halved.")]
     [InlineData("All the weights are non-negative, and the GJR-GARCH model is a special case when the deterministic component is one.")]
-    public void PlainSpeechIsAccepted(string spoken)
+    // Notation spoken as words, beside its meaning or where the meaning is uncertain (prompt v4).
+    [InlineData("The conditional variance, sigma t squared, rises after a negative shock.")]
+    [InlineData("The short-run component h t equals a constant plus a weighted sum of past squared shocks.")]
+    [InlineData("It has a finite moment of order two plus phi, for some positive phi.")]
+    public void PlainSpeech_AndSpokenNotationBesideItsMeaning_AreAccepted(string spoken)
         => Assert.Empty(SpokenMathsValidator.Problems(spoken, Request()));
+
+    [Fact]
+    public void AnAnswerThatMostlyReadsNotation_IsRejected()
+    {
+        var problems = SpokenMathsValidator.Problems(
+            "h t equals omega plus alpha times epsilon t minus one squared plus beta h t minus one.", Request());
+        Assert.Contains(problems, p => p.Contains("mostly reads notation", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AnAnswerFarLongerThanThePassage_IsRejected()
+    {
+        string essay = string.Join(" ", Enumerable.Repeat("The variance responds to past shocks and decays slowly over time.", 12));
+        Assert.Contains(SpokenMathsValidator.Problems(essay, Request()), p => p.Contains("too long", StringComparison.Ordinal));
+    }
 
     private sealed class Stub : HttpMessageHandler
     {
@@ -122,7 +138,7 @@ public sealed class InterpreterTests
     [Fact]
     public async Task NotationGetsOneRepairTurn()
     {
-        var stub = new Stub(() => Answer("The component h t equals alpha zero plus past shocks."), () => Answer(Good));
+        var stub = new Stub(() => Answer("The component h_t equals α0 plus past shocks."), () => Answer(Good));
 
         var result = await Make(stub).InterpretAsync(Request());
 
@@ -136,7 +152,7 @@ public sealed class InterpreterTests
     [Fact]
     public async Task NotationAfterTheRepairIsRefused_NeverPassedThrough()
     {
-        var stub = new Stub(() => Answer("The component h t equals alpha zero."));
+        var stub = new Stub(() => Answer("The component h_t equals α0."));
 
         var result = await Make(stub).InterpretAsync(Request());
 
@@ -175,7 +191,7 @@ public sealed class InterpreterTests
     {
         // Out of tokens thinking, then notation twice: one thinking-off answer and one repair, then refused.
         var stub = new Stub(() => Answer("", finish: "length"),
-            () => Answer("The component h t equals alpha zero."), () => Answer("The component h t equals alpha zero."));
+            () => Answer("The component h_t equals α0."), () => Answer("The component h_t equals α0."));
 
         var result = await Make(stub).InterpretAsync(Request());
 
