@@ -101,6 +101,51 @@ public sealed class SourceMap
     }
 
     /// <summary>
+    /// The page the camera should show for a set of anchors, or null when none of them has geometry.
+    /// </summary>
+    /// <param name="anchorIds">The anchors of the cue or passage.</param>
+    /// <param name="wholePassage">
+    /// False for a cue that is read where it is printed (a word): the first page it has geometry on.
+    /// True for a cue with no timing inside it (a sentence, an equation, an interpreted passage):
+    /// the page that holds most of it, by highlighted area, and the earlier page on a tie.
+    /// </param>
+    /// <remarks>
+    /// A passage can cross a page break: a lead-in at the foot of one page and its equation at the
+    /// head of the next are one interpreted passage. With no timing inside it there is no telling
+    /// when the reading crosses the break, and guessing the moment would be an invented timing
+    /// (ADR-0004). Holding the first page left the view on the last few words of a page while the
+    /// equation overleaf was explained for fifteen seconds. Which page holds most of the passage is
+    /// a fact about the page, not a guess about the audio, so that page is framed and held. Pages
+    /// whose anchors are all empty rectangles are never chosen: there is nothing on them to frame.
+    /// </remarks>
+    public int? FramingPage(IEnumerable<string> anchorIds, bool wholePassage)
+    {
+        ArgumentNullException.ThrowIfNull(anchorIds);
+        var areaByPage = new SortedDictionary<int, double>();
+        foreach (var id in anchorIds)
+        {
+            if (!_anchors.TryGetValue(id, out var a)) continue;
+            double area = 0;
+            bool any = false;
+            foreach (var r in a.Rects)
+            {
+                if (r.IsEmpty) continue;
+                any = true;
+                area += (double)r.Width * r.Height;
+            }
+            if (!any) continue;
+            areaByPage[a.PageIndex] = areaByPage.GetValueOrDefault(a.PageIndex) + area;
+        }
+        if (areaByPage.Count == 0) return null;
+        if (!wholePassage) return areaByPage.Keys.First();
+        int best = -1;
+        double bestArea = double.NegativeInfinity;
+        foreach (var (page, area) in areaByPage)   // ascending, so the earlier page wins a tie
+            if (area > bestArea) { best = page; bestArea = area; }
+        return best;
+    }
+
+    /// <summary>
     /// The anchors a spoken offset belongs to — the second mapping. Returns every link covering the
     /// offset, so an equation and the clause containing it both light up rather than one of them
     /// winning arbitrarily.

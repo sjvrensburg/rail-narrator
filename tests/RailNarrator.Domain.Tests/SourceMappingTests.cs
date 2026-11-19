@@ -313,6 +313,59 @@ public sealed class CueValidationTests
 /// </summary>
 public sealed class SourceMapTests
 {
+    /// <summary>
+    /// A lead-in at the foot of one page with its equation at the head of the next: seven words on
+    /// page 2 (index 2), then two words and the equation on page 3. An empty rectangle on page 1
+    /// stands for an anchor with no geometry.
+    /// </summary>
+    private static SourceMap CrossPageMap()
+    {
+        var ghost = SyntheticNarration.Anchor("ghost", 1, new PageRect(10, 10, 10, 10));
+        var foot = SyntheticNarration.Anchor("foot", 2, new PageRect(312, 650, 456, 658));
+        var head = SyntheticNarration.Anchor("head", 3, new PageRect(48, 53, 168, 60));
+        var equation = SyntheticNarration.Anchor("eq", 3, new PageRect(170, 68, 332, 97));
+        var leadIn = new ReadingUnit("u0", ReadingUnitKind.Prose, [ghost, foot, head],
+            "It is a linear combination of bounded transition functions defined as", null, "", "", [], 2);
+        var maths = SyntheticNarration.MathsUnit("u1", "g_t", equation);
+        return new SourceMap(SyntheticNarration.Plan([leadIn, maths]));
+    }
+
+    [Fact]
+    public void AWord_IsFramedOnTheFirstPageItHasGeometryOn()
+    {
+        var map = CrossPageMap();
+        Assert.Equal(2, map.FramingPage(["foot"], wholePassage: false));
+        Assert.Equal(2, map.FramingPage(["foot", "head"], wholePassage: false));
+        // The page whose anchor is an empty rectangle has nothing to frame.
+        Assert.Equal(2, map.FramingPage(["ghost", "foot", "head"], wholePassage: false));
+    }
+
+    [Fact]
+    public void APassageWithNoTimingInside_IsFramedOnThePageHoldingMostOfIt()
+    {
+        var map = CrossPageMap();
+        // Seven words at the foot of page 2; the rest and the equation on page 3.
+        Assert.Equal(3, map.FramingPage(["ghost", "foot", "head", "eq"], wholePassage: true));
+        // Most of the prose alone is still at the foot of page 2.
+        Assert.Equal(2, map.FramingPage(["foot", "head"], wholePassage: true));
+        Assert.Equal(3, map.FramingPage(["eq"], wholePassage: true));
+    }
+
+    [Fact]
+    public void EqualShares_FrameTheEarlierPage_AndNoGeometryFramesNothing()
+    {
+        var a = SyntheticNarration.Anchor("a", 4, new PageRect(72, 700, 300, 712));
+        var b = SyntheticNarration.Anchor("b", 5, new PageRect(72, 60, 300, 72));
+        var empty = SyntheticNarration.Anchor("e", 6, new PageRect(0, 0, 0, 0));
+        var unit = new ReadingUnit("u0", ReadingUnitKind.Prose, [a, b, empty], "Half here and half overleaf.", null, "", "", [], 4);
+        var map = new SourceMap(SyntheticNarration.Plan([unit]));
+
+        Assert.Equal(4, map.FramingPage(["b", "a"], wholePassage: true));
+        Assert.Null(map.FramingPage(["e"], wholePassage: true));
+        Assert.Null(map.FramingPage(["e"], wholePassage: false));
+        Assert.Null(map.FramingPage(["not-in-the-plan"], wholePassage: true));
+    }
+
     private static (NarrationPlan Plan, SourceMap Map) BuildPlan()
     {
         // A sentence occupying two disjoint lines, and an equation region.

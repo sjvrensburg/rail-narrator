@@ -270,6 +270,8 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             _scheduler = new CueScheduler(plan);
             _prepared.Clear();
             _stages.Clear();
+            // Browsing the previous document must not leave the camera paused in this one.
+            _followSuspended = false;
             _segmentIndex = Math.Clamp(
                 resume?.SegmentId is { } id ? Math.Max(0, plan.Segments.ToList().FindIndex(s => s.Id == id)) : 0,
                 0, Math.Max(0, plan.SegmentCount - 1));
@@ -314,6 +316,8 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             Publish(PlaybackState.Error, null, NarrationError.ProviderUnavailable("No document is loaded."));
             return;
         }
+        // A fresh start is a request to read from here: following resumes, as for a seek.
+        lock (_gate) _followSuspended = false;
         Publish(PlaybackState.Preparing, "Preparing speech");
         StartPreparation(gen);
         await PreRollAsync(gen, ct).ConfigureAwait(false);
@@ -407,7 +411,10 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         int index = _plan.Segments.ToList().FindIndex(s => s.Id == segmentId);
         if (index < 0) return;
         long gen = AdvanceGeneration();
-        lock (_gate) { _seekIndex = index; _seekGeneration = gen; }
+        // The reader asked to read from this passage (Next, Previous, a click, the script list), so
+        // a pause in following from browsing ends here rather than leaving the view where it was
+        // while the reading starts somewhere else.
+        lock (_gate) { _seekIndex = index; _seekGeneration = gen; _followSuspended = false; }
         Publish(PlaybackState.Seeking, "Seeking");
         await _audio.StopAsync(ct).ConfigureAwait(false);
         lock (_gate)
@@ -988,12 +995,23 @@ public sealed class NarrationCoordinator : IAsyncDisposable
                 .SelectMany(l => l.AnchorIds).Distinct().ToArray(), Granularity = segment.IsMaths ? CueGranularity.Equation : c.Granularity }
             : c).ToArray();
 
+    /// <summary>
+    /// True when a passage's words are the page's words in order, so each can be timed and shown
+    /// where it is printed. A paraphrase, an interpretation still pending or an announcement is
+    /// linked to its region as a whole and is highlighted, and framed, as a whole.
+    /// </summary>
+    public static bool SpeaksItsSourceWordForWord(NarrationSegment segment)
+    {
+        ArgumentNullException.ThrowIfNull(segment);
+        return !segment.IsMaths
+            && segment.Provenance is ScriptProvenance.SourceVerbatim or ScriptProvenance.UserEdited;
+    }
+
     private async Task<SpeechAsset> AlignAssetAsync(NarrationSegment segment, SpeechAsset asset, ReadOnlyMemory<byte> pcm, CancellationToken ct)
     {
         // A paraphrase or an announcement has no word-for-word link to the page: highlight the whole
         // passage rather than align words that would point nowhere.
-        if (!_options.RequestTimings || segment.IsMaths || _aligner is null
-            || segment.Provenance is not (ScriptProvenance.SourceVerbatim or ScriptProvenance.UserEdited)) return asset;
+        if (!_options.RequestTimings || _aligner is null || !SpeaksItsSourceWordForWord(segment)) return asset;
         // The initial bundled dictionary/acoustic model is English. Never apply it to other languages.
         if (!segment.Language.StartsWith("en", StringComparison.OrdinalIgnoreCase)) return asset;
         string hash = CacheKey.Sha256Hex(pcm.Span);
@@ -1346,9 +1364,9 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     private static FollowTarget? BuildFollowTarget(CueScheduler scheduler, ActiveCue cue)
     {
         var map = scheduler.SourceMap;
-        var pages = map.PagesFor(cue.AnchorIds);
-        if (pages.Count == 0) return null;
-        int page = pages[0];
+        // A word is shown on the page it is printed on. A coarser cue has no timing inside it, so
+        // when it crosses a page break the page holding most of it is shown (SourceMap.FramingPage).
+        if (map.FramingPage(cue.AnchorIds, wholePassage: cue.Granularity != CueGranularity.Word) is not { } page) return null;
         var rects = map.HighlightRects(cue.AnchorIds, page);
         if (rects.Count == 0) return null;
         // The passage's own lines on that page, so the camera can tell whether the line being read

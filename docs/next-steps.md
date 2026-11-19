@@ -1,7 +1,7 @@
 # Next steps and open decisions
 
-Handover note, 18 November 2026, after PR #17. `main` builds with 0 warnings; 442 tests pass
-and 6 opt-in tests are skipped. What is verified, and how it was measured, is in `status.md`.
+Handover note, 18 November 2026, after PR #24 and the `fix/paging-stalls-follow-loading`
+branch. The branch builds with 0 warnings; 502 tests pass and 9 opt-in tests are skipped. What is verified, and how it was measured, is in `status.md`.
 How to run the real models, the GUI and the audio path on a new machine is in
 `testing-real-world.md`.
 
@@ -33,6 +33,14 @@ Since PR #10:
 
 ## Recently landed
 
+- **Page turns, page following and the loading card** (`fix/paging-stalls-follow-loading`,
+  `status.md` items 63-65). Pages are rendered on a worker and the paint only draws what has
+  arrived, so turning pages no longer stalls the window. A passage with no word timing that
+  crosses a page break is shown on the page holding most of it, and asking to read from
+  somewhere ends a pause in following. Opening a document shows a card over the reading area
+  and no longer freezes the window as it finishes. Measured in the headless GUI on the reference
+  machine; not yet tried by the maintainer, on a HiDPI display or on the laptop.
+
 - **Gapless playback** (was open decision 4, PR #17). The next passage is queued in the audio
   engine and written straight after the current one, so the ~0.4 s of output latency between
   passages is gone; smoke-tested by ear in the running app. Kokoro's own trailing silence
@@ -51,9 +59,23 @@ In rough priority order:
 - **Kokoro on an Intel or AMD integrated GPU.** ADR-0007 measured only the NVIDIA card. Run the
   opt-in `OnTheGpu_KokoroGivesTheCpusAudio` test and the smoke tool's `speak --gpu-model` on one;
   the output check falls back to the CPU if it gives NaN or silence, but the speed is unknown.
-- **Start-up and "Ready" still block on two initialisations** (`status.md` item 61): build the
-  layout probe and initialise Kokoro in the background, so the window appears at once and Kokoro
-  loads while the document is being extracted.
+- **Start-up still blocks on the layout probe** (`status.md` item 61): build it in the
+  background so the window appears at once. Kokoro now starts while the document is being
+  extracted (item 65).
+- **Fit-width from the first page.** A cover sheet wider than the article leaves every later
+  page narrower than the window. Fit to the page shown, or keep "fit" as a mode that follows
+  page changes; this belongs with the resize bullet below.
+- **Render only the crop for the maths interpreter.** A narrow equation makes the whole page
+  render at up to 8192 px (`RenderCropPngAsync`). Core's page renderer has no region option;
+  PDFium does (`FPDF_RenderPageBitmap` with an offset, as `RenderPageTiled` uses). Changing the
+  crop's pixels changes what the model sees, so compare readings with `rail-narrator-mathbench`.
+- **Check the lookahead after a load.** Read in the code, not measured: on a first load the voice
+  is set (`SetVoiceAsync`) just before the plan is loaded, and if its stop of the transport does
+  not complete at once, its `StartPreparation` for the older generation can land after
+  `LoadPlanAsync`'s and cancel it, leaving nothing prepared until Play. In the test runs the
+  first Play after an idle half-minute still showed "Synthesising speech" for 2 s, which fits.
+- **The status line during a pause in following.** "Following paused while you browse…" is
+  replaced at once by "Reading passage N" while audio plays; only the Resume button says so.
 - **Kokoro's CPU thread default.** 4–6 threads were about 10 % faster than the provider's 8 on the
   i7-12700H; re-measure on the reference machine before changing it.
 - **A resize resets the zoom to fit-width** (opening the script panel, resizing the window). Keep

@@ -34,14 +34,7 @@ public partial class MainWindow : Window
         _viewModel.TopLevelProvider = () => this;
         // The surface only opens a document the view model reports as successfully loaded; a
         // display failure must not take narration down with it, so it is reported, not thrown.
-        _viewModel.DocumentLoaded += path => Avalonia.Threading.Dispatcher.UIThread.Post(() =>
-        {
-            try { Surface.OpenDocument(path); }
-            catch (Exception ex)
-            {
-                _viewModel.Status($"Narration is ready, but the page could not be displayed: {ex.Message}");
-            }
-        });
+        _viewModel.DocumentLoaded += path => Avalonia.Threading.Dispatcher.UIThread.Post(() => _ = ShowDocumentAsync(path));
         Surface.SetColourEffect(_viewModel.ColourEffect, _viewModel.ColourEffectIntensity);
         _viewModel.PropertyChanged += (_, e) =>
         {
@@ -49,6 +42,9 @@ public partial class MainWindow : Window
                 Surface.SetHighlightStyle(BuildHighlightStyle());
             if (e.PropertyName is nameof(MainViewModel.ColourEffect) or nameof(MainViewModel.ColourEffectIntensity))
                 Surface.SetColourEffect(_viewModel.ColourEffect, _viewModel.ColourEffectIntensity);
+            // The pointer says "busy" wherever it is in the window while a document is opened.
+            if (e.PropertyName is nameof(MainViewModel.IsLoading))
+                Cursor = _viewModel.IsLoading ? new Cursor(StandardCursorType.AppStarting) : null;
         };
         _viewModel.Coordinator.ActiveCueChanged += cue =>
         {
@@ -69,6 +65,23 @@ public partial class MainWindow : Window
         };
         AddHandler(KeyDownEvent, OnPreviewKeyDown, RoutingStrategies.Tunnel);
         Closing += OnClosing;
+    }
+
+    /// <summary>
+    /// Opens a loaded document in the reading surface and, when the reading position was restored,
+    /// shows the passage it will resume from rather than the first page.
+    /// </summary>
+    private async Task ShowDocumentAsync(string path)
+    {
+        try
+        {
+            await Surface.OpenDocumentAsync(path);
+            if (_viewModel.RestoredSegmentId is { } segmentId) Surface.ShowPassage(segmentId);
+        }
+        catch (Exception ex)
+        {
+            _viewModel.Status($"Narration is ready, but the page could not be displayed: {ex.Message}");
+        }
     }
 
     private bool _closeReady;

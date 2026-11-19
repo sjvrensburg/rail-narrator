@@ -76,7 +76,27 @@ run, so compare tallies, not single passages.
 - **Camera decisions.** Start the app with `RN_FOLLOW_LOG=1` to append every follow request to
   `$XDG_STATE_HOME/rail-narrator/logs/follow.log`: the cue's rectangle, the visible region in page
   points, the control's size, zoom, offsets before and after, and the decision with its reason. No
-  lines while the word moves means no follow was requested (paused, or no word timing).
+  lines while the word moves means no follow was requested (paused, or no word timing). The log
+  has a line per frame while audio plays; filter it (`grep -v move=False`, or
+  `grep -E "page transition|frame gap|sharp"`).
+- **Stalls of the window.** The same log gets `frame gap 83 ms` for every animation frame that
+  arrives more than 50 ms after the one before, and `page 4 sharp at 200 dpi 54 ms after it was
+  turned to, a 72 dpi stand-in until then` for each page that becomes sharp. To measure paging,
+  write a marker into the log, send `Next` several times 60-70 ms apart with XTEST, and count the
+  gaps after the marker. Check a screenshot first: keys sent while the loading card is up measure
+  nothing. A scanned or image-heavy PDF is the test that matters; a page of plain text renders in
+  10 ms and never stalled.
+- **The first click after the window appears can land somewhere else.** The headless compositor's
+  own cursor starts at the centre of the output, and one XTEST press was delivered there instead
+  of where XTEST had moved the pointer: it hit a passage in the middle of the page and started a
+  seek. Move the pointer, wait half a second, then click, and choose a spot that is harmless either
+  way; compare `position.json` before and after. A click on the menu bar focuses the window (Space
+  works) but not the reading surface (Page Up and Page Down do not): for those, click an empty part
+  of the surface.
+- **Start at a chosen passage.** Write `position.json` in the document's directory under
+  `$XDG_DATA_HOME/rail-narrator/plans/` with the `SegmentId` wanted before launching; `plan.json`
+  beside it lists every passage with its anchors and pages, which is how to find the passages that
+  cross a page break.
 - **Route the app's audio with `PIPEWIRE_NODE`.** Start the app with
   `PIPEWIRE_NODE=rn_test` after creating the null sink below: PipeWire's ALSA plugin honours it, so
   the very first stream goes to the null sink (checked: the real sink stayed `SUSPENDED` while the
