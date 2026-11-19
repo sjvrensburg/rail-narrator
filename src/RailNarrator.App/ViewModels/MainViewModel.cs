@@ -81,6 +81,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         _colourEffect = Enum.TryParse<ColourEffect>(services.CurrentSettings.ColourEffect, ignoreCase: true, out var effect)
             ? effect : ColourEffect.None;
         _highlightHighContrast = services.CurrentSettings.HighlightHighContrast;
+        _transcriptVisible = services.CurrentSettings.SidebarVisible;
 
         foreach (string note in services.StartupNotes) Notes.Add(note);
 
@@ -95,17 +96,17 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         _services.Coordinator.FollowRequested += OnFollowRequested;
 
         OpenDocument = new RelayCommand(() => OpenDocumentAsync(TopLevelProvider?.Invoke()), () => !Busy, OnCommandError);
-        Play = new RelayCommand(() => _services.Coordinator.PlayAsync(), CanRead, OnCommandError);
+        Play = new RelayCommand(StartReadingAsync, CanRead, OnCommandError);
         Pause = new RelayCommand(() => _services.Coordinator.PauseAsync(), () => _playback.State == PlaybackState.Playing, OnCommandError);
         // One button: play, pause, or — while a start is still waiting for its audio — cancel that
         // start. Pausing then would not stop it: the start would play when the audio arrived.
         PlayPause = new RelayCommand(() => IsStarting
                 ? _services.Coordinator.StopAsync()
-                : _playback.State == PlaybackState.Playing ? _services.Coordinator.PauseAsync() : _services.Coordinator.PlayAsync(),
+                : _playback.State == PlaybackState.Playing ? _services.Coordinator.PauseAsync() : StartReadingAsync(),
             CanRead, OnCommandError, allowWhileRunning: true);
-        Next = new RelayCommand(() => _services.Coordinator.NextSegmentAsync(), CanRead, OnCommandError, allowWhileRunning: true);
-        Previous = new RelayCommand(() => _services.Coordinator.PreviousSegmentAsync(), CanRead, OnCommandError, allowWhileRunning: true);
-        Replay = new RelayCommand(() => _services.Coordinator.ReplaySegmentAsync(), CanRead, OnCommandError, allowWhileRunning: true);
+        Next = new RelayCommand(() => { _pendingStartSegmentId = null; return _services.Coordinator.NextSegmentAsync(); }, CanRead, OnCommandError, allowWhileRunning: true);
+        Previous = new RelayCommand(() => { _pendingStartSegmentId = null; return _services.Coordinator.PreviousSegmentAsync(); }, CanRead, OnCommandError, allowWhileRunning: true);
+        Replay = new RelayCommand(() => { _pendingStartSegmentId = null; return _services.Coordinator.ReplaySegmentAsync(); }, CanRead, OnCommandError, allowWhileRunning: true);
         ToggleFollow = new RelayCommand(CycleFollowMode, null, OnCommandError);
         ResumeFollow = new RelayCommand(() => _services.Coordinator.ResumeFollow(), () => FollowSuspended, OnCommandError);
         ZoomIn = new RelayCommand(() => ApplyZoom(Zoom * 1.25), null, OnCommandError);
@@ -114,6 +115,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         Zoom400 = new RelayCommand(() => ApplyZoom(4.0), null, OnCommandError);
         Zoom800 = new RelayCommand(() => ApplyZoom(8.0), null, OnCommandError);
         OpenSettings = new RelayCommand(() => SettingsRequested?.Invoke());
+        ToggleSidebar = new RelayCommand(() => SidebarVisible = !SidebarVisible);
+        NoticeAction = new RelayCommand(() => { var action = Notice?.Action; Notice = null; action?.Invoke(); });
+        DismissNotice = new RelayCommand(() => Notice = null);
         TestMathEndpoint = new RelayCommand(() => TestMathEndpointAsync(), () => !Busy, OnCommandError);
         TestVisionEndpoint = new RelayCommand(() => TestVisionEndpointAsync(), () => !Busy, OnCommandError);
         DownloadKokoroModel = new RelayCommand(() => DownloadModelAsync(ModelManifest.KokoroFp16), () => !Busy, OnCommandError);
@@ -185,8 +189,20 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public ServiceRegistry Services => _services;
     public NarrationCoordinator Coordinator => _services.Coordinator;
 
-    public string? DocumentPath { get => _documentPath; private set { if (Set(ref _documentPath, value)) OnPropertyChanged(nameof(HasDocument)); } }
+    public string? DocumentPath
+    {
+        get => _documentPath;
+        private set
+        {
+            if (!Set(ref _documentPath, value)) return;
+            OnPropertyChanged(nameof(HasDocument));
+            OnPropertyChanged(nameof(DocumentName));
+        }
+    }
     public bool HasDocument => _documentPath is not null;
+
+    /// <summary>The open document's file name, for its tab and the window title.</summary>
+    public string? DocumentName => _documentPath is null ? null : Path.GetFileName(_documentPath);
     public ExtractionSnapshot? Snapshot => _snapshot;
     public NarrationPlan? Plan { get => _plan; private set { if (Set(ref _plan, value)) { OnPropertyChanged(nameof(SegmentCount)); } } }
     public int SegmentCount => Plan?.SegmentCount ?? 0;
@@ -296,6 +312,14 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     /// <summary>The play/pause button's caption: what pressing it will do now.</summary>
     public string PlayButtonText => IsStarting ? "⏹ Cancel" : _playback.State == PlaybackState.Playing ? "⏸ Pause" : "▶ Play";
 
+    /// <summary>Play: from the heading chosen in the outline if there is one, else from where reading stands.</summary>
+    private Task StartReadingAsync()
+    {
+        if (Interlocked.Exchange(ref _pendingStartSegmentId, null) is { } segmentId)
+            return _services.Coordinator.GoToSegmentAsync(segmentId);
+        return _services.Coordinator.PlayAsync();
+    }
+
     /// <summary>The play button's words, beside its icon: Play, Pause, or Cancel while a start is waiting.</summary>
     public string PlayButtonLabel => IsStarting ? "Cancel" : _playback.State == PlaybackState.Playing ? "Pause" : "Play";
 
@@ -320,7 +344,10 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         {
             if (!Set(ref _selectedTranscriptIndex, value)) return;
             if (value >= 0 && value < Transcript.Count)
+            {
+                _pendingStartSegmentId = null;
                 RunObserved(Coordinator.GoToSegmentAsync(Transcript[value].SegmentId), "Could not move to that passage");
+            }
         }
     }
 
@@ -375,8 +402,128 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     public bool FollowSuspended { get => _followSuspended; private set => Set(ref _followSuspended, value); }
 
-    /// <summary>The script, maths review and diagnostics panel. Hidden unless asked for: a listener does not need the script.</summary>
-    public bool TranscriptVisible { get => _transcriptVisible; set => Set(ref _transcriptVisible, value); }
+    /// <summary>
+    /// The sidebar: outline, script, maths review and notes. Hidden unless asked for (a listener
+    /// needs none of it), and remembered.
+    /// </summary>
+    public bool SidebarVisible
+    {
+        get => _transcriptVisible;
+        set { if (Set(ref _transcriptVisible, value)) PersistPreference(s => s with { SidebarVisible = value }); }
+    }
+
+    public RelayCommand ToggleSidebar { get; }
+
+    // ---- outline ------------------------------------------------------------------------------
+
+    /// <summary>The document's own outline (its PDF bookmarks); empty when it has none.</summary>
+    public ObservableCollection<OutlineItem> Outline { get; } = [];
+
+    private List<OutlineItem> _outlineInOrder = [];
+
+    public bool HasOutline => Outline.Count > 0;
+
+    /// <summary>Shows a newly opened document's outline. Called by the window once the page source has it.</summary>
+    public void ShowOutline(IReadOnlyList<OutlineEntry> entries)
+    {
+        var inOrder = new List<OutlineItem>();
+        var items = OutlineItem.Build(entries, inOrder);
+        Outline.Clear();
+        foreach (var item in items) Outline.Add(item);
+        _outlineInOrder = inOrder;
+        OnPropertyChanged(nameof(HasOutline));
+        ShowingPage(_shownPage);
+    }
+
+    /// <summary>The view should show this page from its top (an outline heading was chosen).</summary>
+    public event Action<int>? PageRequested;
+
+    private string? _pendingStartSegmentId;
+
+    /// <summary>
+    /// A heading was chosen in the outline. While reading, the reading moves there, as a click on a
+    /// passage does. Otherwise the page is shown and the next Play starts there: choosing a heading
+    /// is how a reader says where to begin, not that it should begin now.
+    /// </summary>
+    public void OpenOutlineItem(OutlineItem item)
+    {
+        if (item.Page is not { } page) { StatusMessage = $"“{item.Title}” does not say which page it is on."; return; }
+        PageRequested?.Invoke(page);
+        if (FirstPassageFrom(page) is not { } segmentId) return;
+        if (_playback.State == PlaybackState.Playing)
+        {
+            _pendingStartSegmentId = null;
+            RunObserved(Coordinator.GoToSegmentAsync(segmentId), "Could not move to that heading");
+            return;
+        }
+        _pendingStartSegmentId = segmentId;
+        StatusMessage = $"Play reads from “{item.Title}”.";
+    }
+
+    /// <summary>The first passage on <paramref name="page"/>, else the first after it.</summary>
+    private string? FirstPassageFrom(int page)
+    {
+        if (Plan is not { } plan) return null;
+        foreach (var segment in plan.Segments)
+        {
+            int? first = segment.ReadingUnitIds.Select(id => plan.Unit(id)?.PageIndex).Where(p => p is not null).Min();
+            if (first >= page) return segment.Id;
+        }
+        return null;
+    }
+
+    private int _shownPage;
+    private string? _currentSection;
+
+    /// <summary>
+    /// The heading the page shown falls under, for the status bar: the heading and its parent, as
+    /// RailReader2's breadcrumb. A single top-level heading is the paper's own title and is left out.
+    /// </summary>
+    public string? CurrentSection { get => _currentSection; private set { if (Set(ref _currentSection, value)) OnPropertyChanged(nameof(HasCurrentSection)); } }
+
+    /// <summary>The full path of the current heading, for the breadcrumb's tooltip.</summary>
+    public string? CurrentSectionPath { get => _currentSectionPath; private set => Set(ref _currentSectionPath, value); }
+
+    private string? _currentSectionPath;
+
+    public bool HasCurrentSection => _currentSection is not null;
+
+    /// <summary>The view now shows <paramref name="page"/>: the status bar names its section.</summary>
+    public void ShowingPage(int page)
+    {
+        _shownPage = page;
+        var heading = _outlineInOrder.LastOrDefault(i => i.Page is { } p && p <= page);
+        CurrentSectionPath = heading?.Path;
+        var trail = new List<string>();
+        for (var h = heading; h is not null; h = h.Parent)
+            if (!(h.Parent is null && Outline.Count == 1 && h != heading)) trail.Insert(0, h.Title);
+        CurrentSection = trail.Count switch
+        {
+            0 => null,
+            1 or 2 => string.Join(" › ", trail),
+            _ => "… › " + string.Join(" › ", trail.TakeLast(2)),
+        };
+    }
+
+    // ---- notices --------------------------------------------------------------------------------
+
+    private StatusNotice? _notice;
+    private string? _lastNoticedError;
+
+    /// <summary>A notice that takes over the status bar until dismissed or acted on, as RailReader2's toasts.</summary>
+    public StatusNotice? Notice { get => _notice; private set { if (Set(ref _notice, value)) OnPropertyChanged(nameof(HasNotice)); } }
+
+    public bool HasNotice => _notice is not null;
+
+    public void ShowNotice(string text, string? actionLabel = null, Action? action = null)
+        => Notice = new StatusNotice(text, actionLabel, action);
+
+    public RelayCommand NoticeAction { get; }
+
+    public RelayCommand DismissNotice { get; }
+
+    /// <summary>The application should restart, keeping the open document (the window does it).</summary>
+    public event Action? RestartRequested;
 
     private ColourEffect _colourEffect;
 
@@ -579,6 +726,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     {
         if (!File.Exists(path)) { StatusMessage = $"No such file: {path}"; return; }
         if (Busy) return;   // re-entrancy: argv/menu/keyboard can all call this directly
+        _pendingStartSegmentId = null;
 
         // Build into locals and commit DocumentPath/_snapshot/Plan together only on success. A
         // failed open (corrupt PDF, empty extraction) then leaves the previous document fully
@@ -901,7 +1049,17 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
                     OnPropertyChanged(nameof(SelectedTranscriptIndex));
                 }
             }
-            if (snapshot.Error is { } error) StatusMessage = error.Message;
+            if (snapshot.Error is { } error)
+            {
+                StatusMessage = error.Message;
+                // Once per error: the error stays in every snapshot until it is resolved, and a notice
+                // the reader dismissed must not come back with the next one.
+                if (error.Code == NarrationErrorCode.SpeechProviderUnavailable && error.Message != _lastNoticedError)
+                {
+                    _lastNoticedError = error.Message;
+                    ShowNotice(error.Message, "Speech settings…", () => SettingsRequested?.Invoke());
+                }
+            }
             else if (snapshot.Message is { } message) StatusMessage = message;
             // Playing carries no message of its own, so the line used to keep whatever was said
             // last ("Seeking", "Preparing speech") for as long as the passage lasted.
@@ -1105,6 +1263,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
                         : $"{p.Phase}…")));
             StatusMessage = $"{asset.Id} downloaded and verified.";
             Notes.Add($"{asset.Id} is installed at {_services.Models.PathFor(asset)}. Restart to enable it.");
+            ShowNotice($"{asset.Id} is installed. Rail Narrator uses it after a restart.", "Restart now", () => RestartRequested?.Invoke());
         }
         catch (Exception ex)
         {

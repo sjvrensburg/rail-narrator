@@ -28,7 +28,11 @@ public partial class MainWindow : Window
         DataContext = _viewModel = new MainViewModel(services);
         InitializeComponent();
 
-        Surface.PageChanged += (page, count) => PageLabel.Text = count > 0 ? $"Page {page + 1} / {count}" : "Page –";
+        Surface.PageChanged += (page, count) =>
+        {
+            PageLabel.Text = count > 0 ? $"Page {page + 1} / {count}" : "Page –";
+            _viewModel.ShowingPage(page);
+        };
         Surface.Attach(_viewModel);
         ApplyHighlightStyle();
         _viewModel.TopLevelProvider = () => this;
@@ -71,6 +75,96 @@ public partial class MainWindow : Window
         AddHandler(KeyDownEvent, OnPreviewKeyDown, RoutingStrategies.Tunnel);
         Closing += OnClosing;
         _viewModel.SettingsRequested += ShowSettings;
+        _viewModel.RestartRequested += Restart;
+        _viewModel.PageRequested += page => Surface.ShowPageFromTop(page);
+        SetUpSidebar();
+    }
+
+    // ---- sidebar ---------------------------------------------------------------------------
+
+    private readonly List<(Expander Section, string Name)> _sections = [];
+    private bool _syncingSections;
+
+    /// <summary>
+    /// The sidebar as RailReader2's: shown and hidden with the toggle (F6), its width dragged and
+    /// remembered, and its sections an accordion in which one is open at a time and fills the panel.
+    /// </summary>
+    private void SetUpSidebar()
+    {
+        _sections.AddRange([(OutlineSection, "Outline"), (ScriptSection, "Script"), (MathsSection, "MathsReview"), (NotesSection, "Notes")]);
+        string open = _services.CurrentSettings.SidebarSection;
+        foreach (var (section, name) in _sections)
+        {
+            section.IsExpanded = name == open;
+            section.PropertyChanged += (_, e) => { if (e.Property == Expander.IsExpandedProperty) OnSectionToggled(section, name); };
+        }
+        if (!_sections.Any(s => s.Section.IsExpanded)) OutlineSection.IsExpanded = true;
+        UpdateSectionRows();
+
+        _sidebarWidth = Math.Clamp(_services.CurrentSettings.SidebarWidth, SidebarMinWidth, SidebarMaxWidth);
+        ApplySidebarVisibility();
+        _viewModel.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(MainViewModel.SidebarVisible)) ApplySidebarVisibility();
+            if (e.PropertyName == nameof(MainViewModel.DocumentName))
+                Title = _viewModel.DocumentName is { } name ? $"{name} — Rail Narrator" : "Rail Narrator";
+            // A passage chosen for review opens its section, so the reader sees it.
+            if (e.PropertyName == nameof(MainViewModel.MathsReview) && _viewModel.MathsReview is not null
+                && _viewModel.SidebarVisible && !ScriptSection.IsExpanded)
+                MathsSection.IsExpanded = true;
+        };
+        SidebarSplitter.DragCompleted += (_, _) =>
+        {
+            _sidebarWidth = Math.Clamp(ContentGrid.ColumnDefinitions[0].ActualWidth, SidebarMinWidth, SidebarMaxWidth);
+            _viewModel.PersistSettings(s => s with { SidebarWidth = Math.Round(_sidebarWidth) });
+        };
+    }
+
+    private const double SidebarMinWidth = 200, SidebarMaxWidth = 600;
+    private double _sidebarWidth = 300;
+
+    private void ApplySidebarVisibility()
+    {
+        bool visible = _viewModel.SidebarVisible;
+        var column = ContentGrid.ColumnDefinitions[0];
+        if (!visible && column.ActualWidth >= SidebarMinWidth) _sidebarWidth = column.ActualWidth;
+        Sidebar.IsVisible = visible;
+        SidebarSplitter.IsVisible = visible;
+        column.MinWidth = visible ? SidebarMinWidth : 0;
+        column.MaxWidth = visible ? SidebarMaxWidth : double.PositiveInfinity;
+        column.Width = new GridLength(visible ? _sidebarWidth : 0);
+    }
+
+    private void OnSectionToggled(Expander section, string name)
+    {
+        if (_syncingSections) return;
+        _syncingSections = true;
+        try
+        {
+            if (section.IsExpanded)
+            {
+                foreach (var (other, _) in _sections) if (other != section) other.IsExpanded = false;
+                _viewModel.PersistSettings(s => s with { SidebarSection = name });
+            }
+            UpdateSectionRows();
+        }
+        finally { _syncingSections = false; }
+    }
+
+    /// <summary>The open section's row fills the sidebar; the others are a header's height.</summary>
+    private void UpdateSectionRows()
+    {
+        for (int i = 0; i < _sections.Count; i++)
+            Accordion.RowDefinitions[i].Height = _sections[i].Section.IsExpanded ? new GridLength(1, GridUnitType.Star) : GridLength.Auto;
+    }
+
+    /// <summary>
+    /// A heading chosen in the outline. Selection changes only when the reader chooses (nothing
+    /// syncs the tree to the reading), so this is not the trap the script list's selection is.
+    /// </summary>
+    private void OnOutlineSelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (OutlineTree.SelectedItem is OutlineItem item) _viewModel.OpenOutlineItem(item);
     }
 
     private SettingsWindow? _settingsWindow;
@@ -87,13 +181,19 @@ public partial class MainWindow : Window
         var window = new SettingsWindow(settings) { FontSize = FontSize };
         settings.RestartRequested += () =>
         {
-            _restartAfterClose = true;
             window.Close();
-            Close();   // OnClosing saves the position, then relaunches
+            Restart();
         };
         window.Closed += (_, _) => _settingsWindow = null;
         _settingsWindow = window;
         window.Show(this);
+    }
+
+    /// <summary>Closes (saving the position) and starts again with the same document.</summary>
+    private void Restart()
+    {
+        _restartAfterClose = true;
+        Close();   // OnClosing saves the position, then relaunches
     }
 
     /// <summary>
@@ -129,6 +229,7 @@ public partial class MainWindow : Window
         try
         {
             await Surface.OpenDocumentAsync(path);
+            _viewModel.ShowOutline(Surface.Outline);
             if (_viewModel.RestoredSegmentId is { } segmentId) Surface.ShowPassage(segmentId);
         }
         catch (Exception ex)

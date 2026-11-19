@@ -24,7 +24,20 @@
     <KeyBinding Gesture="Ctrl+OemMinus" Command="{Binding ZoomOut}" />
     <KeyBinding Gesture="Ctrl+F" Command="{Binding ToggleFollow}" />
     <KeyBinding Gesture="F9" Command="{Binding ResumeFollow}" />
+    <KeyBinding Gesture="F6" Command="{Binding ToggleSidebar}" />
   </Window.KeyBindings>
+
+  <Window.Styles>
+    <!-- RailReader2's accordion: full-width headers, the open section's content fills its row. -->
+    <Style Selector="Expander.accordion">
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+      <Setter Property="VerticalAlignment" Value="Stretch" />
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="VerticalContentAlignment" Value="Stretch" />
+      <Setter Property="CornerRadius" Value="0" />
+      <Setter Property="Margin" Value="0,0,0,1" />
+    </Style>
+  </Window.Styles>
 
   <DockPanel>
 
@@ -64,8 +77,8 @@
           <MenuItem Header="_Invert" Tag="Invert" Click="OnColourFilterClicked" />
         </MenuItem>
         <Separator />
-        <MenuItem Header="Show _script, maths review and diagnostics" ToggleType="CheckBox"
-                  IsChecked="{Binding TranscriptVisible, Mode=TwoWay}" />
+        <MenuItem Header="_Sidebar: outline, script, maths review, notes" ToggleType="CheckBox"
+                  IsChecked="{Binding SidebarVisible, Mode=TwoWay}" InputGesture="F6" />
       </MenuItem>
       <MenuItem Header="_Maths">
         <MenuItem Header="Mark region as _maths" Click="OnMarkAsMathsClicked" />
@@ -91,6 +104,22 @@
       <Grid ColumnDefinitions="*,Auto">
         <!-- Wraps rather than clipping, so nothing becomes unreachable in a narrow window. -->
         <WrapPanel Orientation="Horizontal" ItemSpacing="6" LineSpacing="4" VerticalAlignment="Center">
+          <ToggleButton Classes="toolBtn borderless" IsChecked="{Binding SidebarVisible, Mode=TwoWay}"
+                        ToolTip.Tip="Sidebar: outline, script, maths review and notes (F6)"
+                        AutomationProperties.Name="Sidebar">
+            <c:Icon Data="{StaticResource IconPanelLeft}" />
+          </ToggleButton>
+          <!-- The open document, as RailReader2's tab (one document at a time here). -->
+          <Border IsVisible="{Binding HasDocument}" Padding="10,4" CornerRadius="5,5,0,0" VerticalAlignment="Stretch"
+                  Background="{DynamicResource SystemControlBackgroundAltHighBrush}"
+                  BorderBrush="{DynamicResource SystemControlHighlightAccentBrush}" BorderThickness="0,2,0,0"
+                  ToolTip.Tip="{Binding DocumentPath}">
+            <TextBlock Text="{Binding DocumentName}" FontWeight="SemiBold" VerticalAlignment="Center"
+                       MaxWidth="260" TextTrimming="CharacterEllipsis" />
+          </Border>
+
+          <Border Classes="toolSep" />
+
           <Button Classes="toolBtn" Command="{Binding Previous}" ToolTip.Tip="Previous passage (Ctrl+Left)"
                   AutomationProperties.Name="Previous passage">
             <c:Icon Data="{StaticResource IconSkipBack}" />
@@ -178,8 +207,27 @@
             BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}" BorderThickness="0,1,0,0">
       <Grid ColumnDefinitions="*,Auto">
         <TextBlock Grid.Column="0" Text="{Binding StatusMessage}" TextTrimming="CharacterEllipsis"
-                   VerticalAlignment="Center" AutomationProperties.LiveSetting="Polite" />
+                   VerticalAlignment="Center" AutomationProperties.LiveSetting="Polite"
+                   IsVisible="{Binding !HasNotice}" ToolTip.Tip="{Binding StatusMessage}" />
+        <!-- A notice takes the place of the status, as RailReader2's toasts: amber, with its action. -->
+        <!-- Docked, not stacked: the buttons stay put and a long notice is trimmed, not spilled
+             over the page and zoom controls. -->
+        <DockPanel Grid.Column="0" IsVisible="{Binding HasNotice}" ClipToBounds="True"
+                   AutomationProperties.LiveSetting="Polite">
+          <Button DockPanel.Dock="Right" Classes="toolBtn borderless" Padding="4" Margin="4,0,0,0" Command="{Binding DismissNotice}"
+                  ToolTip.Tip="Dismiss" AutomationProperties.Name="Dismiss notice">
+            <c:Icon Data="{StaticResource IconClose}" SizeFactor="0.9" />
+          </Button>
+          <Button DockPanel.Dock="Right" Classes="toolBtn" Padding="8,2" Margin="10,0,0,0" Command="{Binding NoticeAction}"
+                  IsVisible="{Binding Notice.HasAction}" Content="{Binding Notice.ActionLabel}" />
+          <TextBlock Text="{Binding Notice.Text}" Foreground="#C07800" FontWeight="SemiBold"
+                     VerticalAlignment="Center" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Notice.Text}" />
+        </DockPanel>
         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" Margin="12,0,0,0">
+          <TextBlock Text="{Binding CurrentSection}" IsVisible="{Binding HasCurrentSection}" VerticalAlignment="Center"
+                     MaxWidth="320" TextTrimming="CharacterEllipsis" Classes="secondary"
+                     ToolTip.Tip="{Binding CurrentSectionPath}" />
+          <Border Classes="toolSep" IsVisible="{Binding HasCurrentSection}" />
           <ProgressBar Width="120" Minimum="0" Maximum="1" Value="{Binding Playback.PlanProgress}" VerticalAlignment="Center"
                        ToolTip.Tip="How far through the document" AutomationProperties.Name="How far through the document" />
           <Border Classes="toolSep" />
@@ -212,82 +260,102 @@
       </Grid>
     </Border>
 
-    <!-- Right-hand panel: transcript, maths review and notes -->
-    <Border DockPanel.Dock="Right" Width="380" Padding="8"
-            IsVisible="{Binding TranscriptVisible}"
-            BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}" BorderThickness="1,0,0,0">
-      <Grid RowDefinitions="*,Auto,Auto">
-
-        <DockPanel Grid.Row="0">
-          <TextBlock DockPanel.Dock="Top" Text="Narration transcript" FontWeight="SemiBold" Margin="0,0,0,4" />
-          <ListBox Name="TranscriptList" ItemsSource="{Binding Transcript}"
-                   SelectedIndex="{Binding SelectedTranscriptIndex}"
-                   ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-            <ListBox.ItemTemplate>
-              <DataTemplate x:DataType="vm:TranscriptEntry">
-                <StackPanel Orientation="Horizontal" Spacing="4">
-                  <TextBlock Text="∑" Foreground="Orange" IsVisible="{Binding IsMaths}"
-                             ToolTip.Tip="Mathematical passage" />
-                  <TextBlock Text="!" Foreground="#C07800" IsVisible="{Binding HasWarning}"
-                             ToolTip.Tip="This passage has a warning; see the maths review panel" />
-                  <TextBlock Text="{Binding Text}" TextWrapping="Wrap" MaxWidth="300" />
+    <!-- Content: the sidebar on the left, as RailReader2's (accordion sections, one open at a time,
+         width dragged and remembered), and the reading area. Shown, hidden and sized in code-behind. -->
+    <Grid Name="ContentGrid" ColumnDefinitions="300,Auto,*">
+      <Border Name="Sidebar" Grid.Column="0" Background="{DynamicResource SystemControlBackgroundAltHighBrush}"
+              AutomationProperties.Name="Sidebar">
+        <Grid Name="Accordion" RowDefinitions="*,Auto,Auto,Auto">
+          <Expander Grid.Row="0" Name="OutlineSection" Classes="accordion" Header="Outline">
+            <Panel>
+              <TreeView Name="OutlineTree" ItemsSource="{Binding Outline}" IsVisible="{Binding HasOutline}"
+                        SelectionChanged="OnOutlineSelectionChanged" AutomationProperties.Name="Outline">
+                <TreeView.ItemTemplate>
+                  <TreeDataTemplate ItemsSource="{Binding Children}" x:DataType="vm:OutlineItem">
+                    <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding PageLabel}" />
+                  </TreeDataTemplate>
+                </TreeView.ItemTemplate>
+              </TreeView>
+              <TextBlock IsVisible="{Binding !HasOutline}" Classes="secondary" TextWrapping="Wrap" Margin="8"
+                         Text="This document has no outline of its own. The script lists every passage; click one to read from there." />
+            </Panel>
+          </Expander>
+          <Expander Grid.Row="1" Name="ScriptSection" Classes="accordion" Header="Script">
+              <ListBox Name="TranscriptList" ItemsSource="{Binding Transcript}"
+                       SelectedIndex="{Binding SelectedTranscriptIndex}"
+                       ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                <ListBox.ItemTemplate>
+                  <DataTemplate x:DataType="vm:TranscriptEntry">
+                    <DockPanel>
+                      <TextBlock DockPanel.Dock="Left" Margin="0,0,4,0" Text="∑" Foreground="#C07800" IsVisible="{Binding IsMaths}"
+                                 ToolTip.Tip="Mathematical passage" />
+                      <TextBlock DockPanel.Dock="Left" Margin="0,0,4,0" Text="!" Foreground="#C07800" IsVisible="{Binding HasWarning}"
+                                 ToolTip.Tip="This passage has a warning; see Maths review" />
+                      <TextBlock Text="{Binding Text}" TextWrapping="Wrap" />
+                    </DockPanel>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+          </Expander>
+          <Expander Grid.Row="2" Name="MathsSection" Classes="accordion" Header="Maths review">
+            <Panel>
+              <TextBlock IsVisible="{Binding MathsReview, Converter={x:Static ObjectConverters.IsNull}}" Classes="secondary"
+                         TextWrapping="Wrap" Margin="8"
+                         Text="Choose a passage with maths in the script (marked ∑) to see what was recognised and what is said, and to correct it." />
+              <ScrollViewer IsVisible="{Binding MathsReview, Converter={x:Static ObjectConverters.IsNotNull}}">
+                <StackPanel Spacing="4" DataContext="{Binding MathsReview}" x:DataType="vm:MathsReview">
+                  <TextBlock Text="Recognised expression:" FontSize="11" Opacity="0.75" />
+                  <TextBox Name="MathsExpressionBox" Text="{Binding RecognisedExpression}" IsReadOnly="True"
+                           FontFamily="monospace" TextWrapping="Wrap" MaxHeight="60" />
+                  <TextBlock Text="Spoken version:" FontSize="11" Opacity="0.75" />
+                  <TextBox Name="MathsEditBox" Text="{Binding SpokenVersion}" AcceptsReturn="True"
+                           TextWrapping="Wrap" MinHeight="60" MaxHeight="120"
+                           PlaceholderText="Correct the spoken text; the previous audio for it is discarded" />
+                  <TextBlock Text="{Binding Provenance, StringFormat=Source: {0}}" FontSize="11" Opacity="0.75" />
+                  <ItemsControl ItemsSource="{Binding Warnings}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="x:String">
+                        <TextBlock Text="{Binding}" FontSize="11" Foreground="#C07800" TextWrapping="Wrap" />
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                  <StackPanel Orientation="Horizontal" Spacing="6">
+                    <Button Content="Use my text" Click="OnMathsEditClicked" />
+                    <Button Content="Regenerate" Click="OnMathsRegenerateClicked" IsEnabled="{Binding CanRegenerate}" />
+                  </StackPanel>
                 </StackPanel>
-              </DataTemplate>
-            </ListBox.ItemTemplate>
-          </ListBox>
-        </DockPanel>
-
-        <Border Grid.Row="1" Margin="0,8,0,0" Padding="8" CornerRadius="4"
-                Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}"
-                IsVisible="{Binding MathsReview, Converter={x:Static ObjectConverters.IsNotNull}}">
-          <StackPanel Spacing="4" DataContext="{Binding MathsReview}" x:DataType="vm:MathsReview">
-            <TextBlock Text="Maths review" FontWeight="SemiBold" />
-            <TextBlock Text="Recognised expression:" FontSize="11" Opacity="0.75" />
-            <TextBox Name="MathsExpressionBox" Text="{Binding RecognisedExpression}" IsReadOnly="True"
-                     FontFamily="monospace" TextWrapping="Wrap" MaxHeight="60" />
-            <TextBlock Text="Spoken version:" FontSize="11" Opacity="0.75" />
-            <TextBox Name="MathsEditBox" Text="{Binding SpokenVersion}" AcceptsReturn="True"
-                     TextWrapping="Wrap" MinHeight="60" MaxHeight="120"
-                     PlaceholderText="Correct the spoken text; the previous audio for it is discarded" />
-            <TextBlock Text="{Binding Provenance, StringFormat=Source: {0}}" FontSize="11" Opacity="0.75" />
-            <ItemsControl ItemsSource="{Binding Warnings}">
-              <ItemsControl.ItemTemplate>
-                <DataTemplate x:DataType="x:String">
-                  <TextBlock Text="{Binding}" FontSize="11" Foreground="#C07800" TextWrapping="Wrap" />
-                </DataTemplate>
-              </ItemsControl.ItemTemplate>
-            </ItemsControl>
-            <StackPanel Orientation="Horizontal" Spacing="6">
-              <Button Content="Use my text" Click="OnMathsEditClicked" />
-              <Button Content="Regenerate" Click="OnMathsRegenerateClicked" IsEnabled="{Binding CanRegenerate}" />
-            </StackPanel>
-          </StackPanel>
-        </Border>
-
-        <Expander Grid.Row="2" Header="Diagnostics and notes" Margin="0,8,0,0" IsExpanded="False">
-          <StackPanel Spacing="4">
-            <TextBlock Text="{Binding SpeechProviderSummary, StringFormat=Speech providers: {0}}" FontSize="11" />
-            <TextBlock Text="{Binding LayoutSummary, StringFormat=Layout analysis: {0}}" FontSize="11" TextWrapping="Wrap" />
-            <TextBlock Text="{Binding TimingSummary}" FontSize="11" TextWrapping="Wrap" />
-            <TextBlock Text="{Binding MathEndpointSummary, StringFormat=Text LLM: {0}}" FontSize="11" TextWrapping="Wrap" />
-            <TextBlock Text="{Binding VisionEndpointSummary, StringFormat=Vision: {0}}" FontSize="11" TextWrapping="Wrap" />
-            <TextBlock Text="{Binding CacheBytes, StringFormat=Speech cache: {0} bytes}" FontSize="11" />
-            <ItemsControl ItemsSource="{Binding Notes}" MaxHeight="160">
-              <ItemsControl.ItemTemplate>
-                <DataTemplate x:DataType="x:String">
-                  <TextBlock Text="{Binding}" FontSize="11" TextWrapping="Wrap" Opacity="0.85" />
-                </DataTemplate>
-              </ItemsControl.ItemTemplate>
-            </ItemsControl>
-          </StackPanel>
-        </Expander>
-      </Grid>
-    </Border>
+              </ScrollViewer>
+            </Panel>
+          </Expander>
+          <Expander Grid.Row="3" Name="NotesSection" Classes="accordion" Header="Notes and diagnostics">
+            <ScrollViewer>
+              <StackPanel Spacing="4">
+                <TextBlock Text="{Binding SpeechProviderSummary, StringFormat=Speech providers: {0}}" FontSize="11" />
+                <TextBlock Text="{Binding LayoutSummary, StringFormat=Layout analysis: {0}}" FontSize="11" TextWrapping="Wrap" />
+                <TextBlock Text="{Binding TimingSummary}" FontSize="11" TextWrapping="Wrap" />
+                <TextBlock Text="{Binding MathEndpointSummary, StringFormat=Text LLM: {0}}" FontSize="11" TextWrapping="Wrap" />
+                <TextBlock Text="{Binding VisionEndpointSummary, StringFormat=Vision: {0}}" FontSize="11" TextWrapping="Wrap" />
+                <TextBlock Text="{Binding CacheBytes, StringFormat=Speech cache: {0} bytes}" FontSize="11" />
+                <ItemsControl ItemsSource="{Binding Notes}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="x:String">
+                      <TextBlock Text="{Binding}" FontSize="11" TextWrapping="Wrap" Opacity="0.85" />
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+            </ScrollViewer>
+          </Expander>
+        </Grid>
+      </Border>
+      <GridSplitter Name="SidebarSplitter" Grid.Column="1" Width="5" ResizeDirection="Columns"
+                    Background="{DynamicResource SystemControlForegroundBaseLowBrush}"
+                    AutomationProperties.Name="Sidebar width" />
 
     <!-- Reading area. The first card over it appears only while a start is waiting for audio: what
          is being prepared and for how long, where the reader is looking, not only in the status bar.
          It does not take input, so the page can still be browsed or clicked underneath. -->
-    <Panel>
+    <Panel Grid.Column="2">
       <views:PdfSurface Name="Surface" Focusable="True" />
       <Border IsVisible="{Binding IsPreparing}" IsHitTestVisible="False"
               HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,16,0,0"
@@ -330,5 +398,6 @@
         </Border>
       </Border>
     </Panel>
+    </Grid>
   </DockPanel>
 </Window>

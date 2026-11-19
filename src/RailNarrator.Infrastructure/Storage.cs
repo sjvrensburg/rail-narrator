@@ -174,6 +174,15 @@ public sealed record RailNarratorSettings
     public bool FitWidth { get; init; } = true;
     public bool ReduceMotion { get; init; }
 
+    /// <summary>The sidebar (outline, script, maths review, notes) is shown. Hidden by default: a listener needs none of it.</summary>
+    public bool SidebarVisible { get; init; }
+
+    /// <summary>The sidebar's width in pixels, as the reader last dragged it (200 to 600).</summary>
+    public double SidebarWidth { get; init; } = 300;
+
+    /// <summary>The sidebar section left open: Outline, Script, MathsReview or Notes.</summary>
+    public string SidebarSection { get; init; } = "Outline";
+
     /// <summary>Dark theme for the window. Light by default, as RailReader2.</summary>
     public bool DarkMode { get; init; }
 
