@@ -79,20 +79,6 @@ public sealed class PageRasterSource : IDisposable
     private ColourEffectShaders? _shaders;
     private bool _disposed;
 
-    /// <summary>
-    /// The last unfiltered renders, most recent first, so a change of colour filter re-filters a
-    /// page already rendered instead of rendering it again. Touched only by the worker thread.
-    /// </summary>
-    /// <remarks>
-    /// A filter change used to render the page again through PDFium, behind the process-wide lock
-    /// that the maths crops hold during playback: one change of scheme while reading took 5 s to
-    /// show. Re-filtering a held render needs no PDFium at all.
-    /// </remarks>
-    private readonly LinkedList<(int Page, int Dpi, SKBitmap Plain)> _plain = new();
-
-    /// <summary>Memory the unfiltered renders may hold: a few pages at reading resolution.</summary>
-    private const long PlainBudgetBytes = 96L * 1024 * 1024;
-
     private PageRasterSource(string path, IPdfService pdf, (double Width, double Height)[] pageSizes)
     {
         Path = path;
@@ -155,41 +141,7 @@ public sealed class PageRasterSource : IDisposable
     private void Work()
     {
         try { WorkLoop(); }
-        finally
-        {
-            _shaders?.Dispose();
-            foreach (var held in _plain) held.Plain.Dispose();
-            _plain.Clear();
-        }
-    }
-
-    /// <summary>The unfiltered render of a page at a resolution, if one is held; marked most recent.</summary>
-    private SKBitmap? HeldPlain(int page, int dpi)
-    {
-        for (var node = _plain.First; node is not null; node = node.Next)
-        {
-            if (node.Value.Page != page || node.Value.Dpi != dpi) continue;
-            _plain.Remove(node);
-            _plain.AddFirst(node);
-            return node.Value.Plain;
-        }
-        return null;
-    }
-
-    /// <summary>Holds a copy of an unfiltered render, dropping the oldest beyond the budget.</summary>
-    private void HoldPlain(int page, int dpi, SKBitmap rendered)
-    {
-        if ((long)rendered.ByteCount > PlainBudgetBytes) return;
-        var copy = rendered.Copy();
-        if (copy is null) return;   // out of memory for a copy: the page simply renders again next time
-        _plain.AddFirst((page, dpi, copy));
-        long total = _plain.Sum(h => (long)h.Plain.ByteCount);
-        while (total > PlainBudgetBytes && _plain.Last is { } oldest)
-        {
-            total -= oldest.Value.Plain.ByteCount;
-            oldest.Value.Plain.Dispose();
-            _plain.RemoveLast();
-        }
+        finally { _shaders?.Dispose(); }
     }
 
     private void WorkLoop()
@@ -253,24 +205,6 @@ public sealed class PageRasterSource : IDisposable
     {
         ct.ThrowIfCancellationRequested();
         long started = System.Diagnostics.Stopwatch.GetTimestamp();
-
-        // Already rendered at this resolution under another filter: filter the held render.
-        if (HeldPlain(key.PageIndex, key.Dpi) is { } held)
-        {
-            var copy = new SKBitmap(held.Info);
-            try
-            {
-                using var heldPaint = key.Effect == ColourEffect.None ? null : (_shaders ??= new ColourEffectShaders()).CreatePaint(key.Effect, key.Intensity);
-                using (var canvas = new SKCanvas(copy)) canvas.DrawBitmap(held, 0, 0, heldPaint);
-                return new PageRaster(key, copy, owner: null, System.Diagnostics.Stopwatch.GetElapsedTime(started));
-            }
-            catch
-            {
-                copy.Dispose();
-                throw;
-            }
-        }
-
         // The tiled renderer takes the PDFium lock a band at a time and can be cancelled between
         // bands; the plain one holds the lock for the whole page.
         IRenderedPage rendered = _pdf is IPdfTiledRenderService tiled
@@ -289,7 +223,6 @@ public sealed class PageRasterSource : IDisposable
             // A PDF render is BGRA8888; anything else would show red and blue reversed, not an error.
             if (source.Width <= 0 || source.Height <= 0 || source.BytesPerPixel != 4)
                 throw new InvalidOperationException($"Page {key.PageIndex + 1} rendered as an unusable raster.");
-            HoldPlain(key.PageIndex, key.Dpi, source);
 
             if (key.Effect == ColourEffect.None)
                 return new PageRaster(key, source, page, System.Diagnostics.Stopwatch.GetElapsedTime(started));

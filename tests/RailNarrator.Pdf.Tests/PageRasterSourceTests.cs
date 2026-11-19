@@ -202,35 +202,6 @@ public sealed class PageRasterSourceTests
     }
 
     [Fact]
-    public async Task ChangingTheColourFilter_RefiltersTheHeldRender_WithoutRenderingThePageAgain()
-    {
-        // During playback PDFium is busy with maths crops; a change of scheme that renders again
-        // waits behind them. The page rendered once is filtered from what is held, both ways.
-        string path = SyntheticPdf.WriteSingleColumn(SyntheticPdf.TempPath("raster-refilter"), Lines, pageCount: 2);
-        var factory = new GatedFactory();
-        using var source = await PageRasterSource.OpenAsync(path, factory: factory);
-        using var receiver = new Receiver(source);
-        factory.Service!.Release.Set();
-
-        source.Request([Key(0)]);
-        receiver.WaitFor(1);
-        source.Request([Key(0, effect: ColourEffect.HighContrast)]);
-        receiver.WaitFor(2);
-        source.Request([Key(0, effect: ColourEffect.Amber, intensity: 0.4f)]);
-        receiver.WaitFor(3);
-        source.Request([Key(0, dpi: 96)]);   // another resolution is a new render
-        receiver.WaitFor(4);
-
-        Assert.Equal([0, 0], factory.Service.Rendered);
-        var paper = receiver.Raster(Key(0, effect: ColourEffect.HighContrast)).Bitmap.GetPixel(4, 4);
-        Assert.True(paper.Red < 8 && paper.Blue < 8, "white paper should be black under high contrast");
-        var amber = receiver.Raster(Key(0, effect: ColourEffect.Amber, intensity: 0.4f)).Bitmap.GetPixel(4, 4);
-        var predicted = PageRasterSource.PaperColour(ColourEffect.Amber, 0.4f);
-        Assert.InRange(amber.Blue, predicted.Blue - 3, predicted.Blue + 3);
-        Assert.Equal(SKColors.White, receiver.Raster(Key(0)).Bitmap.GetPixel(4, 4));
-    }
-
-    [Fact]
     public async Task ADisposedSource_HandsOverNothingMore()
     {
         string path = SyntheticPdf.WriteSingleColumn(SyntheticPdf.TempPath("raster-dispose"), Lines, pageCount: 3);
