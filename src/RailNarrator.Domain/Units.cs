@@ -40,7 +40,8 @@ public sealed record ReadingUnitBuilderOptions(
     bool DetectRunningElements = true,
     int RunningElementMinPages = 3,
     bool SkipPublisherCoverPages = true,
-    bool SkipArticleMetadata = true)
+    bool SkipArticleMetadata = true,
+    bool SkipAffiliations = true)
 {
     public static ReadingUnitBuilderOptions Default { get; } = new(NarrationFilterSettings.Default);
 
@@ -252,6 +253,107 @@ public static class ArticleMetadata
     private static bool StartsWithWord(string text, string label)
         => text.StartsWith(label, StringComparison.OrdinalIgnoreCase)
            && (text.Length == label.Length || !char.IsLetter(text[label.Length]));
+}
+
+/// <summary>
+/// The authors' affiliations and the correspondence address on an article's first page: "1 Vrije
+/// Universiteit Amsterdam", "Department of Statistics, …", "Address correspondence to …, or
+/// e-mail: …". The reader's choice (2026-11-19) is to skip them, like the rest of the front matter.
+/// </summary>
+/// <remarks>
+/// <para>
+/// Found line by line, because a block often holds the title or the author names as well, and
+/// those are read. A line is an affiliation when it names an institution (university, institute,
+/// department, school, laboratory, centre, hospital, bank, company) or opens with a contact label
+/// or holds an e-mail address; a line in the same block that continues one (the line before it
+/// does not end a sentence) goes with it, as does a line that is only a footnote marker.
+/// </para>
+/// <para>
+/// Only on the first page of the article, and only where front matter is: above the abstract (or
+/// the first heading, or the top 45 % of the page when there is neither), or in the page's
+/// footnotes, where many journals put affiliations. A footnote line found by position rather than
+/// by the layout model's footnote class must start with a marker ("1", "*", "†"), so a body
+/// sentence that happens to mention a university at the foot of the page is still read.
+/// </para>
+/// </remarks>
+public static class Affiliations
+{
+    private static readonly System.Text.RegularExpressions.Regex Institution = new(
+        @"\b(?:Universit(?:y|ies|é|e|ät|at|eit|à|ad|ade|ario)|Institut(?:e|o|ion)?|Department|Dept\.|Departamento|Fakultät|Faculty|School|College|Laborator(?:y|ies)|Lab\.|Cent(?:re|er)\s+(?:for|of)|Research\s+Cent(?:re|er)|Academy|Hospital|Federal\s+Reserve|Bank\s+of|Central\s+Bank|National\s+Bureau|Inc\.|Ltd\.?|GmbH|Corporation|CNRS|INRIA|Max\s+Planck)\b",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    private static readonly System.Text.RegularExpressions.Regex Contact = new(
+        @"^\W{0,3}(?:Address\s+correspondence|Correspondence|Corresponding\s+author|Contact|E-?mail|Emails?)\b|@[\w-]+\.[\w.-]+",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+    private static readonly System.Text.RegularExpressions.Regex MarkerOnly = new(
+        @"^[\s\d*†‡§¶,a-e]{1,6}$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    private static readonly System.Text.RegularExpressions.Regex LeadingMarker = new(
+        @"^\s*(?:\d{1,2}|[*†‡§¶]+|[a-e])(?=\s*\p{Lu})", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    private static readonly System.Text.RegularExpressions.Regex AbstractLine = new(
+        @"^\s*(?:Abstract|ABSTRACT|Summary|SUMMARY)\b", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>A line longer than this is prose, not an affiliation.</summary>
+    public const int MaxLineLength = 220;
+
+    /// <summary>The affiliation lines of <paramref name="pageIndex"/>, as (page, line id).</summary>
+    public static IReadOnlyList<(int PageIndex, string LineId)> Find(ExtractionSnapshot snapshot, int pageIndex)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        var found = new List<(int, string)>();
+        var page = snapshot.Page(pageIndex);
+        if (page is null || page.Lines.Count == 0) return found;
+
+        string LineText(int i) => Slice(page.Text, page.Lines[i].Text);
+
+        // Where the front matter ends: the abstract, else the first heading, else most of the way
+        // down the top half.
+        float frontEnd = (float)(page.PageHeight * 0.45);
+        var abstractLine = Enumerable.Range(0, page.Lines.Count).Where(i => AbstractLine.IsMatch(LineText(i)))
+            .Select(i => (int?)i).FirstOrDefault();
+        if (abstractLine is int a) frontEnd = page.Lines[a].Rect.Top;
+        else if (page.OrderedBlocks.FirstOrDefault(b => b.Kind == BlockKind.Heading) is { } heading) frontEnd = heading.BBox.Top;
+        float footStart = (float)(page.PageHeight * 0.70);
+
+        foreach (var block in page.OrderedBlocks)
+        {
+            if (block.Kind is not (BlockKind.Text or BlockKind.Unknown or BlockKind.Footnote or BlockKind.Aside)) continue;
+            bool continuing = false;
+            int? pendingMarker = null;
+            foreach (int i in block.LineIndices)
+            {
+                var line = page.Lines[i];
+                string text = LineText(i).Trim();
+                bool front = line.Rect.Bottom <= frontEnd + 1;
+                bool foot = block.Kind == BlockKind.Footnote || line.Rect.Top >= footStart;
+                if (!front && !foot) { continuing = false; pendingMarker = null; continue; }
+                if (text.Length == 0) continue;
+                if (front && AbstractLine.IsMatch(text)) break;
+
+                bool named = text.Length <= MaxLineLength && (Institution.IsMatch(text) || Contact.IsMatch(text));
+                // Away from the top, a footnote the layout model did not label must look like one.
+                if (named && !front && block.Kind != BlockKind.Footnote && !LeadingMarker.IsMatch(text)) named = false;
+                bool marker = MarkerOnly.IsMatch(text);
+
+                if (named || (continuing && text.Length <= MaxLineLength && !marker))
+                {
+                    if (pendingMarker is int m) found.Add((page.PageIndex, page.Lines[m].LineId));
+                    found.Add((page.PageIndex, line.LineId));
+                    pendingMarker = null;
+                    // A sentence's end closes the affiliation; a comma or nothing carries it on.
+                    continuing = !text.EndsWith('.');
+                }
+                else if (marker) pendingMarker = i;
+                else { continuing = false; pendingMarker = null; }
+            }
+        }
+        return found;
+    }
+
+    private static string Slice(string text, TextRange range)
+        => range.Start >= 0 && range.End <= text.Length ? text.Substring(range.Start, range.Length) : "";
 }
 
 /// <summary>One line or block identified as a running header, footer or page number.</summary>
@@ -535,6 +637,19 @@ public sealed class ReadingUnitBuilder
         if (referenceHeadings.Count > 0)
             diag.Add($"Skipped {referenceHeadings.Count} heading(s) of a reference list that is not read.");
         var runningLineSet = running.Where(r => r.IsLineLevel).Select(r => (r.PageIndex, r.LineId!)).ToHashSet();
+        if (_options.SkipAffiliations)
+        {
+            // The article's first page: the first with text that is not a publisher's cover sheet.
+            var article = snapshot.Pages.FirstOrDefault(p => p.Lines.Count > 0
+                && !p.Blocks.All(b => runningBlockSet.Contains((p.PageIndex, b.BlockId))));
+            if (article is not null)
+            {
+                var affiliations = Affiliations.Find(snapshot, article.PageIndex);
+                foreach (var line in affiliations) runningLineSet.Add(line);
+                if (affiliations.Count > 0)
+                    diag.Add($"Skipped {affiliations.Count} line(s) of author affiliations and correspondence address on page {article.PageIndex + 1}.");
+            }
+        }
         if (running.Count > 0)
             diag.Add($"Suppressed {running.Count} running header/footer/page-number line(s) across {running.Select(r => r.PageIndex).Distinct().Count()} page(s).");
 

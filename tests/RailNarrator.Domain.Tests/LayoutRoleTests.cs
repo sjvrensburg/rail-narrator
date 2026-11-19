@@ -54,6 +54,13 @@ public sealed class LayoutRoleTests
             return this;
         }
 
+        /// <summary>Sets the next block's top, in page points (the page is 792 high).</summary>
+        public LayoutPage At(float y)
+        {
+            _y = y;
+            return this;
+        }
+
         private void Append(char c, PageRect rect)
         {
             _chars.Add(new ExtractedChar(_text.Length, rect, 0f));
@@ -433,6 +440,64 @@ public sealed class LayoutRoleTests
         Assert.DoesNotContain(units, u => u.OriginalText.StartsWith("Keywords", StringComparison.Ordinal));
         Assert.Contains(units, u => u.OriginalText.StartsWith("Received wisdom", StringComparison.Ordinal));
         Assert.Contains(diagnostics, d => d.Contains("metadata", StringComparison.Ordinal));
+    }
+
+    // ---- author affiliations (skipped: the reader's choice, 2026-11-19) ----
+
+    private static LayoutPage FirstPageLikeNbag025() => new LayoutPage(0)
+        .Block(BlockKind.Text, "Journal of Financial Econometrics, 2026, 24(5), nbag025", "Article")
+        .Block(BlockKind.Text, "Sparse Time-Variation in Conditional Correlations", "Etienne Wijler1, and Andre Lucas1,2,")
+        .Block(BlockKind.Text, "1", "Vrije Universiteit Amsterdam", "2", "Tinbergen Institute",
+            "Address correspondence to Etienne Wijler, Vrije Universiteit Amsterdam, SBE/EDS, De Boelelaan 1105,",
+            "Amsterdam, The Netherlands, or e-mail: e.j.j.wijler@vu.nl.")
+        .Block(BlockKind.Text, "Abstract", "We develop a data-driven procedure to identify partial correlations.");
+
+    private static string Spoken(IReadOnlyList<ReadingUnit> units) => string.Join(" | ", units.Select(u => u.OriginalText));
+
+    [Fact]
+    public void AffiliationsAndTheCorrespondenceAddress_AreSkipped_TheTitleAndAuthorsRead()
+    {
+        var units = new ReadingUnitBuilder().Build(FirstPageLikeNbag025().Snapshot(), out var diagnostics);
+        string spoken = Spoken(units);
+
+        Assert.DoesNotContain("Universiteit", spoken, StringComparison.Ordinal);
+        Assert.DoesNotContain("Tinbergen", spoken, StringComparison.Ordinal);
+        Assert.DoesNotContain("Netherlands", spoken, StringComparison.Ordinal);
+        Assert.DoesNotContain("wijler@", spoken, StringComparison.Ordinal);
+        Assert.Contains("Sparse Time-Variation", spoken, StringComparison.Ordinal);
+        Assert.Contains("Andre Lucas", spoken, StringComparison.Ordinal);
+        Assert.Contains("data-driven procedure", spoken, StringComparison.Ordinal);
+        Assert.Contains(diagnostics, d => d.Contains("affiliations", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AffiliationsAreRead_WhenTheReaderAsksForThem()
+    {
+        var units = new ReadingUnitBuilder(ReadingUnitBuilderOptions.Default with { SkipAffiliations = false })
+            .Build(FirstPageLikeNbag025().Snapshot());
+
+        Assert.Contains("Tinbergen Institute", Spoken(units), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AnAffiliationFootnote_IsSkipped_ButABodySentenceAtTheFootIsRead_AndLaterPagesAreLeftAlone()
+    {
+        var first = new LayoutPage(0)
+            .Block(BlockKind.Title, "College Admissions and Matching Markets")
+            .Block(BlockKind.Text, "Abstract", "We study admissions.")
+            .Block(BlockKind.Text, "The data were provided by the University of Cape Town library.")
+            .At(700).Block(BlockKind.Text, "* Department of Statistics, Nelson Mandela University, Gqeberha, South Africa.")
+            .Block(BlockKind.Text, "Our survey was answered by staff at the University of Cape Town.");
+        var second = new LayoutPage(1)
+            .Block(BlockKind.Text, "Department of Economics, University of Oxford, kindly shared its records.");
+
+        string spoken = Spoken(new ReadingUnitBuilder().Build(first.Snapshot(second)));
+
+        Assert.DoesNotContain("Nelson Mandela", spoken, StringComparison.Ordinal);
+        Assert.Contains("College Admissions", spoken, StringComparison.Ordinal);       // a title, though it names a college
+        Assert.Contains("provided by the University of Cape Town", spoken, StringComparison.Ordinal);
+        Assert.Contains("answered by staff", spoken, StringComparison.Ordinal);        // no marker: a body sentence
+        Assert.Contains("University of Oxford", spoken, StringComparison.Ordinal);     // not the first page
     }
 
     [Fact]

@@ -20,7 +20,7 @@ namespace RailNarrator.Inference;
 /// </remarks>
 public static class MathInterpretationPrompt
 {
-    public const string Version = "math-interpret/3";
+    public const string Version = "math-interpret/4";
 
     public const string System = """
         You are the narrator of an academic document that is being read aloud, passage by passage,
@@ -30,22 +30,27 @@ public static class MathInterpretationPrompt
         around it. Write what the narrator says in place of this passage.
 
         Mathematics and notation:
-        - Never read notation aloud and never write it. No symbols, no letters or Greek letters
-          standing for quantities, no subscripts or superscripts, no equations, no "x sub t",
-          no "sigma squared", no "h t".
-        - Say what each expression MEANS: what quantity is defined, what it depends on, what goes up
-          when what goes down, what a condition requires.
-        - Call quantities by the names the document gives them ("the conditional variance", "the
-          short-run component"). If the text gives a quantity no name, describe its role ("the
-          weight on past shocks").
-        - Conditions and restrictions become what they require ("all the weights are positive and
-          the persistence is less than one").
+        - Prefer plain language. Say what an expression MEANS: what quantity is defined, what it
+          depends on, what goes up when what goes down, what a condition requires. Call quantities
+          by the names the document gives them ("the conditional variance", "the short-run
+          component"); conditions become what they require ("all the weights are positive").
+        - Use notation when it serves the listener better than a paraphrase:
+          - a symbol the text keeps using, which the listener will hear again, may be named once
+            beside its meaning ("the conditional variance, sigma t squared");
+          - when you are not sure what an expression means, read it as a lecturer reads notation
+            aloud instead of guessing ("x sub t equals beta times x sub t minus one, plus an
+            error"). A faithful reading of the notation is better than a confident wrong meaning.
+        - Notation is always written as it is spoken, in words: "sigma squared", "x sub t",
+          "beta hat", "the sum over i of", "equals", "is at most". Never write symbols, Greek
+          letters, underscores, carets or LaTeX: the speech engine cannot read them.
 
         Shape of the answer:
+        - Be brief: a listener cannot skim. Say what the passage says, once, and stop.
         - A sentence with mathematics: keep the sentence's own wording wherever it is not
-          mathematics, and replace each piece of notation by its meaning, so the result is one
-          fluent sentence that can be spoken in its place.
-        - A display equation: one to three sentences saying what it states. Do not open every
+          mathematics, and replace each piece of notation by its meaning (or its spoken reading),
+          so the result is one fluent sentence that can be spoken in its place, not much longer
+          than the sentence itself.
+        - A display equation: one or two short sentences saying what it states. Do not open every
           answer with "This equation"; a narrator varies.
         - Do not add results, motivation, assumptions or commentary that the passage and its
           context do not contain. Do not mention the image or the text layer.
@@ -81,34 +86,54 @@ public static class MathInterpretationPrompt
 }
 
 /// <summary>
-/// Rejects spoken maths that still carries notation, as the narrate skill does: a listener cannot
-/// hear a subscript, and a speech engine reads "h t" as two letters.
+/// Rejects spoken maths that a speech engine cannot say, or that reads notation where it should
+/// explain.
 /// </summary>
+/// <remarks>
+/// Notation written as symbols ("σ", "x_t", "=", LaTeX) is refused: no engine reads it. Notation
+/// written as it is spoken ("sigma squared", "x sub t", "beta hat") is allowed since prompt version
+/// 4: the reader found an answer with no symbols at all strained, and asked for plain language
+/// first and the notation when the model is unsure of the meaning (2026-11-19). An answer that is
+/// mostly spoken notation is refused, so the plain-language preference is enforced rather than
+/// only asked for. Glued letters ("ht", the residue of a subscript) are still refused: an engine
+/// may read them as a word.
+/// </remarks>
 public static partial class SpokenMathsValidator
 {
-    // The narrate skill's pattern, plus Greek letters and spelt-out notation words.
+    // Written notation: the narrate skill's pattern, plus Greek letters.
     [GeneratedRegex(@"[$\\^_{}]|\b[a-zA-Z]_[a-zA-Z0-9]|[=<>±×÷∑∏∫√≤≥≈≠∞∂∇∈∼]|[α-ωΑ-Ω]")]
     private static partial Regex Notation();
 
-    [GeneratedRegex(@"\b(alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|lambda|mu|nu|xi|rho|sigma|tau|upsilon|phi|chi|psi|omega|subscript|superscript|sub|hat|tilde)\b", RegexOptions.IgnoreCase)]
-    private static partial Regex NotationWords();
+    // Spoken notation: a Greek letter's name, a notation word, or a lone letter other than the
+    // words "a", "A" and "I". Allowed, but counted.
+    [GeneratedRegex(@"(?<![\w'’-])(?:alpha|beta|gamma|delta|epsilon|zeta|eta|theta|iota|kappa|lambda|mu|nu|xi|rho|sigma|tau|upsilon|phi|chi|psi|omega|sub|subscript|superscript|hat|tilde|bar|prime|squared|cubed|[b-hj-zB-HJ-Z])(?![\w'’-])", RegexOptions.IgnoreCase)]
+    private static partial Regex SpokenNotation();
 
-    // Letter variables: a lone letter other than the words "a", "A" and "I", or a short lowercase
-    // token with no vowel ("ht", "gt", "xt") — the residue of a subscripted variable.
-    [GeneratedRegex(@"(?<![\w'’-])(?:[b-hj-zB-HJ-Z]|[bcdfghjklmnpqrstvwxz]{2,3})(?![\w'’-])")]
-    private static partial Regex LetterVariable();
+    // A short lowercase token with no vowel ("ht", "gt", "xt"): letters glued together where a
+    // subscript was.
+    [GeneratedRegex(@"(?<![\w'’-])[bcdfghjklmnpqrstvwxz]{2,3}(?![\w'’-])")]
+    private static partial Regex GluedLetters();
+
+    [GeneratedRegex(@"[\p{L}\p{N}'’-]+")]
+    private static partial Regex Word();
+
+    /// <summary>Above this share of spoken notation among the words, the answer reads instead of explaining.</summary>
+    public const double MaxNotationShare = 0.35;
 
     public static IReadOnlyList<string> Problems(string? spoken, MathInterpretationRequest request)
     {
         var problems = new List<string>();
         if (string.IsNullOrWhiteSpace(spoken)) { problems.Add("The response was empty."); return problems; }
-        if (Notation().Match(spoken) is { Success: true } n) problems.Add($"It still contains notation: \"{n.Value}\".");
-        if (NotationWords().Match(spoken) is { Success: true } w) problems.Add($"It names notation instead of meaning: \"{w.Value}\".");
-        if (LetterVariable().Match(spoken) is { Success: true } v) problems.Add($"It reads a variable name aloud: \"{v.Value}\".");
+        if (Notation().Match(spoken) is { Success: true } n) problems.Add($"It writes notation as symbols: \"{n.Value}\".");
+        if (GluedLetters().Match(spoken) is { Success: true } g) problems.Add($"It glues letters into a non-word: \"{g.Value}\"; write each letter apart, as spoken.");
+        int words = Word().Count(spoken);
+        int notation = SpokenNotation().Count(spoken);
+        if (notation >= 4 && notation > words * MaxNotationShare)
+            problems.Add($"It mostly reads notation ({notation} of {words} words) instead of saying what it means.");
         if (spoken.Contains("```", StringComparison.Ordinal) || spoken.TrimStart().StartsWith('#'))
             problems.Add("It contains markdown.");
         // A passage read in place must not turn into an essay.
-        int limit = Math.Max(600, request.TextLayer.Length * 4);
+        int limit = Math.Max(500, request.TextLayer.Length * 3);
         if (spoken.Length > limit) problems.Add($"It is too long to speak in place of the passage ({spoken.Length} characters; at most {limit}).");
         return problems;
     }
@@ -361,8 +386,9 @@ public sealed partial class OpenAiCompatibleMathInterpreter : IMathInterpreter, 
             {
                 ["role"] = "user",
                 ["content"] = "That cannot be spoken as it is: " + string.Join(" ", found) +
-                              " Say it again in words only, with no symbols, letters standing for quantities or notation, " +
-                              "and output only the words to speak.",
+                              " Say it again, briefly, preferring plain language; any notation you keep must be written " +
+                              "as it is spoken (\"sigma squared\", \"x sub t\"), never as symbols. " +
+                              "Output only the words to speak.",
             });
         }
         return new MathInterpretationResult(null, warnings, problems.Count > 0 ? problems : ["No usable response."]);

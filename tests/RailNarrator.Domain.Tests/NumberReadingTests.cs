@@ -70,4 +70,32 @@ public sealed class NumberReadingTests
         var source = spoken.ToSourceRanges(new TextRange(start, "nineteen eighty nine".Length));
         Assert.Equal("1989", text.Substring(source.Min(r => r.Start), source.Max(r => r.End) - source.Min(r => r.Start)));
     }
+
+    // ---- DOIs: "DOI link" (the reader's choice, 2026-11-19) ----
+
+    [Theory]
+    [InlineData("nbag025 https://doi.org/10.1093/jjfinec/nbag025 Article", "nbag025 DOI link Article")]
+    [InlineData("See doi: 10.1016/j.jeconom.2020.01.003.", "See DOI link.")]
+    [InlineData("DOI 10.1080/07350015.2014.983601, published", "DOI link, published")]
+    [InlineData("(available at dx.doi.org/10.1002/jae.2389)", "(available at DOI link)")]
+    [InlineData("(10.1016/S0304-4076(02)00043-8)", "(DOI link)")]
+    [InlineData("Econometrica 10.2307/1912773 shows", "Econometrica DOI link shows")]   // JSTOR: an all-digit suffix
+    public void Dois_AreReadAsADoiLink(string text, string expected)
+        => Assert.Equal(expected, Spoken(text));
+
+    [Theory]
+    [InlineData("version 10.5 of the software", "version ten point five of the software")]
+    [InlineData("a ratio of 10.25/2", "a ratio of ten point two five/two")]   // a DOI's registrant code has 4-9 digits
+    public void NumbersThatAreNotDois_AreStillRead(string text, string expected)
+        => Assert.Equal(expected, Spoken(text));
+
+    [Fact]
+    public void ADoiLink_MapsBackToTheWholePrintedDoi()
+    {
+        const string text = "See https://doi.org/10.1093/jjfinec/nbag025 here.";
+        var spoken = TextNormaliser.ExpandForSpeech(text);
+        int at = spoken.Text.IndexOf("DOI link", StringComparison.Ordinal);
+        var mapping = Assert.Single(spoken.Mappings, m => m.Output.Start == at);
+        Assert.Equal("https://doi.org/10.1093/jjfinec/nbag025", text.Substring(mapping.Input.Start, mapping.Input.Length));
+    }
 }
