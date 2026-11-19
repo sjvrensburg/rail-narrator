@@ -79,23 +79,13 @@ In rough priority order:
   cache key). Two things to keep: Kokoro's WebGPU hook (`KokoroGpu`) is built after the layout
   probe today and whether the two may overlap is unknown, and the start-up notes list is not
   thread-safe.
-- **Render only the crop for the maths interpreter.** A narrow equation makes the whole page
-  render at up to 8192 px (`RenderCropPngAsync`). This needs a region render in RailReaderCore
-  (for example `RenderRegionPixmap(page, rect, scale)` beside `RenderPagePixmap`), requested in
-  [RailReaderCore #222](https://github.com/sjvrensburg/RailReaderCore/issues/222): Core's
-  `PdfiumGate` and `PdfiumNative` are internal, so the application cannot call PDFium under
-  Core's lock itself, and capping the resolution instead changes what the model sees. It no
-  longer costs the reader anything visible (painting does not wait for PDFium); it costs the
-  page rasteriser up to 134 ms and a 140 MB array per narrow equation.
-- **What is left of headings read late** (`status.md` item 70). PP-DocLayoutV3 itself places
-  "References" directly after its list in 2 of 18 papers; it is heard only with references
-  switched on, and a heading ordered straight after the block below it could be moved in front.
-  Heron with Core's XY-cut++ has 4 of 521 headings and 25 of 3,585 other neighbouring pairs out
-  of order on the same papers, among them a subsection heading before its section heading
-  (linton-mammen-2005, page 14) and a title read after the side column of an MDPI first page.
-  Those belong to Core's resolver and are reported, with six pages reduced to a few boxes each,
-  in [RailReaderCore #223](https://github.com/sjvrensburg/RailReaderCore/issues/223); three of
-  them trace to its heading-attachment pass. Do not work round them here before Core answers.
+- **What is left of reading order after Core 0.93.0** (`status.md` item 80). Core answered both
+  requests (#222 region rendering, now used for maths crops; #223 XY-cut++ ordering). Through the
+  adapter, Heron INT8: 1 of 1,129 headings and 6 of 7,141 other blocks are still read after the
+  block below them over 767 pages, mostly figures and empty text boxes; the one heading is a chart
+  legend ("SPMLGARCH") detected as a heading. PP-DocLayoutV3 keeps its own order and still places
+  "References" after its list in 2 of 18 papers (heard only with references on).
+
 - **Kokoro's CPU thread default.** 4–6 threads were about 10 % faster than the provider's 8 on the
   i7-12700H; re-measure on the reference machine before changing it.
 

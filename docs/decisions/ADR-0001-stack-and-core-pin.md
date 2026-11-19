@@ -1,6 +1,6 @@
 # ADR-0001: Stack, and pinning RailReaderCore to published NuGet packages
 
-**Status:** accepted · **Date:** 2026-11-17 · **Amended:** 2026-11-18 (pin moved to 0.90.0, then 0.91.0, see below)
+**Status:** accepted · **Date:** 2026-11-17 · **Amended:** 2026-11-18 (pin moved to 0.90.0, then 0.91.0), 2026-11-19 (0.93.0); see below
 
 ## Decision
 
@@ -85,3 +85,31 @@ generated pronunciations, and Kokoro on WebGPU); only the real-audio-device test
 Rechecked for ADR-0007 on plugin 0.6: stock Kokoro models (int64 `tokens`) still abort the process
 on WebGPU, the fp16 export still gives NaN samples, and the converted fp32 model still gives real
 audio at RTF 0.26–0.28, so the conversion and the fp32 choice stand.
+
+## Amendment 2026-11-19: pin moved to 0.93.0
+
+All seven RailReaderCore packages were moved to **0.93.0**, published from upstream commit
+`5b89cb310c43d2f96c650dbdb7e27d125dc60042` (tag `v0.93.0`, as recorded in the package's nuspec).
+0.92.0 changed only the Markdown export, which this application does not use. 0.93.0 answers the
+two requests this project raised:
+
+- **#222, region rendering.** Maths crops are rendered as a region (`RenderRegionPixmap`) instead
+  of a whole page at the crop's scale: an 80 pt equation no longer costs an 8192 px page raster.
+  The crops are not byte-identical to the old ones (measured; the whole-page render scaled its two
+  axes a hair apart), so maths answers cached against old crops are asked for again once; the
+  reader chose this over keeping the whole-page render. With the page no longer held to 8192 px,
+  a narrow equation's crop gets the full width asked for (1024 px, where it had 828).
+- **#223, XY-cut++ ordering.** Surveyed through this application's adapter with Heron INT8 on the
+  CPU (`tools/RailNarrator.OrderSurvey`, OCR off) over the same 767 pages of 49 PDFs (the five
+  econometrics papers of `local_lev_test/external papers` and the 44 of the RailDLA corpus, up to
+  20 pages each): blocks read after the nearest content block directly below them fell from 13 to
+  1 of 1,129 headings and from 107 to 6 of 7,141 other blocks.
+
+Dependencies are unchanged from 0.91.0 (ONNX Runtime 1.32.0, WebGPU plugin 0.6.0), so ADR-0006 and
+ADR-0007 stand. The Core assembly versions are part of the extraction cache key
+(`ServiceRegistry.ExtractionBackendFingerprint`), so 0.91.0 snapshots are not reused and
+`ExtractorVersions.Current` needs no bump.
+
+**Verified:** the build has 0 warnings; all 562 tests pass with the opt-in integrations enabled
+(real Kokoro on the CPU and on WebGPU, Heron and PP-DocLayoutV3 through the adapter on the CPU and
+the GPU, MFA alignment); only the real-audio-device test was left off.

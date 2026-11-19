@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Rail Narrator is a Linux desktop app (C# / .NET 10, Avalonia 12, SkiaSharp) that reads a PDF aloud, highlights the passage being spoken in the original document, and follows the reading position. PDF rendering, layout, reading order and OCR come from [RailReaderCore](https://github.com/sjvrensburg/RailReaderCore), consumed as NuGet packages pinned to 0.91.0 — Core cannot be modified here; write an application-side adapter instead of a second PDF stack.
+Rail Narrator is a Linux desktop app (C# / .NET 10, Avalonia 12, SkiaSharp) that reads a PDF aloud, highlights the passage being spoken in the original document, and follows the reading position. PDF rendering, layout, reading order and OCR come from [RailReaderCore](https://github.com/sjvrensburg/RailReaderCore), consumed as NuGet packages pinned to 0.93.0 — Core cannot be modified here; write an application-side adapter instead of a second PDF stack.
 
 ## Commands
 
@@ -27,6 +27,10 @@ tools/RailNarrator.Smoke/bin/Release/net10.0/rail-narrator-smoke all --kokoro-mo
 # Maths interpretation on a real PDF through the real model (no cache; an hour for a whole paper)
 dotnet build tools/RailNarrator.MathBench -c Release
 tools/RailNarrator.MathBench/bin/Release/net10.0/rail-narrator-mathbench paper.pdf PP-DocLayoutV3.onnx [--pages 2-8] [--only 12,24] [--thinking off|equations|always]
+
+# Reading order through the adapter: blocks read after the block below them (run before and after a Core upgrade)
+dotnet build tools/RailNarrator.OrderSurvey -c Release
+tools/RailNarrator.OrderSurvey/bin/Release/net10.0/rail-narrator-order-survey heron <heron-int8.onnx> out.json [--max-pages 20] <pdf-or-dir>...
 
 ./packaging/build-release.sh                       # self-contained linux-x64 archive into dist/
 bash tools/setup-word-alignment.sh                 # optional MFA runtime (needs micromamba, several GB)
