@@ -18,15 +18,42 @@ public sealed class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
-            var services = ServiceRegistry.Create();
-            RequestedThemeVariant = services.CurrentSettings.DarkMode ? ThemeVariant.Dark : ThemeVariant.Light;
-            var window = new MainWindow(services);
-            window.FontSize = FontSizeFor(services.CurrentSettings.UiFontScale);
-            desktop.MainWindow = window;
-            desktop.Exit += (_, _) => DisposeServices(services);
-            HandleTerminationSignals(window);
+            // As RailReader2: a splash while the services are put together (the speech model, the
+            // aligner and the GPU take seconds), off the UI thread so the splash is drawn, and a
+            // window that says why if they cannot be. Until the main window exists, closing the
+            // splash must not end the application.
+            desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
+            var splash = new SplashWindow();
+            splash.Show();
+            _ = StartAsync(desktop, splash);
         }
         base.OnFrameworkInitializationCompleted();
+    }
+
+    private async Task StartAsync(IClassicDesktopStyleApplicationLifetime desktop, SplashWindow splash)
+    {
+        ServiceRegistry services;
+        try
+        {
+            services = await Task.Run(ServiceRegistry.Create);
+        }
+        catch (Exception ex)
+        {
+            var error = new StartupErrorWindow(ex);
+            error.Closed += (_, _) => desktop.Shutdown(1);
+            error.Show();
+            splash.Close();
+            return;
+        }
+
+        RequestedThemeVariant = services.CurrentSettings.DarkMode ? ThemeVariant.Dark : ThemeVariant.Light;
+        var window = new MainWindow(services) { FontSize = FontSizeFor(services.CurrentSettings.UiFontScale) };
+        desktop.MainWindow = window;
+        desktop.ShutdownMode = ShutdownMode.OnMainWindowClose;
+        desktop.Exit += (_, _) => DisposeServices(services);
+        HandleTerminationSignals(window);
+        window.Show();
+        splash.Close();
     }
 
     /// <summary>

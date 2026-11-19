@@ -1,0 +1,16 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:Class="RailNarrator.App.Views.SplashWindow"
+        Title="Rail Narrator" Width="360" Height="250" CanResize="False"
+        WindowDecorations="None" WindowStartupLocation="CenterScreen" ShowInTaskbar="True"
+        Background="#F4F4F4">
+  <!-- As RailReader2's splash: the mark, the name, a line saying what it is, and a thin bar while
+       the speech model, the aligner and the GPU are made ready (several seconds). -->
+  <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="8">
+    <Image Source="avares://rail-narrator/Assets/rail-narrator.png" Width="96" Height="96" HorizontalAlignment="Center" />
+    <TextBlock Text="Rail Narrator" FontSize="26" FontWeight="SemiBold" Foreground="#1A1A1A" HorizontalAlignment="Center" />
+    <TextBlock Text="Reads your PDFs aloud" FontSize="13" Foreground="#606060" HorizontalAlignment="Center" />
+    <!-- Indeterminate only while shown: a hidden indeterminate bar keeps animating (RailReader2's finding). -->
+    <ProgressBar Name="Bar" IsIndeterminate="True" Width="200" Height="3" MinHeight="3" Margin="0,10,0,0" />
+  </StackPanel>
+</Window>

@@ -37,6 +37,10 @@ ln -sf ../lib/rail-narrator/rail-narrator "$OUT/$NAME/usr/bin/rail-narrator-bin"
 sed -i 's#exec "$bin/rail-narrator" "$@"#exec "$bin/../lib/rail-narrator/rail-narrator" "$@"#' \
   "$OUT/$NAME/usr/bin/rail-narrator"
 cp "$ROOT/packaging/rail-narrator.desktop" "$OUT/$NAME/usr/share/applications/rail-narrator.desktop"
+# The launcher's icon (the .desktop file names it "rail-narrator").
+mkdir -p "$OUT/$NAME/usr/share/icons/hicolor/256x256/apps" "$OUT/$NAME/usr/share/icons/hicolor/scalable/apps"
+cp "$ROOT/packaging/rail-narrator.png" "$OUT/$NAME/usr/share/icons/hicolor/256x256/apps/rail-narrator.png"
+cp "$ROOT/packaging/rail-narrator.svg" "$OUT/$NAME/usr/share/icons/hicolor/scalable/apps/rail-narrator.svg"
 
 cat > "$OUT/$NAME/NATIVE-DEPENDENCIES.txt" <<'TXT'
 Native libraries Rail Narrator needs at runtime, beyond what the archive bundles.

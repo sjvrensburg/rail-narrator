@@ -99,3 +99,20 @@ public sealed class RelayCommand : ICommand
 
     public void RaiseCanExecuteChanged() => CanExecuteChanged?.Invoke(this, EventArgs.Empty);
 }
+
+/// <summary>A synchronous command with a typed parameter (a recent document in a list, say).</summary>
+public sealed class RelayCommand<T> : ICommand where T : class
+{
+    private readonly Action<T> _execute;
+
+    public RelayCommand(Action<T> execute) => _execute = execute ?? throw new ArgumentNullException(nameof(execute));
+
+    public event EventHandler? CanExecuteChanged { add { } remove { } }
+
+    public bool CanExecute(object? parameter) => parameter is T;
+
+    public void Execute(object? parameter)
+    {
+        if (parameter is T value) _execute(value);
+    }
+}

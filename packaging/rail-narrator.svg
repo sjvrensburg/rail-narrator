@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- Rail Narrator's mark, drawn in the style of RailReader2's: the same rail track, and in place
+       of its magnifier a ring of the same weight holding a speaker that speaks. -->
+  <g fill="#000">
+    <rect x="12" y="132" width="232" height="6" rx="1"/>
+    <rect x="12" y="152" width="232" height="6" rx="1"/>
+    <polygon points="28,124 37,124 31,166 22,166"/><polygon points="45,124 54,124 48,166 39,166"/><polygon points="62,124 71,124 65,166 56,166"/><polygon points="79,124 88,124 82,166 73,166"/><polygon points="181,124 190,124 184,166 175,166"/><polygon points="198,124 207,124 201,166 192,166"/><polygon points="215,124 224,124 218,166 209,166"/><polygon points="232,124 241,124 235,166 226,166"/>
+  </g>
+  <circle cx="128" cy="112" r="42" fill="#fff" stroke="#000" stroke-width="8"/>
+  <path d="M100,100 h11 l15,-14 v52 l-15,-14 h-11 z" fill="#000" stroke="#000" stroke-width="3" stroke-linejoin="round"/>
+  <g fill="none" stroke="#000" stroke-width="6" stroke-linecap="round">
+    <path d="M136,101 A15,15 0 0 1 136,123"/>
+    <path d="M143,92 A27,27 0 0 1 143,132"/>
+  </g>
+  <path d="M104,88 A30,30 0 0 1 118,80" fill="none" stroke="#000" stroke-width="3" stroke-linecap="round"/>
+</svg>

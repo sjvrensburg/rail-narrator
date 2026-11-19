@@ -260,6 +260,10 @@ public sealed class PdfSurface : Control
     /// The reader turns to the next or previous page: shown from its top (or, going back, its bottom),
     /// with following paused so the camera does not pull the view straight back.
     /// </summary>
+    /// <summary>Saves a thumbnail of the open document's first page (off the UI thread; see PageRasterSource.SaveThumbnail).</summary>
+    public Task SaveFirstPageThumbnailAsync(string path, int width = 156)
+        => _source is { } source ? Task.Run(() => source.SaveThumbnail(0, width, path)) : Task.CompletedTask;
+
     /// <summary>The open document's outline; empty when it has none or nothing is open.</summary>
     public IReadOnlyList<OutlineEntry> Outline => _source?.Outline ?? [];
 
