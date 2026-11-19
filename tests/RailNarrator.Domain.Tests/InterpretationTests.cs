@@ -241,7 +241,7 @@ public sealed class InterpretationTests
         var transport = new FakeAudioTransport();
         var resolver = new GatedResolver("The variance splits in two.");
         await using var coordinator = new NarrationCoordinator(new FakeTtsProvider(), transport,
-            options: new NarrationCoordinatorOptions(LookaheadSegments: 3, PreRollSeconds: 30, PreRollTimeoutSeconds: 30), resolver: resolver);
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 3, LookaheadSeconds: 0, PreRollSeconds: 30, PreRollTimeoutSeconds: 30), resolver: resolver);
         await coordinator.LoadPlanAsync(plan);
 
         var play = coordinator.PlayAsync();
@@ -264,7 +264,7 @@ public sealed class InterpretationTests
         var transport = new FakeAudioTransport();
         var resolver = new GatedResolver("never");
         await using var coordinator = new NarrationCoordinator(new FakeTtsProvider(), transport,
-            options: new NarrationCoordinatorOptions(LookaheadSegments: 1, PreRollSeconds: 30, PreRollTimeoutSeconds: 0.4), resolver: resolver);
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 1, LookaheadSeconds: 0, PreRollSeconds: 30, PreRollTimeoutSeconds: 0.4), resolver: resolver);
         await coordinator.LoadPlanAsync(plan);
 
         var started = System.Diagnostics.Stopwatch.StartNew();
@@ -300,7 +300,7 @@ public sealed class InterpretationTests
         const string words = "The variance is assumed to split into two multiplied parts.";
         var resolver = new MathInterpretationResolver(FakeInterpreter.Saying(words), options: Interpret);
         await using var coordinator = new NarrationCoordinator(tts, transport,
-            options: new NarrationCoordinatorOptions(LookaheadSegments: 3), resolver: resolver);
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 3, LookaheadSeconds: 0), resolver: resolver);
         var published = new List<NarrationSegment>();
         coordinator.SegmentResolved += s => { lock (published) published.Add(s); };
 
@@ -345,7 +345,7 @@ public sealed class InterpretationTests
         var interpreter = new FakeInterpreter(_ => new MathInterpretationResult(++call == 1 ? "First wording of the passage." : "Second wording of the passage.", [], []));
         var tts = new FakeTtsProvider();
         await using var coordinator = new NarrationCoordinator(tts, new FakeAudioTransport(),
-            options: new NarrationCoordinatorOptions(LookaheadSegments: 3),
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 3, LookaheadSeconds: 0),
             resolver: new MathInterpretationResolver(interpreter, options: Interpret));
         await coordinator.LoadPlanAsync(plan);
         await WaitUntil(() => coordinator.Plan?.Segments[1].Provenance == ScriptProvenance.ModelGenerated, "the first interpretation");

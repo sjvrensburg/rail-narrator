@@ -81,9 +81,18 @@ public interface IAudioTransport
 
 /// <summary>Coordinator tuning.</summary>
 /// <param name="LookaheadSegments">
-/// How many segments to prepare ahead of playback. Bounded on purpose: synthesising a whole book
-/// before playing it wastes minutes of inference and hundreds of megabytes, and the first audible
-/// output is what the user is waiting for.
+/// The fewest passages to prepare ahead of playback, however long they are.
+/// </param>
+/// <param name="LookaheadSeconds">
+/// How much listening to have ready beyond the passage being read: passages are prepared until
+/// they would take this long to hear (at the playback rate), or until
+/// <paramref name="MaxLookaheadSegments"/>. Counted in time, not passages: four short sentences
+/// were 15 s, less than one slow preparation, and reading stopped mid-paragraph to wait for one.
+/// </param>
+/// <param name="MaxLookaheadSegments">
+/// The most passages prepared ahead, and kept in memory, whatever their length. Bounded on
+/// purpose: synthesising a whole book before playing it wastes minutes of inference and hundreds
+/// of megabytes, and the first audible output is what the user is waiting for.
 /// </param>
 /// <param name="MaxConcurrentSynthesis">
 /// Synthesis jobs in flight at once. One where memory is constrained; OCR, vision inference, LLM
@@ -115,7 +124,9 @@ public sealed record NarrationCoordinatorOptions(
     bool RequestTimings = true,
     int InterpretAheadSegments = 40,
     double PreRollSeconds = 60,
-    double PreRollTimeoutSeconds = 20)
+    double PreRollTimeoutSeconds = 20,
+    double LookaheadSeconds = 60,
+    int MaxLookaheadSegments = 40)
 {
     /// <summary>Speaking rate used to estimate how long a passage takes, from its length (Kokoro at 1×).</summary>
     public const double EstimatedCharactersPerSecond = 15;
@@ -183,6 +194,9 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     // What each passage's preparation is doing right now, by segment id, so a wait the reader asked
     // for can say what it is waiting on. Written by whichever path is doing the work.
     private readonly ConcurrentDictionary<string, PreparationStage> _stages = new(StringComparer.Ordinal);
+
+    /// <summary>Word alignments in flight, by segment: run after a passage is playable (AlignInBackground).</summary>
+    private readonly ConcurrentDictionary<string, Task> _aligning = new(StringComparer.Ordinal);
     private long _loadSequence;
     private CancellationTokenSource? _interpretCts;
     private readonly CancellationTokenSource _lifetime = new();
@@ -302,7 +316,24 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         // a state that never left Preparing told the reader the document was still loading.
         Publish(PlaybackState.Idle, null);
         StartPreparation(gen);
+        WarmUpAligner();
         await Task.CompletedTask.ConfigureAwait(false);
+    }
+
+    private int _alignerWarming;
+
+    /// <summary>
+    /// Starts the word aligner while the reader is still looking at the page, once per session,
+    /// rather than leaving it to the first passage that needs fresh audio.
+    /// </summary>
+    private void WarmUpAligner()
+    {
+        if (!_options.RequestTimings || _aligner is not { } aligner || Interlocked.Exchange(ref _alignerWarming, 1) == 1) return;
+        _ = Task.Run(async () =>
+        {
+            try { await aligner.WarmUpAsync(_lifetime.Token).ConfigureAwait(false); }
+            catch (Exception) { /* the first alignment reports what is wrong */ }
+        });
     }
 
     /// <summary>Starts playback from the current segment.</summary>
@@ -732,21 +763,41 @@ public sealed class NarrationCoordinator : IAsyncDisposable
 
         int start;
         lock (_gate) start = Math.Max(0, _segmentIndex);
-        int end = Math.Min(plan.SegmentCount, start + Math.Max(1, _options.LookaheadSegments));
+        int end = Math.Min(plan.SegmentCount, start + LookaheadCap);
+        int fewest = Math.Max(1, _options.LookaheadSegments);
 
         // One expensive inference job at a time by default: OCR, vision, LLM and TTS contend for the
         // same memory, and tuning concurrency before measuring is how a reader runs out of RAM.
         using var limiter = new SemaphoreSlim(Math.Max(1, _options.MaxConcurrentSynthesis));
+        double ready = 0;   // listening time prepared beyond the passage being read
         for (int i = start; i < end && !ct.IsCancellationRequested; i++)
         {
             if (generation != Generation) return;
+            if (i - start >= fewest && ready >= _options.LookaheadSeconds) return;
             var segment = plan.Segments[i];
             await limiter.WaitAsync(ct).ConfigureAwait(false);
             try
             {
                 await PrepareSegmentAsync(segment, caps, format, voice, generation, ct).ConfigureAwait(false);
+                // Its word timing is the next expensive job: wait for it here, so the bound holds,
+                // while playback (which does not wait for it) can already play the passage.
+                if (_aligning.TryGetValue(segment.Id, out var aligning)) await aligning.ConfigureAwait(false);
             }
             finally { limiter.Release(); }
+            if (i > start) ready += PreparedListeningSeconds(segment.Id);
+        }
+    }
+
+    /// <summary>Passages that may be prepared ahead and held, beyond the one being read.</summary>
+    private int LookaheadCap => Math.Max(Math.Max(1, _options.LookaheadSegments), _options.MaxLookaheadSegments);
+
+    /// <summary>How long a prepared passage takes to hear at the playback rate; zero when it is not prepared.</summary>
+    private double PreparedListeningSeconds(string segmentId)
+    {
+        lock (_gate)
+        {
+            if (!_prepared.TryGetValue(segmentId, out var clip) || clip.Asset.Format.SampleRate <= 0) return 0;
+            return clip.Asset.FrameCount / (double)clip.Asset.Format.SampleRate / Math.Max(0.25, _options.PlaybackRate);
         }
     }
 
@@ -889,10 +940,11 @@ public sealed class NarrationCoordinator : IAsyncDisposable
                 var cachedPcm = await _assetStore.TryLoadPcmAsync(assetId, ct).ConfigureAwait(false);
                 if (cachedPcm is { } pcm && generation == Generation)
                 {
-                    var beforeAlignment = cached;
-                    cached = await AlignAssetAsync(segment, cached, pcm, ct).ConfigureAwait(false);
-                    if (generation != Generation) return;
-                    if (!ReferenceEquals(beforeAlignment, cached)) await _assetStore.StoreAsync(cached, pcm, ct).ConfigureAwait(false);
+                    // Word timing from another aligner revision is not used while it is measured
+                    // again: the passage is highlighted whole until the new timing arrives.
+                    if (cached.HasTimings && cached.TimingProvenance == TimingProvenance.ForcedAlignment
+                        && !IsCurrentAlignment(segment, cached, pcm))
+                        cached = cached with { Timings = [], TimingProvenance = TimingProvenance.ClipBoundary };
                     lock (_gate)
                     {
                         if (generation != Generation) return;
@@ -900,6 +952,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
                         AttachTimings(segment, cached);
                     }
                     await TryQueueNextAsync(generation).ConfigureAwait(false);
+                    AlignInBackground(segment, cached, pcm, extra: null);
                     return;
                 }
             }
@@ -969,8 +1022,6 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             TimingWarnings = result.Warnings.Concat(validated.Rejected.Select(r => r.Reason)).ToArray(),
         };
 
-        asset = await AlignAssetAsync(segment, asset, result.Pcm, ct).ConfigureAwait(false);
-
         if (_assetStore is not null)
             await _assetStore.StoreAsync(asset, result.Pcm, ct).ConfigureAwait(false);
 
@@ -985,6 +1036,54 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             AttachTimings(segment, asset, warnings);
         }
         await TryQueueNextAsync(generation).ConfigureAwait(false);
+        AlignInBackground(segment, asset, result.Pcm, warnings);
+    }
+
+    /// <summary>
+    /// Times the words of a passage that can already be played, and attaches the timing when it
+    /// arrives. Until then the passage is highlighted whole, which is honest: nothing is guessed.
+    /// </summary>
+    /// <remarks>
+    /// A passage used to become playable only once its words were aligned, so alignment sat
+    /// between synthesis and playback. The first alignment of a session starts the aligner (23 to
+    /// 56 s, measured), and reading stopped mid-paragraph for it. Timing that arrives while the
+    /// passage plays takes effect from then: cue resolution is a pure function of the position.
+    /// </remarks>
+    private void AlignInBackground(NarrationSegment segment, SpeechAsset asset, ReadOnlyMemory<byte> pcm,
+        IReadOnlyList<string>? extra)
+    {
+        // Not the caller's token: Play's ends when the passage starts, and this outlives it. A
+        // result for a superseded generation is dropped below instead.
+        var ct = _lifetime.Token;
+        if (!_options.RequestTimings || _aligner is null || !SpeaksItsSourceWordForWord(segment)) return;
+        var task = Task.Run(async () =>
+        {
+            try
+            {
+                var aligned = await AlignAssetAsync(segment, asset, pcm, ct).ConfigureAwait(false);
+                if (ReferenceEquals(aligned, asset)) return;
+                if (_assetStore is not null) await _assetStore.StoreAsync(aligned, pcm, ct).ConfigureAwait(false);
+                // Not the generation: a Play or a seek moves it on without changing this audio, and
+                // the passage, already prepared, is not aligned again. The timing belongs to the
+                // clip held for the passage if it is this audio (same words, revision and voice);
+                // a new document clears the held clips, so nothing stale can match.
+                lock (_gate)
+                {
+                    if (!_prepared.TryGetValue(segment.Id, out var clip) || clip.Asset.Id != aligned.Id) return;
+                    _prepared[segment.Id] = clip with { Asset = aligned };
+                    AttachTimings(segment, aligned, extra);
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception) { /* the passage keeps its whole-sentence highlight */ }
+            finally
+            {
+                _stages.TryRemove(new KeyValuePair<string, PreparationStage>(segment.Id, PreparationStage.Aligning));
+            }
+        });
+        _aligning[segment.Id] = task;
+        _ = task.ContinueWith(t => ((ICollection<KeyValuePair<string, Task>>)_aligning)
+            .Remove(new KeyValuePair<string, Task>(segment.Id, t)), TaskScheduler.Default);
     }
 
     private void AttachTimings(NarrationSegment segment, SpeechAsset asset, IReadOnlyList<string>? extra = null)
@@ -1062,6 +1161,15 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             return asset with { Timings = [], TimingProvenance = TimingProvenance.ClipBoundary,
                 AlignmentRevision = null, PcmHash = hash, TimingWarnings = ["Word alignment unavailable: " + ex.Message] };
         }
+    }
+
+    /// <summary>Whether a clip's word timing was measured by the aligner configured now, on this audio and script.</summary>
+    private bool IsCurrentAlignment(NarrationSegment segment, SpeechAsset asset, ReadOnlyMemory<byte> pcm)
+    {
+        if (_aligner is null) return true;   // nothing to measure it again with: it is the best evidence there is
+        string hash = CacheKey.Sha256Hex(pcm.Span);
+        return asset.PcmHash == hash
+            && asset.AlignmentRevision == CacheKey.ForAlignment(hash, "forced", _aligner.Revision, CacheKey.Sha256Hex(segment.SpokenText));
     }
 
     private static string SynthesisOptionsToken(AudioFormat format)
@@ -1294,7 +1402,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     private void ReleaseClipsOutsideWindow(NarrationPlan plan, int current)
     {
         int first = Math.Max(0, current - RetainedPassagesBehind);
-        int last = Math.Min(plan.SegmentCount - 1, current + Math.Max(1, _options.LookaheadSegments));
+        int last = Math.Min(plan.SegmentCount - 1, current + LookaheadCap);
         var keep = new HashSet<string>(StringComparer.Ordinal);
         for (int i = first; i <= last; i++) keep.Add(plan.Segments[i].Id);
         foreach (string id in _prepared.Keys.Where(id => !keep.Contains(id)).ToList()) _prepared.Remove(id);

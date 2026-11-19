@@ -111,7 +111,7 @@ public sealed class CoordinatorLockingTests
         var tts = new FakeTtsProvider();
         var transport = new FakeAudioTransport();
         await using var coordinator = new NarrationCoordinator(tts, transport,
-            options: new NarrationCoordinatorOptions(LookaheadSegments: 3));
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 3, LookaheadSeconds: 0));
         var plan = PlanWith(8);
         await coordinator.LoadPlanAsync(plan);
         await coordinator.PlayAsync();
@@ -190,7 +190,7 @@ public sealed class CoordinatorLockingTests
         var tts = new FakeTtsProvider();
         var transport = new FakeAudioTransport();
         await using var coordinator = new NarrationCoordinator(tts, transport,
-            options: new NarrationCoordinatorOptions(LookaheadSegments: 2));
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 2, LookaheadSeconds: 0));
         var plan = PlanWith(8);
         await coordinator.LoadPlanAsync(plan);
         await coordinator.PlayAsync();

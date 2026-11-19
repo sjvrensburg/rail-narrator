@@ -25,6 +25,7 @@ public sealed class MfaForcedAligner : IForcedAligner, IAsyncDisposable
     private readonly object _errorGate = new();
     private string _errorTail = "";
     private bool _disposed;
+    private readonly CancellationTokenSource _closing = new();
 
     public MfaForcedAligner(MfaAlignerSettings settings)
     {
@@ -106,6 +107,30 @@ public sealed class MfaForcedAligner : IForcedAligner, IAsyncDisposable
         }
     }
 
+    public async Task WarmUpAsync(CancellationToken ct = default)
+    {
+        if (_disposed || !await IsAvailableAsync(ct).ConfigureAwait(false)) return;
+        // Disposal cancels a warm-up rather than waiting for a worker that is still starting.
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, _closing.Token);
+        ct = linked.Token;
+        try { await _gate.WaitAsync(ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { return; }
+        try
+        {
+            if (_disposed) return;
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(_settings.TimeoutSeconds));
+            await EnsureWorkerAsync(timeout.Token).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // Cancelled, or the worker could not start: the first alignment starts it again and
+            // reports why it cannot.
+            await StopWorkerAsync().ConfigureAwait(false);
+        }
+        finally { _gate.Release(); }
+    }
+
     private async Task EnsureWorkerAsync(CancellationToken ct)
     {
         if (_worker is { HasExited: false }) return;
@@ -183,6 +208,7 @@ public sealed class MfaForcedAligner : IForcedAligner, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        _closing.Cancel();
         await _gate.WaitAsync().ConfigureAwait(false);
         try { _disposed = true; await StopWorkerAsync().ConfigureAwait(false); }
         finally { _gate.Release(); }

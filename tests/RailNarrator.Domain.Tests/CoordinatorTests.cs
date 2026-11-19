@@ -105,7 +105,7 @@ public sealed class NarrationCoordinatorTests
         var transport = new FakeAudioTransport();
         var store = new CountingStore();
         await using var coordinator = new NarrationCoordinator(tts, transport, store,
-            options: new NarrationCoordinatorOptions(LookaheadSegments: 1));
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 1, LookaheadSeconds: 0));
 
         await coordinator.LoadPlanAsync(PlanWith(1));
         await coordinator.PlayAsync();
@@ -149,7 +149,7 @@ public sealed class NarrationCoordinatorTests
         var tts = new FakeTtsProvider();
         var transport = new FakeAudioTransport();
         await using var coordinator = new NarrationCoordinator(tts, transport,
-            options: new NarrationCoordinatorOptions(LookaheadSegments: 3));
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 3, LookaheadSeconds: 0));
 
         await coordinator.LoadPlanAsync(PlanWith(20));
         await coordinator.PlayAsync();
@@ -159,6 +159,33 @@ public sealed class NarrationCoordinatorTests
         await Task.Delay(250);
         Assert.True(tts.SynthesizeCount <= 4,
             $"lookahead should stay near the bound of 3, but {tts.SynthesizeCount} segments were synthesised");
+    }
+
+    /// <summary>
+    /// The lookahead is listening time, not a count of passages: four short sentences were 15 s,
+    /// less than one slow preparation. Here each passage is 1 s, so 5 s ahead is about six
+    /// passages, never all twenty, and never fewer than the minimum count.
+    /// </summary>
+    [Fact]
+    public async Task Lookahead_IsListeningTime_BoundedByACount()
+    {
+        var tts = new FakeTtsProvider(new FakeTtsOptions(FixedFrameCount: FakeTtsProvider.DefaultSampleRate));
+        await using var coordinator = new NarrationCoordinator(tts, new FakeAudioTransport(),
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 2, LookaheadSeconds: 5));
+        await coordinator.LoadPlanAsync(PlanWith(20));
+        await coordinator.PlayAsync();
+        await WaitUntil(() => tts.SynthesizeCount >= 6, what: "five seconds ahead to be prepared");
+        await Task.Delay(250);
+        Assert.InRange(tts.SynthesizeCount, 6, 7);
+
+        var capped = new FakeTtsProvider(new FakeTtsOptions(FixedFrameCount: FakeTtsProvider.DefaultSampleRate));
+        await using var bounded = new NarrationCoordinator(capped, new FakeAudioTransport(),
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 2, LookaheadSeconds: 600, MaxLookaheadSegments: 8));
+        await bounded.LoadPlanAsync(PlanWith(20));
+        await bounded.PlayAsync();
+        await WaitUntil(() => capped.SynthesizeCount >= 8, what: "the capped lookahead to fill");
+        await Task.Delay(250);
+        Assert.InRange(capped.SynthesizeCount, 8, 9);
     }
 
     [Fact]
@@ -205,7 +232,7 @@ public sealed class NarrationCoordinatorTests
         var transport = new FakeAudioTransport();
         var store = new CountingStore();
         await using var coordinator = new NarrationCoordinator(tts, transport, store,
-            options: new NarrationCoordinatorOptions(LookaheadSegments: 2));
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 2, LookaheadSeconds: 0));
 
         var plan = PlanWith(5);
         await coordinator.LoadPlanAsync(plan);
@@ -585,7 +612,7 @@ public sealed class NarrationCoordinatorTests
         // from the passage still playing.
         var transport = new FakeAudioTransport { StopDelay = TimeSpan.FromMilliseconds(30) };
         await using var coordinator = new NarrationCoordinator(tts, transport,
-            options: new NarrationCoordinatorOptions(LookaheadSegments: 1));
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 1, LookaheadSeconds: 0));
         var plan = PlanWith(8);
         await coordinator.LoadPlanAsync(plan);
 
@@ -607,7 +634,7 @@ public sealed class NarrationCoordinatorTests
         // from the passage still playing.
         var transport = new FakeAudioTransport { StopDelay = TimeSpan.FromMilliseconds(30) };
         await using var coordinator = new NarrationCoordinator(tts, transport,
-            options: new NarrationCoordinatorOptions(LookaheadSegments: 1));
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 1, LookaheadSeconds: 0));
         var plan = PlanWith(8);
         await coordinator.LoadPlanAsync(plan);
 
@@ -634,7 +661,7 @@ public sealed class NarrationCoordinatorTests
         var transport = new FakeAudioTransport { StopDelay = TimeSpan.FromMilliseconds(150) };
         var store = new CountingStore();
         await using var coordinator = new NarrationCoordinator(tts, transport, store,
-            options: new NarrationCoordinatorOptions(LookaheadSegments: 2));
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 2, LookaheadSeconds: 0));
 
         var voiceChange = coordinator.SetVoiceAsync("fake-alternate");
         transport.StopDelay = TimeSpan.Zero;   // the load's own stop completes at once
@@ -655,7 +682,7 @@ public sealed class NarrationCoordinatorTests
         var tts = new FakeTtsProvider();
         var transport = new FakeAudioTransport();
         await using var coordinator = new NarrationCoordinator(tts, transport,
-            options: new NarrationCoordinatorOptions(LookaheadSegments: 3, VoiceId: "fake-default"));
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 3, LookaheadSeconds: 0, VoiceId: "fake-default"));
         var plan = PlanWith(4);
         await coordinator.LoadPlanAsync(plan);
         await coordinator.PlayAsync();
@@ -681,7 +708,7 @@ public sealed class NarrationCoordinatorTests
         var transport = new FakeAudioTransport { StopDelay = TimeSpan.FromMilliseconds(150) };
         var store = new CountingStore();
         await using var coordinator = new NarrationCoordinator(tts, transport, store,
-            options: new NarrationCoordinatorOptions(LookaheadSegments: 1));
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 1, LookaheadSeconds: 0));
         var first = PlanWith(2);
         var second = PlanWith(5);
 
