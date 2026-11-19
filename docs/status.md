@@ -31,7 +31,10 @@ device before the writer thread had finished queuing) was fixed by waiting for t
 completion event instead of a fixed delay. On 18 November 2026,
 `CoordinatorLockingTests.NaturalAdvance_SlidesTheLookaheadWindow` failed once in a full-solution
 run, after about 5 s (one of its 5 s waits). It then passed 10 isolated runs and 5 further
-full-solution runs. The cause was not identified, and the failure message was not captured. One Audio test failed once in a full-solution run while the local LLM was busy on
+full-solution runs. The cause was not identified, and the failure message was not captured. It
+failed once more on 19 November 2026, in a full-solution run after about 0.4 s (an assertion, not a
+wait), then passed 6 isolated runs and 6 further full-solution runs; the message again was not
+captured. One Audio test failed once in a full-solution run while the local LLM was busy on
 the same machine and passed in three reruns; it was not identified.
 
 ## Verified by running the real thing
