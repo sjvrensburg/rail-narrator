@@ -8,6 +8,9 @@
     <ProjectReference Include="../RailNarrator.Domain/RailNarrator.Domain.csproj" />
   </ItemGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="RailNarrator.Pdf.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="RailReader.Core" />
     <PackageReference Include="RailReader.Core.Pdfium" />
     <PackageReference Include="RailReader.Renderer.Skia" />

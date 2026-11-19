@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>RailNarrator.OrderSurvey</RootNamespace>
+    <AssemblyName>rail-narrator-order-survey</AssemblyName>
+    <Description>Counts blocks read after the block directly below them, through the application's extraction adapter, over a set of PDFs.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/RailNarrator.Domain/RailNarrator.Domain.csproj" />
+    <ProjectReference Include="../../src/RailNarrator.Pdf/RailNarrator.Pdf.csproj" />
+  </ItemGroup>
+</Project>

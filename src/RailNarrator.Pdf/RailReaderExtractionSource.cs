@@ -554,44 +554,47 @@ public sealed class RailReaderExtractionSource : IExtractionSource, IDisposable
             var pdf = _currentPdf!;
             var (pageW, pageH) = pdf.GetPageSize(pageIndex);
             if (pageW <= 0 || pageH <= 0) return (ReadOnlyMemory<byte>?)null;
-
-            // Render at a resolution that makes the crop's width the requested pixel width. Equation
-            // sub- and superscripts are only a few points tall, so a low-resolution crop loses exactly
-            // the detail transcription depends on.
-            double scale = targetPixelWidth / Math.Max(1.0, region.Width);
-            int targetSize = (int)Math.Clamp(Math.Round(Math.Max(pageW, pageH) * scale), 64, 8192);
-            var (rgb, pxW, pxH) = pdf.RenderPagePixmap(pageIndex, targetSize);
-            if (pxW <= 0 || pxH <= 0) return (ReadOnlyMemory<byte>?)null;
-
-            float sx = pxW / (float)pageW, sy = pxH / (float)pageH;
-            var pixelRect = new SKRectI(
-                (int)Math.Clamp(Math.Floor(region.Left * sx), 0, pxW - 1),
-                (int)Math.Clamp(Math.Floor(region.Top * sy), 0, pxH - 1),
-                (int)Math.Clamp(Math.Ceiling(region.Right * sx), 1, pxW),
-                (int)Math.Clamp(Math.Ceiling(region.Bottom * sy), 1, pxH));
-            if (pixelRect.Width <= 0 || pixelRect.Height <= 0) return (ReadOnlyMemory<byte>?)null;
-
-            // The pixmap is packed 3-byte RGB, which Skia has no colour type for (Rgb888x is four
-            // bytes a pixel: installing this buffer as it failed, and every crop threw). Copy just
-            // the crop's rows out as RGBA.
-            if (rgb.Length < pxW * pxH * 3) return (ReadOnlyMemory<byte>?)null;
-            int w = pixelRect.Width, h = pixelRect.Height;
-            var rgba = new byte[w * h * 4];
-            for (int y = 0; y < h; y++)
-            {
-                int src = ((pixelRect.Top + y) * pxW + pixelRect.Left) * 3, dst = y * w * 4;
-                for (int x = 0; x < w; x++, src += 3, dst += 4)
-                {
-                    rgba[dst] = rgb[src];
-                    rgba[dst + 1] = rgb[src + 1];
-                    rgba[dst + 2] = rgb[src + 2];
-                    rgba[dst + 3] = 255;
-                }
-            }
-            using var image = SKImage.FromPixelCopy(new SKImageInfo(w, h, SKColorType.Rgba8888, SKAlphaType.Opaque), rgba, w * 4);
-            using var data = image?.Encode(SKEncodedImageFormat.Png, 100);
-            return data is null ? null : new ReadOnlyMemory<byte>(data.ToArray());
+            double scale = CropScale(region, targetPixelWidth, pageW, pageH);
+            // Only the crop is rasterised (Core 0.93.0, issue #222), not the whole page at that scale:
+            // a narrow equation used to cost an 8192 px page raster of some 140 MB, held under
+            // Core's PDFium lock. The image is the old one to within a pixel at the edges but not
+            // byte for byte, so maths answers cached against the old crops are asked for again once
+            // (the reader chose this over keeping the whole-page render).
+            var (rgb, w, h) = pdf.RenderRegionPixmap(pageIndex,
+                new BBox(region.Left, region.Top, region.Width, region.Height), scale, 0, ct);
+            return EncodeRgbPng(rgb, w, h);
         }, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Pixels per point for a crop <paramref name="targetPixelWidth"/> wide. Equation sub- and
+    /// superscripts are a few points tall, so a low-resolution crop loses exactly the detail the
+    /// model reads. Before region rendering the whole page's longest edge was held to 8192 px, which
+    /// shrank a narrow equation's crop (an 80 pt one to 828 px of 1024); now only the crop's own
+    /// longest side is held to 8192 px.
+    /// </summary>
+    internal static double CropScale(PageRect region, int targetPixelWidth, double pageW, double pageH)
+    {
+        double scale = targetPixelWidth / Math.Max(1.0, region.Width);
+        double longest = Math.Max(region.Width, region.Height);
+        return Math.Min(scale, 8192 / Math.Max(1.0, longest));
+    }
+
+    /// <summary>Packed 3-byte RGB (PDFium's pixmap) to PNG. Skia has no 3-byte colour type, so via RGBA.</summary>
+    internal static ReadOnlyMemory<byte>? EncodeRgbPng(byte[] rgb, int w, int h)
+    {
+        if (w <= 0 || h <= 0 || rgb.Length < w * h * 3) return null;
+        var rgba = new byte[w * h * 4];
+        for (int i = 0, j = 0; i < w * h; i++, j += 3)
+        {
+            rgba[i * 4] = rgb[j];
+            rgba[i * 4 + 1] = rgb[j + 1];
+            rgba[i * 4 + 2] = rgb[j + 2];
+            rgba[i * 4 + 3] = 255;
+        }
+        using var image = SKImage.FromPixelCopy(new SKImageInfo(w, h, SKColorType.Rgba8888, SKAlphaType.Opaque), rgba, w * 4);
+        using var data = image?.Encode(SKEncodedImageFormat.Png, 100);
+        return data is null ? null : new ReadOnlyMemory<byte>(data.ToArray());
     }
 
     private IPdfService? _currentPdf;
