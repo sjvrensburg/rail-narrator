@@ -33,7 +33,7 @@ bash tools/setup-word-alignment.sh                 # optional MFA runtime (needs
 bash tools/kokoro-webgpu-model.sh                  # optional: Kokoro on the GPU via WebGPU (ADR-0007)
 ```
 
-There is no separate lint step: `TreatWarningsAsErrors` is on for every project except `RailNarrator.App` (the Avalonia XAML compiler emits advisories), so the build is the lint and it is expected to stay at 0 warnings.
+There is no separate lint step: `TreatWarningsAsErrors` is on for every project except `RailNarrator.App`, whose Avalonia XAML compiler warnings (AVLN…) are not turned into errors. The App is still expected to build with 0 warnings: after XAML changes, check a `--no-incremental` build's raw output (`rtk proxy dotnet build …`), since an incremental build skips unchanged XAML and a filtered summary can hide AVLN lines. Avalonia 12 obsoleted `Watermark`; use `PlaceholderText`.
 
 Opt-in integration tests are skipped unless their environment is set:
 

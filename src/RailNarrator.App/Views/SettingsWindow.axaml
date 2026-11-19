@@ -54,21 +54,21 @@
     <DataTemplate x:Key="EndpointEditor" x:DataType="vm:EndpointSettingsViewModel">
       <Grid ColumnDefinitions="180,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="6">
         <TextBlock Classes="label" Text="Address" />
-        <TextBox Grid.Column="1" Text="{Binding Url}" Watermark="https://…/v1" />
+        <TextBox Grid.Column="1" Text="{Binding Url}" PlaceholderText="https://…/v1" />
 
         <TextBlock Grid.Row="1" Classes="label" Text="Model" />
         <AutoCompleteBox Grid.Row="1" Grid.Column="1" Text="{Binding Model, Mode=TwoWay}" ItemsSource="{Binding OfferedModels}"
-                         FilterMode="Contains" MinimumPrefixLength="0" Watermark="model name" />
+                         FilterMode="Contains" MinimumPrefixLength="0" PlaceholderText="model name" />
 
         <TextBlock Grid.Row="2" Classes="label" Text="API key" VerticalAlignment="Top" Margin="0,6,0,0" />
         <StackPanel Grid.Row="2" Grid.Column="1" Spacing="4">
           <RadioButton IsChecked="{Binding UsesVariable}" Content="From an environment variable (not stored)" />
           <TextBox Text="{Binding Variable}" IsEnabled="{Binding UsesVariable}" Margin="28,0,0,0"
-                   Watermark="variable name, e.g. OPENAI_API_KEY" />
+                   PlaceholderText="variable name, e.g. OPENAI_API_KEY" />
           <RadioButton IsChecked="{Binding UsesStoredKey}" Content="Stored in the settings file" />
           <Grid ColumnDefinitions="*,Auto" Margin="28,0,0,0" IsEnabled="{Binding UsesStoredKey}">
             <TextBox Text="{Binding Key}" PasswordChar="•" RevealPassword="{Binding #ShowKey.IsChecked}"
-                     Watermark="paste the key" />
+                     PlaceholderText="paste the key" />
             <ToggleButton Name="ShowKey" Grid.Column="1" Content="Show" Margin="6,0,0,0" />
           </Grid>
         </StackPanel>
@@ -168,16 +168,16 @@
                 <TextBlock Classes="hint" Text="Leave empty for the files in Rail Narrator's models folder." />
                 <Grid ColumnDefinitions="180,*" RowDefinitions="Auto,Auto" RowSpacing="6">
                   <TextBlock Classes="label" Text="Kokoro model" />
-                  <TextBox Grid.Column="1" Text="{Binding KokoroModelPath}" Watermark="kokoro-fp16.onnx in the models folder" />
+                  <TextBox Grid.Column="1" Text="{Binding KokoroModelPath}" PlaceholderText="kokoro-fp16.onnx in the models folder" />
                   <TextBlock Grid.Row="1" Classes="label" Text="Kokoro model for the GPU" />
-                  <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding KokoroGpuModelPath}" Watermark="kokoro-fp32-webgpu.onnx in the models folder" />
+                  <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding KokoroGpuModelPath}" PlaceholderText="kokoro-fp32-webgpu.onnx in the models folder" />
                 </Grid>
                 <TextBlock Classes="section" Text="ZONOS3 server" />
                 <Grid ColumnDefinitions="180,*" RowDefinitions="Auto,Auto" RowSpacing="6">
                   <TextBlock Classes="label" Text="Address" />
-                  <TextBox Grid.Column="1" Text="{Binding ZonosBaseUrl}" Watermark="http://127.0.0.1:19191" />
+                  <TextBox Grid.Column="1" Text="{Binding ZonosBaseUrl}" PlaceholderText="http://127.0.0.1:19191" />
                   <TextBlock Grid.Row="1" Classes="label" Text="Speaker" />
-                  <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding ZonosSpeakerId}" Watermark="speaker embedding id" />
+                  <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding ZonosSpeakerId}" PlaceholderText="speaker embedding id" />
                 </Grid>
               </StackPanel>
             </Border>
@@ -250,7 +250,7 @@
             <Border Classes="advblock" IsVisible="{Binding Advanced}">
               <Grid ColumnDefinitions="180,*" RowSpacing="6">
                 <TextBlock Classes="label" Text="Layout model file" />
-                <TextBox Grid.Column="1" Text="{Binding LayoutModelPath}" Watermark="found automatically" />
+                <TextBox Grid.Column="1" Text="{Binding LayoutModelPath}" PlaceholderText="found automatically" />
               </Grid>
             </Border>
             <TextBlock Classes="restart" Text="Document settings apply after a restart, to the document as it is opened again." Margin="0,8,0,0" />
