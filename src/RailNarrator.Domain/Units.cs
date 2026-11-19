@@ -113,6 +113,62 @@ public static class ReferenceSections
         return relabelled == 0 ? snapshot : snapshot with { Pages = pages };
     }
 
+    /// <summary>
+    /// The headings of reference lists that are not read: a heading or title whose next block is a
+    /// reference the reader's filters leave out. Such a heading used to be spoken on its own,
+    /// "References", with nothing of its section after it. It is skipped with its list.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// "Next" is by position first: the nearest block below the heading that shares its column.
+    /// A layout model's reading order cannot be relied on here. On the paper this was written for,
+    /// PP-DocLayoutV3 ordered a page as acknowledgement text, reference list, funding text and then
+    /// the three headings "Acknowledgments", "References", "Funding"; by order, "References" has
+    /// nothing under it and "Funding" is followed by the next page's references. Only when nothing
+    /// lies below the heading (it ends a column or a page) is the next block in reading order used.
+    /// </para>
+    /// <para>
+    /// Judged by the block that follows, not by the heading's words, so a model that labels
+    /// references itself covers "Literatur" or "Bibliographie" too. Page furniture and figures are
+    /// passed over when looking for the block that follows.
+    /// </para>
+    /// </remarks>
+    /// <param name="isRead">Whether a block is narrated under the reader's filters.</param>
+    public static IReadOnlyList<(int PageIndex, string BlockId)> HeadingsOfUnreadLists(
+        ExtractionSnapshot snapshot, Func<PageExtraction, ExtractedBlock, bool> isRead)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(isRead);
+        if (!snapshot.Pages.Any(p => p.Blocks.Any(b => b.Kind == BlockKind.Reference))) return [];
+
+        var sequence = snapshot.Pages.OrderBy(p => p.PageIndex)
+            .SelectMany(p => p.OrderedBlocks.Where(IsContent).Select(b => (Page: p, Block: b)))
+            .ToList();
+        var skipped = new List<(int, string)>();
+        for (int i = 0; i < sequence.Count; i++)
+        {
+            var (page, heading) = sequence[i];
+            if (heading.Kind is not (BlockKind.Heading or BlockKind.Title)) continue;
+            var below = page.Blocks
+                .Where(b => !ReferenceEquals(b, heading) && IsContent(b)
+                            && b.BBox.Top >= heading.BBox.MidY
+                            && b.BBox.Left < heading.BBox.Right && b.BBox.Right > heading.BBox.Left)
+                .OrderBy(b => b.BBox.Top)
+                .FirstOrDefault();
+            var next = below is not null ? (Page: page, Block: below)
+                : i + 1 < sequence.Count ? sequence[i + 1]
+                : default;
+            if (next.Block is { Kind: BlockKind.Reference } list && !isRead(next.Page, list))
+                skipped.Add((page.PageIndex, heading.BlockId));
+        }
+        return skipped;
+    }
+
+    /// <summary>Not page furniture or a picture: a block that can be what a heading introduces.</summary>
+    private static bool IsContent(ExtractedBlock block)
+        => block.Kind is not (BlockKind.Header or BlockKind.Footer or BlockKind.PageNumber
+            or BlockKind.Figure or BlockKind.Chart or BlockKind.Decoration);
+
     private static string TextOf(PageExtraction page, ExtractedBlock block)
         => string.Join(" ", block.LineIndices
             .Where(i => i >= 0 && i < page.Lines.Count)
@@ -472,6 +528,13 @@ public sealed class ReadingUnitBuilder
                 diag.Add($"Skipped page {cover + 1}: a publisher's download cover sheet (citation, links and view counts), not part of the article.");
             }
         }
+        // A reference list that is not read takes its heading with it: "References" spoken on its
+        // own announced a section of which nothing followed.
+        var referenceHeadings = ReferenceSections.HeadingsOfUnreadLists(snapshot,
+            (page, block) => _options.Filters.Allows(block.Kind) && !runningBlockSet.Contains((page.PageIndex, block.BlockId)));
+        foreach (var heading in referenceHeadings) runningBlockSet.Add(heading);
+        if (referenceHeadings.Count > 0)
+            diag.Add($"Skipped {referenceHeadings.Count} heading(s) of a reference list that is not read.");
         var runningLineSet = running.Where(r => r.IsLineLevel).Select(r => (r.PageIndex, r.LineId!)).ToHashSet();
         if (running.Count > 0)
             diag.Add($"Suppressed {running.Count} running header/footer/page-number line(s) across {running.Select(r => r.PageIndex).Distinct().Count()} page(s).");

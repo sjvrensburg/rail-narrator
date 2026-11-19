@@ -1,7 +1,7 @@
 # Next steps and open decisions
 
-Handover note, 18 November 2026, after PR #24 and the `fix/paging-stalls-follow-loading`
-branch. The branch builds with 0 warnings; 502 tests pass and 9 opt-in tests are skipped. What is verified, and how it was measured, is in `status.md`.
+Handover note, 19 November 2026, after PR #25 and on the `fix/fit-width-and-followups`
+branch. The branch builds with 0 warnings; 526 tests pass and 9 opt-in tests are skipped. What is verified, and how it was measured, is in `status.md`.
 How to run the real models, the GUI and the audio path on a new machine is in
 `testing-real-world.md`.
 
@@ -41,6 +41,14 @@ Since PR #10:
   and no longer freezes the window as it finishes. Measured in the headless GUI on the reference
   machine; not yet tried by the maintainer, on a HiDPI display or on the laptop.
 
+- **Fit-width, a race in the coordinator and the "References" heading**
+  (`fix/fit-width-and-followups`, `status.md` items 66-69). Fit-width follows the page shown and
+  the reading area's width, and a zoom the reader chose survives page turns, resizes and a
+  relaunch. A voice change overtaken by a load or a seek no longer cancels its preparation or
+  lets the old voice play. The heading of a reference list that is not read is not read either.
+  The status line keeps saying that following is paused. The fit-width behaviour was seen in the
+  headless GUI on the reference machine; the race only in tests.
+
 - **Gapless playback** (was open decision 4, PR #17). The next passage is queued in the audio
   engine and written straight after the current one, so the ~0.4 s of output latency between
   passages is gone; smoke-tested by ear in the running app. Kokoro's own trailing silence
@@ -53,33 +61,33 @@ In rough priority order:
 
 - **Heron with maths interpretation, end to end.** ADR-0008 compared the layout models without an
   LLM endpoint. Run a maths-heavy paper with the interpreter and compare what is sent and read.
-- **The spoken "References" heading.** The list is skipped under both models but its heading is
-  still read; drop a heading whose section is entirely skipped.
-
 - **Kokoro on an Intel or AMD integrated GPU.** ADR-0007 measured only the NVIDIA card. Run the
   opt-in `OnTheGpu_KokoroGivesTheCpusAudio` test and the smoke tool's `speak --gpu-model` on one;
   the output check falls back to the CPU if it gives NaN or silence, but the speed is unknown.
-- **Start-up still blocks on the layout probe** (`status.md` item 61): build it in the
-  background so the window appears at once. Kokoro now starts while the document is being
-  extracted (item 65).
-- **Fit-width from the first page.** A cover sheet wider than the article leaves every later
-  page narrower than the window. Fit to the page shown, or keep "fit" as a mode that follows
-  page changes; this belongs with the resize bullet below.
+- **Start-up on the laptop** (`status.md` item 61 gives about 14 s before the window appears
+  there). Not reproducible on the reference machine: its window opens 1.0 s after the process
+  starts, with the object graph built in 0.4 s and the layout model's GPU session in 0.27 s
+  (Radeon 8060S, measured 2026-11-19). Measure on the laptop first, which part is the layout
+  probe and which the driver's shader cache. If it is the probe: build the backend on the thread
+  pool and let the first extraction and the cache lookup await it (the device is part of the
+  cache key). Two things to keep: Kokoro's WebGPU hook (`KokoroGpu`) is built after the layout
+  probe today and whether the two may overlap is unknown, and the start-up notes list is not
+  thread-safe.
 - **Render only the crop for the maths interpreter.** A narrow equation makes the whole page
-  render at up to 8192 px (`RenderCropPngAsync`). Core's page renderer has no region option;
-  PDFium does (`FPDF_RenderPageBitmap` with an offset, as `RenderPageTiled` uses). Changing the
-  crop's pixels changes what the model sees, so compare readings with `rail-narrator-mathbench`.
-- **Check the lookahead after a load.** Read in the code, not measured: on a first load the voice
-  is set (`SetVoiceAsync`) just before the plan is loaded, and if its stop of the transport does
-  not complete at once, its `StartPreparation` for the older generation can land after
-  `LoadPlanAsync`'s and cancel it, leaving nothing prepared until Play. In the test runs the
-  first Play after an idle half-minute still showed "Synthesising speech" for 2 s, which fits.
-- **The status line during a pause in following.** "Following paused while you browse…" is
-  replaced at once by "Reading passage N" while audio plays; only the Resume button says so.
+  render at up to 8192 px (`RenderCropPngAsync`). This needs a region render in RailReaderCore
+  (for example `RenderRegionPixmap(page, rect, scale)` beside `RenderPagePixmap`): Core's
+  `PdfiumGate` and `PdfiumNative` are internal, so the application cannot call PDFium under
+  Core's lock itself, and capping the resolution instead changes what the model sees. It no
+  longer costs the reader anything visible (painting does not wait for PDFium); it costs the
+  page rasteriser up to 134 ms and a 140 MB array per narrow equation.
+- **Headings read after their sections on one page.** On page 26 of the GARCH article
+  PP-DocLayoutV3's reading order is acknowledgement text, reference list, funding note and then
+  the headings "Acknowledgments", "References", "Funding", so the two that are read come after
+  the paragraphs they introduce. Found while fixing the spoken "References" (item 68). A heading
+  ordered after the block directly below it could be moved in front of it; check how often it
+  happens, and whether Heron's XY-cut++ order does it, before adding a rule.
 - **Kokoro's CPU thread default.** 4–6 threads were about 10 % faster than the provider's 8 on the
   i7-12700H; re-measure on the reference machine before changing it.
-- **A resize resets the zoom to fit-width** (opening the script panel, resizing the window). Keep
-  the reader's magnification and only re-fit when the zoom was "fit".
 
 - **Saving a restored position as a passage id.** When the plan changes (new layout model, a
   version bump), the saved id can point at a different passage. Store a page plus text-offset
@@ -92,8 +100,10 @@ In rough priority order:
 - **Proof-read a sample of rule readings against the printed equations**, symbol by symbol. So
   far they have been checked only for leftover notation.
 - **Identify the flaky Audio test.** It failed once in a full-solution run while the LLM was
-  busy on the same machine, then passed four times. Loop the Audio suite under CPU load and
-  look for a timing assumption.
+  busy on the same machine, then passed four times. On 2026-11-19 the Audio suite passed 40 times
+  out of 40 on the reference machine with one and a half busy loops per core, so plain CPU
+  starvation does not bring it out. Next time it fails, keep the test's name and message; if it
+  must be hunted, try memory pressure or the LLM server running, which is what was different.
 - **More documents.** Everything about maths was measured on one paper. Try a physics paper,
   a pure-maths paper and an ML paper.
 

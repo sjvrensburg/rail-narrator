@@ -100,6 +100,137 @@ public sealed class LayoutRoleTests
         Assert.Contains("The introduction is read aloud as usual.", text);
         Assert.Contains("The appendix is read aloud again.", text);
         Assert.DoesNotContain("Author", text);
+        // Its heading goes with it: "References" announced a section of which nothing followed.
+        Assert.DoesNotContain("References", text);
+        Assert.Contains("Appendix A. Proofs", text);
+    }
+
+    private static string Read(ExtractionSnapshot snapshot, NarrationFilterSettings? filters = null)
+        => string.Join(" | ", new ReadingUnitBuilder(new ReadingUnitBuilderOptions(filters ?? NarrationFilterSettings.Default))
+            .Build(snapshot).Select(u => u.OriginalText));
+
+    /// <summary>
+    /// With a model that labels references itself, the heading is judged by what its section holds,
+    /// not by its words, so a heading in another language goes too. Footnotes and page furniture in
+    /// the section are not read either and do not keep it.
+    /// </summary>
+    [Theory]
+    [InlineData("References")]
+    [InlineData("Literatur")]
+    public void TheHeadingOfAReferenceListThatIsNotRead_IsNotReadEither(string heading)
+    {
+        var snapshot = new LayoutPage()
+            .Block(BlockKind.Heading, "5. Conclusion")
+            .Block(BlockKind.Text, "The conclusion is read aloud as usual.")
+            .Block(BlockKind.Heading, heading)
+            .Block(BlockKind.Reference, "[1] A. Author. A first title. Journal of Things, 2020.")
+            .Block(BlockKind.Footnote, "1 A footnote that floated onto the page.")
+            .Snapshot(new LayoutPage(1)
+                .Block(BlockKind.Reference, "[2] B. Author. A second title. Journal of Things, 2021."));
+
+        string text = Read(snapshot);
+
+        Assert.Contains("The conclusion is read aloud as usual.", text);
+        Assert.Contains("5. Conclusion", text);
+        Assert.DoesNotContain(heading, text);
+        Assert.DoesNotContain("Author", text);
+    }
+
+    /// <summary>A reader who asks for the bibliography hears its heading as well.</summary>
+    [Fact]
+    public void WhenReferencesAreRead_SoIsTheirHeading()
+    {
+        var snapshot = new LayoutPage()
+            .Block(BlockKind.Heading, "References")
+            .Block(BlockKind.Reference, "[1] A. Author. A first title. Journal of Things, 2020.")
+            .Snapshot();
+
+        string text = Read(snapshot, NarrationFilterSettings.Default with { IncludeReferences = true });
+
+        Assert.Contains("References", text);
+        Assert.Contains("A first title", text);
+    }
+
+    /// <summary>
+    /// Only the heading of a reference list goes. A heading straight before another, one above a
+    /// figure, and one above prose are read; so is the heading after the list.
+    /// </summary>
+    [Fact]
+    public void OtherHeadings_AreStillRead()
+    {
+        var snapshot = new LayoutPage()
+            .Block(BlockKind.Heading, "2. Methods")
+            .Block(BlockKind.Heading, "2.1 Data")
+            .Block(BlockKind.Text, "The data section is read aloud as usual.")
+            .Block(BlockKind.Heading, "3. Figures")
+            .Block(BlockKind.Figure, "a figure")
+            .Block(BlockKind.Heading, "References")
+            .Block(BlockKind.Reference, "[1] A. Author. A first title. Journal of Things, 2020.")
+            .Block(BlockKind.Heading, "Appendix")
+            .Block(BlockKind.Text, "The appendix is read aloud as usual.")
+            .Snapshot();
+
+        string text = Read(snapshot);
+
+        Assert.Contains("2. Methods", text);
+        Assert.Contains("2.1 Data", text);
+        Assert.Contains("3. Figures", text);
+        Assert.Contains("Appendix", text);
+        Assert.DoesNotContain("References", text);
+        Assert.DoesNotContain("Author", text);
+    }
+
+    /// <summary>
+    /// The page this was found on: PP-DocLayoutV3 gave the acknowledgement, the reference list and
+    /// the funding note in order and then their three headings, so by reading order "References"
+    /// has nothing under it and "Funding" is followed by the next page's references. On the page
+    /// each heading sits above its own block, and that decides.
+    /// </summary>
+    [Fact]
+    public void AReferenceHeading_IsFoundByWhatLiesBelowIt_NotByTheModelsReadingOrder()
+    {
+        var laidOut = new LayoutPage()
+            .Block(BlockKind.Heading, "Acknowledgments")
+            .Block(BlockKind.Text, "An earlier version was presented at a workshop.")
+            .Block(BlockKind.Heading, "Funding")
+            .Block(BlockKind.Text, "This work has been supported by a foundation.")
+            .Block(BlockKind.Heading, "References")
+            .Block(BlockKind.Reference, "Author, A. (2011). A first title. Journal of Things.")
+            .Snapshot(new LayoutPage(1)
+                .Block(BlockKind.Reference, "Author, B. (2012). A second title. Journal of Things."));
+        // The model's order: the three bodies first, then the three headings.
+        int[] order = [3, 0, 5, 1, 4, 2];
+        var first = laidOut.Pages[0];
+        var snapshot = laidOut with
+        {
+            Pages = [first with { Blocks = first.Blocks.Select((b, i) => b with { Order = order[i] }).ToArray() }, laidOut.Pages[1]],
+        };
+
+        string text = Read(snapshot);
+
+        Assert.Contains("Acknowledgments", text);
+        Assert.Contains("Funding", text);
+        Assert.Contains("This work has been supported by a foundation.", text);
+        Assert.DoesNotContain("References", text);
+        Assert.DoesNotContain("Author", text);
+    }
+
+    /// <summary>A heading that ends its page is judged by the block that follows in reading order.</summary>
+    [Fact]
+    public void AReferenceHeadingAtTheFootOfAPage_IsNotReadEither()
+    {
+        var snapshot = new LayoutPage()
+            .Block(BlockKind.Text, "The conclusion is read aloud as usual.")
+            .Block(BlockKind.Heading, "References")
+            .Block(BlockKind.PageNumber, "12")
+            .Snapshot(new LayoutPage(1)
+                .Block(BlockKind.Header, "A RUNNING HEAD")
+                .Block(BlockKind.Reference, "Author, A. (2011). A first title. Journal of Things."));
+
+        string text = Read(snapshot);
+
+        Assert.Contains("The conclusion is read aloud as usual.", text);
+        Assert.DoesNotContain("References", text);
     }
 
     /// <summary>A model that labels references itself is trusted, as with every other role.</summary>

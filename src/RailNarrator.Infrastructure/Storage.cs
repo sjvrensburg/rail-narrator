@@ -157,7 +157,15 @@ public sealed record RailNarratorSettings
     public string? AudioDeviceId { get; init; }
     public double PlaybackRate { get; init; } = 1.0;
     public FollowMode FollowMode { get; init; } = FollowMode.Follow;
+    /// <summary>The magnification the reader last chose. Used when <see cref="FitWidth"/> is off.</summary>
     public double PreferredZoom { get; init; } = 1.0;
+
+    /// <summary>
+    /// Fit the page's width to the reading area, following page turns and resizes. On until the
+    /// reader chooses a magnification; then <see cref="PreferredZoom"/> is used, for the next
+    /// document and the next session as well.
+    /// </summary>
+    public bool FitWidth { get; init; } = true;
     public bool ReduceMotion { get; init; }
 
     /// <summary>RailReader colour filter for the page, by name: None, HighContrast, HighVisibility, Amber or Invert.</summary>
