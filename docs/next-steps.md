@@ -93,7 +93,9 @@ In rough priority order:
   Heron with Core's XY-cut++ has 4 of 521 headings and 25 of 3,585 other neighbouring pairs out
   of order on the same papers, among them a subsection heading before its section heading
   (linton-mammen-2005, page 14) and a title read after the side column of an MDPI first page.
-  Those belong to Core's resolver: report the two pages there before working round them here.
+  Those belong to Core's resolver and are reported, with six pages reduced to a few boxes each,
+  in [RailReaderCore #223](https://github.com/sjvrensburg/RailReaderCore/issues/223); three of
+  them trace to its heading-attachment pass. Do not work round them here before Core answers.
 - **Kokoro's CPU thread default.** 4–6 threads were about 10 % faster than the provider's 8 on the
   i7-12700H; re-measure on the reference machine before changing it.
 
