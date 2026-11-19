@@ -108,7 +108,9 @@ public sealed class WordHighlightTests
             await coordinator.LoadPlanAsync(plan);
             await coordinator.PlayAsync();
             Assert.Single(transport.Loaded);
-            Assert.Equal(CueGranularity.Word, coordinator.Scheduler!.Resolve(plan.Segments[0].Id, 2000).Granularity);
+            // Word timing arrives after the passage is playable (it does not hold playback up).
+            await WaitUntil(() => coordinator.Scheduler!.Resolve(plan.Segments[0].Id, 2000).Granularity == CueGranularity.Word,
+                "word timing to attach");
         }
         await Run();
         int syntheses = tts.SynthesizeCount;
@@ -165,9 +167,56 @@ public sealed class WordHighlightTests
         await coordinator.LoadPlanAsync(plan);
         await coordinator.PlayAsync();
         Assert.Equal(PlaybackState.Playing, coordinator.Snapshot.State);
-        var cue = coordinator.Scheduler!.Resolve(plan.Segments[0].Id, 2000);
-        Assert.Equal(CueGranularity.Sentence, cue.Granularity);
-        Assert.Contains(cue.Diagnostics, d => d.Contains("alignment unavailable", StringComparison.OrdinalIgnoreCase));
+        await WaitUntil(() => aligner.Calls > 0 && coordinator.Scheduler!.Resolve(plan.Segments[0].Id, 2000).Diagnostics
+            .Any(d => d.Contains("alignment unavailable", StringComparison.OrdinalIgnoreCase)), "the failure to be reported");
+        Assert.Equal(CueGranularity.Sentence, coordinator.Scheduler!.Resolve(plan.Segments[0].Id, 2000).Granularity);
+    }
+
+    /// <summary>
+    /// The first alignment of a session starts the aligner, 23 to 56 s on the reference machine;
+    /// a passage waiting for its words to be timed stopped reading mid-paragraph. It plays at once,
+    /// highlighted whole, and its words are highlighted from when their timing arrives.
+    /// </summary>
+    [Fact]
+    public async Task APassagePlays_WithoutWaitingForItsWordsToBeTimed()
+    {
+        var plan = await Plan("Go home.");
+        var transport = new FakeAudioTransport();
+        var aligner = new TestAligner { Hold = new TaskCompletionSource() };
+        await using var coordinator = new NarrationCoordinator(new FakeTtsProvider(new FakeTtsOptions(FixedFrameCount: 24000)), transport, aligner: aligner);
+        await coordinator.LoadPlanAsync(plan);
+
+        var play = coordinator.PlayAsync();
+        Assert.True(await Task.WhenAny(play, Task.Delay(5000)) == play, "Play waited for word alignment");
+        Assert.Single(transport.Loaded);
+        Assert.Equal(CueGranularity.Sentence, coordinator.Scheduler!.Resolve(plan.Segments[0].Id, 2000).Granularity);
+
+        aligner.Hold.SetResult();
+        await WaitUntil(() => coordinator.Scheduler!.Resolve(plan.Segments[0].Id, 2000).Granularity == CueGranularity.Word,
+            "word timing to attach");
+    }
+
+    [Fact]
+    public async Task LoadingADocument_StartsTheAligner_BeforeAnyPassageNeedsIt()
+    {
+        var plan = await Plan("Go home.");
+        var aligner = new TestAligner();
+        await using var coordinator = new NarrationCoordinator(new FakeTtsProvider(), new FakeAudioTransport(), aligner: aligner);
+        await coordinator.LoadPlanAsync(plan);
+        await WaitUntil(() => aligner.WarmUps == 1, "the aligner to be warmed up");
+        await coordinator.LoadPlanAsync(plan);
+        await Task.Delay(100);
+        Assert.Equal(1, aligner.WarmUps);   // once a session
+    }
+
+    private static async Task WaitUntil(Func<bool> condition, string what, int timeoutMs = 5000)
+    {
+        long deadline = Environment.TickCount64 + timeoutMs;
+        while (!condition())
+        {
+            Assert.True(Environment.TickCount64 < deadline, $"Timed out waiting for {what}.");
+            await Task.Delay(10);
+        }
     }
 
     private sealed class TestAligner : IForcedAligner
@@ -176,13 +225,17 @@ public sealed class WordHighlightTests
         public int Calls;
         public bool Fail;
         public bool FailProbe;
+        public TaskCompletionSource? Hold;
+        public int WarmUps;
         public Task<bool> IsAvailableAsync(CancellationToken ct = default)
             => FailProbe ? throw new IOException("test unavailable") : Task.FromResult(true);
-        public Task<WordAlignment> AlignAsync(ReadOnlyMemory<byte> pcm, AudioFormat format, string script, CancellationToken ct = default)
+        public Task WarmUpAsync(CancellationToken ct = default) { Interlocked.Increment(ref WarmUps); return Task.CompletedTask; }
+        public async Task<WordAlignment> AlignAsync(ReadOnlyMemory<byte> pcm, AudioFormat format, string script, CancellationToken ct = default)
         {
             Interlocked.Increment(ref Calls);
+            if (Hold is { } hold) await hold.Task.WaitAsync(ct);
             if (Fail) throw new InvalidDataException("test mismatch");
-            return Task.FromResult(new WordAlignment(SpokenWord.Tokenize(script).Select((w, i) => new AlignedWord(w.Range, i * 12000, i * 12000 + 3000)).ToArray(), []));
+            return new WordAlignment(SpokenWord.Tokenize(script).Select((w, i) => new AlignedWord(w.Range, i * 12000, i * 12000 + 3000)).ToArray(), []);
         }
     }
 }

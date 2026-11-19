@@ -397,6 +397,14 @@ public interface IForcedAligner
     /// <summary>Aligns <paramref name="pcm"/> against <paramref name="script"/>. Returns candidate cues that still need <see cref="TimedCueValidator"/>.</summary>
     Task<WordAlignment> AlignAsync(
         ReadOnlyMemory<byte> pcm, AudioFormat format, string script, CancellationToken ct = default);
+
+    /// <summary>
+    /// Gets ready to align, so the first passage does not pay for it. Called when a document is
+    /// loaded. The local aligner's worker takes 23 to 56 s to start (measured); paid by the first
+    /// passage that needed fresh audio, that was a silence in the middle of a paragraph. Failure
+    /// is not reported here: the alignment that needs it reports it.
+    /// </summary>
+    Task WarmUpAsync(CancellationToken ct = default) => Task.CompletedTask;
 }
 
 /// <summary>

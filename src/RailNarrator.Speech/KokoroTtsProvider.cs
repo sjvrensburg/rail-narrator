@@ -329,6 +329,14 @@ public sealed class KokoroTtsProvider : ITtsProvider
     /// is what makes word-level highlighting capability-gated on evidence rather than on hope.
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// Kokoro's sessions report errors only. At the default level ONNX Runtime printed a screenful
+    /// at every start: it cannot constant-fold the fp16 model's Reciprocal nodes on the CPU, and it
+    /// says where it placed nodes. Neither is actionable; a session that cannot be built still
+    /// throws, and an output that is wrong is caught by KokoroOutputCheck.
+    /// </summary>
+    internal const OrtLoggingLevel QuietSessionLog = OrtLoggingLevel.ORT_LOGGING_LEVEL_ERROR;
+
     private string? ProbeModel(string modelPath, SessionOptions options)
     {
         try
@@ -422,7 +430,7 @@ public sealed class KokoroTtsProvider : ITtsProvider
                 // Session options are set explicitly rather than inherited from the environment: an
                 // ambient OMP_NUM_THREADS of 1 makes synthesis several times slower and the cause is
                 // invisible from inside the process.
-                var options = new SessionOptions { EnableMemoryPattern = true };
+                var options = new SessionOptions { EnableMemoryPattern = true, LogSeverityLevel = QuietSessionLog };
                 int threads = _settings.IntraOpThreads > 0
                     ? _settings.IntraOpThreads
                     : Math.Max(1, Math.Min(8, Environment.ProcessorCount));
@@ -473,7 +481,7 @@ public sealed class KokoroTtsProvider : ITtsProvider
         KokoroSessionRunner? runner = null;
         try
         {
-            var options = new SessionOptions { EnableMemoryPattern = true };
+            var options = new SessionOptions { EnableMemoryPattern = true, LogSeverityLevel = QuietSessionLog };
             _gpu.ConfigureSession(options);
             string fingerprint = await Task.Run(() => CacheKey.Sha256HexOfFile(_gpu.ModelPath), ct).ConfigureAwait(false);
             runner = await Task.Run(() => new KokoroSessionRunner(_gpu.ModelPath, options, "webgpu", fingerprint), ct).ConfigureAwait(false);

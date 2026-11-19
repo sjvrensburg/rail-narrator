@@ -204,6 +204,7 @@ public sealed class ServiceRegistry : IAsyncDisposable
             assetStore,
             options: new NarrationCoordinatorOptions(
                 LookaheadSegments: settings.LookaheadSegments,
+                LookaheadSeconds: settings.LookaheadSeconds,
                 MaxConcurrentSynthesis: settings.MaxConcurrentSynthesis,
                 VoiceId: settings.KokoroVoiceId ?? settings.ZonosSpeakerId,
                 PlaybackRate: settings.PlaybackRate,

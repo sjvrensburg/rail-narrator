@@ -109,7 +109,8 @@ public sealed class PortAudioOutputDevice : IAudioOutputDevice
             if (_initialised) return _initError;
             try
             {
-                int rc = PortAudioNative.Pa_Initialize();
+                int rc;
+                using (NativeAudioChatter.Quiet()) rc = PortAudioNative.Pa_Initialize();
                 _initError = rc == 0 ? null : PortAudioNative.Describe(rc);
             }
             catch (DllNotFoundException) { _initError = "Install libportaudio.so.2 to enable audio output."; }

@@ -183,7 +183,11 @@ public sealed record RailNarratorSettings
     public byte HighlightAlpha { get; init; } = 72;
     public bool HighlightHighContrast { get; init; }
 
+    /// <summary>The fewest passages prepared ahead of the one being read.</summary>
     public int LookaheadSegments { get; init; } = 4;
+
+    /// <summary>Listening time prepared ahead of the passage being read, in seconds (at most 40 passages).</summary>
+    public double LookaheadSeconds { get; init; } = 60;
     public int MaxConcurrentSynthesis { get; init; } = 1;
 
     public IReadOnlyDictionary<string, string> PronunciationDictionary { get; init; }

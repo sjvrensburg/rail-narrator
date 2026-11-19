@@ -78,10 +78,12 @@ Two mechanisms make concurrency safe:
   advance it. Every in-flight job captures the value it started with, and results
   from a superseded generation are dropped rather than stored — so a synthesis that
   completes after a seek cannot play over the new position.
-- **Bounded lookahead.** Four segments by default, one concurrent synthesis. OCR,
-  vision, LLM and TTS all contend for the same memory; tuning concurrency before
-  measuring is how a reader runs out of RAM. At the measured RTF of 0.11 there is
-  ~9× headroom, so the bound is comfortable rather than tight.
+- **Bounded lookahead, counted in listening time.** Passages are prepared until 60 s
+  of listening is ready beyond the one being read: at least four passages, at most
+  forty. One concurrent synthesis: OCR, vision, LLM and TTS all contend for the same
+  memory, and tuning concurrency before measuring is how a reader runs out of RAM.
+  A passage is playable once synthesised; its word timing is aligned afterwards and
+  attaches when it arrives, so a slow or starting aligner never holds playback up.
 
 ## The media clock
 
