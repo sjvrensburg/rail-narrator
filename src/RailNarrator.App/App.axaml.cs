@@ -1,5 +1,7 @@
 using Avalonia;
+using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Styling;
 using Avalonia.Markup.Xaml;
 using Avalonia.Threading;
 using System.Runtime.InteropServices;
@@ -17,7 +19,9 @@ public sealed class App : Application
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             var services = ServiceRegistry.Create();
+            RequestedThemeVariant = services.CurrentSettings.DarkMode ? ThemeVariant.Dark : ThemeVariant.Light;
             var window = new MainWindow(services);
+            window.FontSize = FontSizeFor(services.CurrentSettings.UiFontScale);
             desktop.MainWindow = window;
             desktop.Exit += (_, _) => DisposeServices(services);
             HandleTerminationSignals(window);
@@ -45,6 +49,24 @@ public sealed class App : Application
     }
 
     private static readonly TimeSpan ShutdownTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>Text size at a scale of 1, as RailReader2.</summary>
+    public const double BaseFontSize = 14;
+
+    /// <summary>The window font size for a text-size setting, clamped to RailReader2's 0.75 to 2.</summary>
+    public static double FontSizeFor(double scale) => BaseFontSize * Math.Clamp(double.IsFinite(scale) ? scale : 1, 0.75, 2.0);
+
+    /// <summary>
+    /// Applies the theme and the text size to every open window at once. Icons follow the text
+    /// size (they are sized from the inherited font size), and menus and pop-ups inherit it.
+    /// </summary>
+    public static void ApplyAppearance(bool dark, double fontScale)
+    {
+        if (Current is not { } app) return;
+        app.RequestedThemeVariant = dark ? ThemeVariant.Dark : ThemeVariant.Light;
+        if (app.ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
+            foreach (Window window in desktop.Windows) window.FontSize = FontSizeFor(fontScale);
+    }
 
     /// <summary>
     /// Turns SIGTERM, SIGINT and SIGHUP — a session logout, <c>kill</c>, Ctrl+C in a terminal —

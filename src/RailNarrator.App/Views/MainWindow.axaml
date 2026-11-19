@@ -3,6 +3,7 @@
         xmlns:vm="using:RailNarrator.App.ViewModels"
         xmlns:domain="using:RailNarrator.Domain"
         xmlns:views="using:RailNarrator.App.Views"
+        xmlns:c="using:RailNarrator.App.Controls"
         x:Class="RailNarrator.App.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         Title="Rail Narrator"
@@ -81,83 +82,133 @@
       </MenuItem>
     </Menu>
 
-    <!-- Transport bar: one play/pause button, passage steps, voice and speed; page, zoom, follow
-         and colour on the right. Everything else is in the menus. -->
-    <Border DockPanel.Dock="Top" Padding="8" Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
-      <!-- Wraps rather than clipping: the follow controls at the end must stay reachable in a narrow window. -->
-      <WrapPanel Orientation="Horizontal" ItemSpacing="6" LineSpacing="4">
-        <Button Content="⏮" Command="{Binding Previous}" ToolTip.Tip="Previous passage (Ctrl+Left)" />
-        <Button Name="PlayButton" Content="{Binding PlayButtonText}" Command="{Binding PlayPause}" MinWidth="110"
-                ToolTip.Tip="Play or pause (Space). While a passage is being prepared, cancels the start." />
-        <Button Content="⏭" Command="{Binding Next}" ToolTip.Tip="Next passage (Ctrl+Right)" />
+    <!-- Toolbar: what a listener reaches for. Transport, voice and speed; following and the
+         colour filter; settings at the far end. Page and zoom are in the status bar, as in
+         RailReader2. Icon buttons carry their name for screen readers and their shortcut in the
+         tooltip. -->
+    <Border DockPanel.Dock="Top" Padding="8,6" Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}"
+            BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}" BorderThickness="0,0,0,1">
+      <Grid ColumnDefinitions="*,Auto">
+        <!-- Wraps rather than clipping, so nothing becomes unreachable in a narrow window. -->
+        <WrapPanel Orientation="Horizontal" ItemSpacing="6" LineSpacing="4" VerticalAlignment="Center">
+          <Button Classes="toolBtn" Command="{Binding Previous}" ToolTip.Tip="Previous passage (Ctrl+Left)"
+                  AutomationProperties.Name="Previous passage">
+            <c:Icon Data="{StaticResource IconSkipBack}" />
+          </Button>
+          <Button Name="PlayButton" Classes="primary" Command="{Binding PlayPause}" MinWidth="104"
+                  ToolTip.Tip="Play or pause (Space). While a passage is being prepared, cancels the start."
+                  AutomationProperties.Name="{Binding PlayButtonLabel}">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <c:Icon Data="{StaticResource IconPlay}" IsVisible="{Binding PlayButtonShowsPlay}" />
+              <c:Icon Data="{StaticResource IconPause}" IsVisible="{Binding PlayButtonShowsPause}" />
+              <c:Icon Data="{StaticResource IconClose}" IsVisible="{Binding PlayButtonShowsCancel}" />
+              <TextBlock Text="{Binding PlayButtonLabel}" VerticalAlignment="Center" />
+            </StackPanel>
+          </Button>
+          <Button Classes="toolBtn" Command="{Binding Next}" ToolTip.Tip="Next passage (Ctrl+Right)"
+                  AutomationProperties.Name="Next passage">
+            <c:Icon Data="{StaticResource IconSkipForward}" />
+          </Button>
 
-        <Separator Width="1" Margin="6,2" />
+          <Border Classes="toolSep" />
 
-        <ComboBox ItemsSource="{Binding Voices}" SelectedItem="{Binding SelectedVoice}"
-                  MinWidth="180" HorizontalAlignment="Left"
-                  ToolTip.Tip="Voice. Changing it discards prepared audio and re-synthesises from here.">
-          <ComboBox.ItemTemplate>
-            <DataTemplate x:DataType="domain:TtsVoice">
-              <TextBlock Text="{Binding DisplayName}" />
-            </DataTemplate>
-          </ComboBox.ItemTemplate>
-        </ComboBox>
-        <ComboBox ItemsSource="{Binding PlaybackRates}" SelectedItem="{Binding PlaybackRate}" MinWidth="80"
-                  ToolTip.Tip="Playback speed (pitch-preserving)">
-          <ComboBox.ItemTemplate>
-            <DataTemplate x:DataType="x:Double">
-              <TextBlock Text="{Binding StringFormat={}{0}×}" />
-            </DataTemplate>
-          </ComboBox.ItemTemplate>
-        </ComboBox>
+          <ComboBox ItemsSource="{Binding Voices}" SelectedItem="{Binding SelectedVoice}" MinWidth="180"
+                    PlaceholderText="Voice" AutomationProperties.Name="Voice"
+                    ToolTip.Tip="Voice. Changing it discards prepared audio and re-synthesises from here.">
+            <ComboBox.ItemTemplate>
+              <DataTemplate x:DataType="domain:TtsVoice">
+                <TextBlock Text="{Binding DisplayName}" />
+              </DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
+          <ComboBox ItemsSource="{Binding PlaybackRates}" SelectedItem="{Binding PlaybackRate}" MinWidth="80"
+                    AutomationProperties.Name="Speed" ToolTip.Tip="Speed (pitch kept)">
+            <ComboBox.ItemTemplate>
+              <DataTemplate x:DataType="x:Double">
+                <TextBlock Text="{Binding StringFormat={}{0}×}" />
+              </DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
 
-        <Separator Width="1" Margin="6,2" />
+          <Border Classes="toolSep" />
 
-        <Button Content="◀" Click="OnPreviousPageClicked" ToolTip.Tip="Previous page (Page Up). Pauses following." />
-        <TextBlock Name="PageLabel" Text="Page –" VerticalAlignment="Center" MinWidth="80" TextAlignment="Center" />
-        <Button Content="▶" Click="OnNextPageClicked" ToolTip.Tip="Next page (Page Down). Pauses following." />
+          <Button Classes="toolBtn" Classes.active="{Binding IsFollowing}" Command="{Binding ToggleFollow}"
+                  ToolTip.Tip="Follow the reading: the view glides with it, line by line (Ctrl+F)"
+                  AutomationProperties.Name="Follow the reading">
+            <StackPanel Orientation="Horizontal" Spacing="6">
+              <c:Icon Data="{StaticResource IconCrosshair}" />
+              <TextBlock Text="Follow" VerticalAlignment="Center" />
+            </StackPanel>
+          </Button>
+          <Button Classes="toolBtn" Command="{Binding ResumeFollow}" IsVisible="{Binding FollowSuspended}"
+                  ToolTip.Tip="Browsing paused following; this resumes it. Audio was never stopped. (F9)">
+            <TextBlock Text="Resume following" />
+          </Button>
 
-        <Separator Width="1" Margin="6,2" />
+          <Border Classes="toolSep" />
 
-        <Button Content="−" Command="{Binding ZoomOut}" ToolTip.Tip="Zoom out (Ctrl+-, or Ctrl+wheel)" />
-        <TextBlock Text="{Binding ZoomPercent, StringFormat={}{0}%}" VerticalAlignment="Center" MinWidth="48"
-                   TextAlignment="Center" />
-        <Button Content="+" Command="{Binding ZoomIn}" ToolTip.Tip="Zoom in (Ctrl++)" />
-        <ToggleButton Content="Fit" IsChecked="{Binding FitWidth, Mode=TwoWay}"
-                      ToolTip.Tip="Fit the page's width, and keep it fitted through page turns and resizes" />
+          <c:Icon Data="{StaticResource IconPalette}" VerticalAlignment="Center" Margin="2,0,0,0"
+                  ToolTip.Tip="Colour filter for the page" />
+          <ComboBox ItemsSource="{Binding ColourEffects}" SelectedItem="{Binding SelectedColourEffect}" MinWidth="150"
+                    AutomationProperties.Name="Colour filter"
+                    ToolTip.Tip="Colour filter for the page: high contrast, high visibility, amber or invert (C cycles them)">
+            <ComboBox.ItemTemplate>
+              <DataTemplate x:DataType="vm:ColourEffectOption">
+                <TextBlock Text="{Binding Name}" ToolTip.Tip="{Binding Description}" />
+              </DataTemplate>
+            </ComboBox.ItemTemplate>
+          </ComboBox>
+          <!-- Strength, offered only while a filter is on. -->
+          <Slider Width="90" Minimum="0" Maximum="1" SmallChange="0.05" LargeChange="0.25"
+                  Value="{Binding ColourEffectIntensity}" IsVisible="{Binding HasColourEffect}"
+                  VerticalAlignment="Center" AutomationProperties.Name="Filter strength"
+                  ToolTip.Tip="{Binding ColourEffectPercent, StringFormat=Filter strength: {0}%}" />
+        </WrapPanel>
 
-        <Separator Width="1" Margin="6,2" />
-
-        <Button Content="{Binding FollowLabel}" Command="{Binding ToggleFollow}"
-                ToolTip.Tip="Glide with the reading, line by line (Ctrl+F)" />
-        <Button Content="Resume following (F9)" Command="{Binding ResumeFollow}"
-                IsVisible="{Binding FollowSuspended}"
-                ToolTip.Tip="Browsing paused the camera; this restores it. Audio was never stopped." />
-        <TextBlock Text="Colour:" VerticalAlignment="Center" Margin="6,0,0,0" />
-        <ComboBox ItemsSource="{Binding ColourEffects}" SelectedItem="{Binding SelectedColourEffect}" MinWidth="140"
-                  ToolTip.Tip="Colour filter for the page: high contrast, high visibility, amber or invert (C cycles them)">
-          <ComboBox.ItemTemplate>
-            <DataTemplate x:DataType="vm:ColourEffectOption">
-              <TextBlock Text="{Binding Name}" ToolTip.Tip="{Binding Description}" />
-            </DataTemplate>
-          </ComboBox.ItemTemplate>
-        </ComboBox>
-        <!-- Strength, offered only while a filter is on. -->
-        <Slider Width="90" Minimum="0" Maximum="1" SmallChange="0.05" LargeChange="0.25"
-                Value="{Binding ColourEffectIntensity}" IsVisible="{Binding HasColourEffect}"
-                VerticalAlignment="Center"
-                ToolTip.Tip="{Binding ColourEffectPercent, StringFormat=Filter strength: {0}%}" />
-      </WrapPanel>
+        <Button Grid.Column="1" Classes="toolBtn borderless" Command="{Binding OpenSettings}" VerticalAlignment="Center"
+                ToolTip.Tip="Settings (Ctrl+,)" AutomationProperties.Name="Settings">
+          <c:Icon Data="{StaticResource IconSettings}" />
+        </Button>
+      </Grid>
     </Border>
 
-    <!-- Status bar -->
-    <Border DockPanel.Dock="Bottom" Padding="8,4" Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}">
+    <!-- Status bar, as RailReader2's: what is happening on the left; how far through, the page and
+         the zoom on the right. -->
+    <Border DockPanel.Dock="Bottom" Padding="8,3" Background="{DynamicResource SystemControlBackgroundChromeMediumLowBrush}"
+            BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}" BorderThickness="0,1,0,0">
       <Grid ColumnDefinitions="*,Auto">
         <TextBlock Grid.Column="0" Text="{Binding StatusMessage}" TextTrimming="CharacterEllipsis"
-                   VerticalAlignment="Center" />
-        <ProgressBar Grid.Column="1" Margin="12,0,0,0" Width="160" Minimum="0" Maximum="1"
-                     Value="{Binding Playback.PlanProgress}" VerticalAlignment="Center"
-                     ToolTip.Tip="How far through the document" />
+                   VerticalAlignment="Center" AutomationProperties.LiveSetting="Polite" />
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" Margin="12,0,0,0">
+          <ProgressBar Width="120" Minimum="0" Maximum="1" Value="{Binding Playback.PlanProgress}" VerticalAlignment="Center"
+                       ToolTip.Tip="How far through the document" AutomationProperties.Name="How far through the document" />
+          <Border Classes="toolSep" />
+          <Button Classes="toolBtn borderless" Click="OnPreviousPageClicked" ToolTip.Tip="Previous page (Page Up). Pauses following."
+                  AutomationProperties.Name="Previous page">
+            <c:Icon Data="{StaticResource IconChevronLeft}" />
+          </Button>
+          <TextBlock Name="PageLabel" Text="Page –" VerticalAlignment="Center" MinWidth="76" TextAlignment="Center" />
+          <Button Classes="toolBtn borderless" Click="OnNextPageClicked" ToolTip.Tip="Next page (Page Down). Pauses following."
+                  AutomationProperties.Name="Next page">
+            <c:Icon Data="{StaticResource IconChevronRight}" />
+          </Button>
+          <Border Classes="toolSep" />
+          <Button Classes="toolBtn borderless" Command="{Binding ZoomOut}" ToolTip.Tip="Zoom out (Ctrl+-, or Ctrl+wheel)"
+                  AutomationProperties.Name="Zoom out">
+            <c:Icon Data="{StaticResource IconMinus}" />
+          </Button>
+          <TextBlock Text="{Binding ZoomPercent, StringFormat={}{0}%}" VerticalAlignment="Center" MinWidth="48"
+                     TextAlignment="Center" />
+          <Button Classes="toolBtn borderless" Command="{Binding ZoomIn}" ToolTip.Tip="Zoom in (Ctrl++)"
+                  AutomationProperties.Name="Zoom in">
+            <c:Icon Data="{StaticResource IconPlus}" />
+          </Button>
+          <ToggleButton Classes="toolBtn borderless" IsChecked="{Binding FitWidth, Mode=TwoWay}"
+                        ToolTip.Tip="Fit the page's width, and keep it fitted through page turns and resizes"
+                        AutomationProperties.Name="Fit width">
+            <c:Icon Data="{StaticResource IconMoveHorizontal}" />
+          </ToggleButton>
+        </StackPanel>
       </Grid>
     </Border>
 
@@ -177,7 +228,7 @@
                 <StackPanel Orientation="Horizontal" Spacing="4">
                   <TextBlock Text="∑" Foreground="Orange" IsVisible="{Binding IsMaths}"
                              ToolTip.Tip="Mathematical passage" />
-                  <TextBlock Text="!" Foreground="#FFB020" IsVisible="{Binding HasWarning}"
+                  <TextBlock Text="!" Foreground="#C07800" IsVisible="{Binding HasWarning}"
                              ToolTip.Tip="This passage has a warning; see the maths review panel" />
                   <TextBlock Text="{Binding Text}" TextWrapping="Wrap" MaxWidth="300" />
                 </StackPanel>
@@ -202,7 +253,7 @@
             <ItemsControl ItemsSource="{Binding Warnings}">
               <ItemsControl.ItemTemplate>
                 <DataTemplate x:DataType="x:String">
-                  <TextBlock Text="{Binding}" FontSize="11" Foreground="#FFB020" TextWrapping="Wrap" />
+                  <TextBlock Text="{Binding}" FontSize="11" Foreground="#C07800" TextWrapping="Wrap" />
                 </DataTemplate>
               </ItemsControl.ItemTemplate>
             </ItemsControl>
@@ -241,14 +292,15 @@
       <Border IsVisible="{Binding IsPreparing}" IsHitTestVisible="False"
               HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,16,0,0"
               Padding="16,10" CornerRadius="8" MinWidth="320"
-              Background="#E6202833" BorderBrush="#2F80ED" BorderThickness="1"
-              BoxShadow="0 4 16 0 #60000000">
+              Classes="overlayCard" BorderThickness="1">
         <StackPanel Spacing="8">
-          <TextBlock Text="{Binding PreparationText}" Foreground="White" FontSize="14"
+          <TextBlock Text="{Binding PreparationText}" FontSize="14"
                      TextAlignment="Center" TextWrapping="Wrap" />
-          <ProgressBar IsIndeterminate="True" Height="4" MinWidth="280" Foreground="#2F80ED" />
+          <!-- Indeterminate only while shown: a hidden indeterminate bar still animates, and on X11
+               that kept a core busy (RailReader2's finding). -->
+          <ProgressBar IsIndeterminate="{Binding IsPreparing}" Height="4" MinWidth="280" />
           <TextBlock Text="Not playing yet: reading starts as soon as the audio is ready."
-                     Foreground="#B0FFFFFF" FontSize="11" TextAlignment="Center" />
+                     Classes="secondary" FontSize="11" TextAlignment="Center" />
         </StackPanel>
       </Border>
 
@@ -257,25 +309,23 @@
            being done to it and how far that has got. The veil takes the pointer, so a click cannot
            start the previous document reading underneath. The stage is a live region, so a screen
            reader announces each change. -->
-      <Border Name="LoadingVeil" IsVisible="{Binding IsLoading}" Background="#B3101418">
+      <Border Name="LoadingVeil" IsVisible="{Binding IsLoading}" Background="{DynamicResource OverlayVeilBrush}">
         <Border Name="LoadingCard" HorizontalAlignment="Center" VerticalAlignment="Center"
                 Padding="32,26" CornerRadius="12" MinWidth="460" MaxWidth="640" Margin="24"
-                Background="#F21B2430" BorderBrush="#2F80ED" BorderThickness="2"
-                BoxShadow="0 8 32 0 #80000000">
+                Classes="overlayCard" BorderThickness="2">
           <StackPanel Spacing="12">
-            <TextBlock Text="OPENING DOCUMENT" Foreground="#8AB4F8" FontSize="12" FontWeight="SemiBold"
-                       LetterSpacing="1.5" />
-            <TextBlock Text="{Binding LoadingTitle}" Foreground="White" FontSize="22" FontWeight="SemiBold"
+            <TextBlock Text="OPENING DOCUMENT" Classes="eyebrow" />
+            <TextBlock Text="{Binding LoadingTitle}" FontSize="22" FontWeight="SemiBold"
                        TextTrimming="CharacterEllipsis" MaxLines="2" TextWrapping="Wrap" />
-            <TextBlock Name="LoadingStageText" Text="{Binding LoadingStage}" Foreground="White" FontSize="17"
+            <TextBlock Name="LoadingStageText" Text="{Binding LoadingStage}" FontSize="17"
                        TextWrapping="Wrap" Margin="0,8,0,0"
                        AutomationProperties.LiveSetting="Polite" />
-            <ProgressBar Name="LoadingBar" Height="10" MinWidth="400" CornerRadius="5" Foreground="#2F80ED"
+            <ProgressBar Name="LoadingBar" Height="10" MinWidth="400" CornerRadius="5"
                          Minimum="0" Maximum="1" Value="{Binding LoadingProgress}"
                          IsIndeterminate="{Binding LoadingIndeterminate}" />
-            <TextBlock Text="{Binding LoadingDetail}" Foreground="#C0FFFFFF" FontSize="14" MinHeight="20" />
+            <TextBlock Text="{Binding LoadingDetail}" Classes="secondary" FontSize="14" MinHeight="20" />
             <TextBlock Text="The pages are analysed once and remembered: this document opens faster next time."
-                       Foreground="#90FFFFFF" FontSize="12" TextWrapping="Wrap" />
+                       Classes="secondary" FontSize="12" TextWrapping="Wrap" />
           </StackPanel>
         </Border>
       </Border>

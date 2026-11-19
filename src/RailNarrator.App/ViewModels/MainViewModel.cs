@@ -202,6 +202,10 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             if (!Set(ref _playback, value)) return;
             OnPropertyChanged(nameof(IsPreparing));
             OnPropertyChanged(nameof(PlayButtonText));
+            OnPropertyChanged(nameof(PlayButtonLabel));
+            OnPropertyChanged(nameof(PlayButtonShowsPlay));
+            OnPropertyChanged(nameof(PlayButtonShowsPause));
+            OnPropertyChanged(nameof(PlayButtonShowsCancel));
             OnPropertyChanged(nameof(PreparationText));
         }
     }
@@ -292,6 +296,15 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     /// <summary>The play/pause button's caption: what pressing it will do now.</summary>
     public string PlayButtonText => IsStarting ? "⏹ Cancel" : _playback.State == PlaybackState.Playing ? "⏸ Pause" : "▶ Play";
 
+    /// <summary>The play button's words, beside its icon: Play, Pause, or Cancel while a start is waiting.</summary>
+    public string PlayButtonLabel => IsStarting ? "Cancel" : _playback.State == PlaybackState.Playing ? "Pause" : "Play";
+
+    public bool PlayButtonShowsPlay => !IsStarting && _playback.State != PlaybackState.Playing;
+
+    public bool PlayButtonShowsPause => !IsStarting && _playback.State == PlaybackState.Playing;
+
+    public bool PlayButtonShowsCancel => IsStarting;
+
     /// <summary>A start (Play, a seek) is under way and nothing is audible yet: pressing the button cancels it.</summary>
     private bool IsStarting => _playback.Preparation is not null || _playback.State is PlaybackState.Seeking or PlaybackState.Preparing;
 
@@ -348,6 +361,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         {
             if (!Set(ref _followMode, value)) return;
             OnPropertyChanged(nameof(FollowLabel));
+            OnPropertyChanged(nameof(IsFollowing));
             Coordinator.SetFollowMode(value);
             PersistPreference(s => s with { FollowMode = value });
         }
@@ -355,6 +369,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     /// <summary>The follow toggle's caption.</summary>
     public string FollowLabel => _followMode == FollowMode.Off ? "Follow: off" : "Follow: on";
+
+    /// <summary>The view follows the reading: the follow button is shown on (accent).</summary>
+    public bool IsFollowing => _followMode != FollowMode.Off;
 
     public bool FollowSuspended { get => _followSuspended; private set => Set(ref _followSuspended, value); }
 
@@ -770,6 +787,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         if (position.PlaybackRate > 0) Set(ref _playbackRate, position.PlaybackRate, nameof(PlaybackRate));
         Set(ref _followMode, position.FollowMode, nameof(FollowMode));
         OnPropertyChanged(nameof(FollowLabel));
+        OnPropertyChanged(nameof(IsFollowing));
         if (position.VoiceId is { } id && Voices.FirstOrDefault(v => v.Id == id) is { } voice)
         {
             Set(ref _selectedVoiceId, id, nameof(SelectedVoiceId));

@@ -1,8 +1,103 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="RailNarrator.App.App"
-             RequestedThemeVariant="Dark">
+             RequestedThemeVariant="Light">
+  <!-- Light by default, as RailReader2; dark is a setting (Settings ▸ Appearance), applied at start
+       and when changed. Everything else uses Fluent's theme brushes, so it follows the variant. -->
+  <Application.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.MergedDictionaries>
+        <ResourceInclude Source="avares://rail-narrator/Assets/Icons.axaml" />
+      </ResourceDictionary.MergedDictionaries>
+      <ResourceDictionary.ThemeDictionaries>
+        <ResourceDictionary x:Key="Light">
+          <!-- Around the page: RailReader2's mid grey. -->
+          <Color x:Key="ReadingCanvasColor">#808080</Color>
+          <SolidColorBrush x:Key="OverlayCardBrush" Color="#F7FFFFFF" />
+          <SolidColorBrush x:Key="OverlayVeilBrush" Color="#66000000" />
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="Dark">
+          <Color x:Key="ReadingCanvasColor">#2B2B2B</Color>
+          <SolidColorBrush x:Key="OverlayCardBrush" Color="#F21E2228" />
+          <SolidColorBrush x:Key="OverlayVeilBrush" Color="#99000000" />
+        </ResourceDictionary>
+      </ResourceDictionary.ThemeDictionaries>
+    </ResourceDictionary>
+  </Application.Resources>
+
   <Application.Styles>
     <FluentTheme />
+
+    <!-- From RailReader2. Tooltips sit beside their control, never at the pointer: on X11 a
+         tooltip is its own window, and one pushed over the pointer swallowed the click. -->
+    <Style Selector=":is(Control)">
+      <Setter Property="ToolTip.Placement" Value="Top" />
+      <Setter Property="ToolTip.VerticalOffset" Value="0" />
+    </Style>
+
+    <!-- From RailReader2: a flat, theme-aware icon button; accent-filled when on. -->
+    <Style Selector="ToggleButton.toolBtn, Button.toolBtn">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderBrush" Value="{DynamicResource SystemControlForegroundBaseMediumLowBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="Padding" Value="8,6" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="ToggleButton.toolBtn:pointerover, Button.toolBtn:pointerover">
+      <Setter Property="Background" Value="{DynamicResource SystemControlHighlightListLowBrush}" />
+    </Style>
+    <Style Selector="ToggleButton.toolBtn:checked, Button.toolBtn.active">
+      <Setter Property="Background" Value="{DynamicResource SystemControlHighlightAccentBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}" />
+      <Setter Property="Foreground" Value="White" />
+    </Style>
+    <Style Selector="ToggleButton.toolBtn:checked:pointerover, Button.toolBtn.active:pointerover">
+      <Setter Property="Background" Value="{DynamicResource SystemControlHighlightAccentBrush}" />
+      <Setter Property="Foreground" Value="White" />
+    </Style>
+    <Style Selector="Button.toolBtn:disabled, ToggleButton.toolBtn:disabled">
+      <Setter Property="Opacity" Value="0.4" />
+    </Style>
+    <Style Selector="ToggleButton.toolBtn.borderless, Button.toolBtn.borderless">
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Padding" Value="7" />
+    </Style>
+
+    <!-- The one primary action on screen (Play): accent-filled, with its label. -->
+    <Style Selector="Button.primary">
+      <Setter Property="Background" Value="{DynamicResource SystemControlHighlightAccentBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}" />
+      <Setter Property="Foreground" Value="White" />
+    </Style>
+    <Style Selector="Button.primary:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource SystemControlHighlightAccentBrush}" />
+      <Setter Property="Foreground" Value="White" />
+      <Setter Property="Opacity" Value="0.9" />
+    </Style>
+
+    <!-- Thin separator between groups of a toolbar or status bar (RailReader2's toolSep). -->
+    <Style Selector="Border.toolSep">
+      <Setter Property="Width" Value="1" />
+      <Setter Property="Margin" Value="4,4" />
+      <Setter Property="Background" Value="{DynamicResource SystemControlForegroundBaseLowBrush}" />
+    </Style>
+
+    <!-- A card floating over the page (opening a document, preparing a passage). -->
+    <Style Selector="Border.overlayCard">
+      <Setter Property="Background" Value="{DynamicResource OverlayCardBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource SystemControlHighlightAccentBrush}" />
+      <Setter Property="BoxShadow" Value="0 4 16 0 #40000000" />
+    </Style>
+    <Style Selector="TextBlock.secondary">
+      <Setter Property="Opacity" Value="0.7" />
+    </Style>
+    <Style Selector="TextBlock.eyebrow">
+      <Setter Property="Foreground" Value="{DynamicResource SystemControlHighlightAccentBrush}" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="LetterSpacing" Value="1.5" />
+    </Style>
   </Application.Styles>
 </Application>

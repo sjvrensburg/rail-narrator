@@ -121,6 +121,10 @@ New external dependencies go behind a port in Domain so domain tests keep runnin
 
 `SettingsWindow` / `SettingsViewModel` (File ▸ Settings…, Ctrl+,) saves each change as it is made through `MainViewModel.PersistSettings` (read, change, write, so the main window's own preference saves survive). Reading preferences apply at once by updating only those fields of `ServiceRegistry.CurrentSettings`; engines (speech, maths, layout, filters) are built once in `ServiceRegistry.Create`, so their changes apply after a restart, which the dialogue offers (it relaunches with the open document after the position is saved). A new setting: add it to `RailNarratorSettings`, to the dialogue, and, if it applies at once, to `SettingsViewModel.SaveLive` and to the fields `EngineSignature` leaves out.
 
+### Look and feel (follows RailReader2)
+
+Fluent, light by default; dark and the text size (`DarkMode`, `UiFontScale`) apply live through `App.ApplyAppearance`, and a window opened later takes the main window's `FontSize`. Colours come from Fluent's theme brushes or the theme dictionaries in `App.axaml` (`ReadingCanvasColor`, `OverlayCardBrush`, `OverlayVeilBrush`); don't hard-code a colour that must read in both themes. Icons are Lucide `StreamGeometry`s in `Assets/Icons.axaml` drawn by `Controls/Icon` (copied from RailReader2; sized from the inherited font size, so they scale with the text); an icon button gets `AutomationProperties.Name` and its shortcut in the tooltip. Button classes `toolBtn`, `borderless`, `active`, `primary` and `toolSep`/`overlayCard` are defined in `App.axaml`.
+
 ### Documentation convention
 
 `docs/status.md` and the README distinguish verified claims (with the measurement) from unverified ones and from deliberate non-features. When behaviour or verification status changes, update those documents in the same terms rather than claiming more than was measured.
