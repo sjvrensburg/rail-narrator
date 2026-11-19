@@ -167,6 +167,27 @@ public sealed record NarrationHighlightStyle(
     /// <summary>High-contrast variant for readers who need a stronger boundary.</summary>
     public static NarrationHighlightStyle HighContrast { get; } = new(new SKColor(255, 214, 0), 120, new SKColor(0, 0, 0, 255), 1.25f);
 
+    /// <summary>
+    /// A passage spoken in other words than the page's (a maths interpretation, or the local
+    /// reading of its LaTeX): violet, so it is plain that what is heard is not what is printed.
+    /// </summary>
+    public static NarrationHighlightStyle Paraphrase { get; } = new(new SKColor(150, 100, 255), 72, new SKColor(110, 60, 230, 220));
+
+    /// <summary>High-contrast variant of <see cref="Paraphrase"/>.</summary>
+    public static NarrationHighlightStyle ParaphraseHighContrast { get; } = new(new SKColor(200, 120, 255), 120, new SKColor(0, 0, 0, 255), 1.25f);
+
+    /// <summary>
+    /// The paraphrase tint on a filtered page. RailReader's line-highlight colour for each filter
+    /// (cyan, yellow, amber, green) is taken by the spoken highlight, so the paraphrase is a magenta
+    /// or violet chosen to stand apart from both it and the filtered paper.
+    /// </summary>
+    public static SKColor ParaphraseTint(ColourEffect effect) => effect switch
+    {
+        ColourEffect.Amber => new SKColor(255, 90, 200),
+        ColourEffect.None => Paraphrase.FillColour,
+        _ => new SKColor(255, 64, 255),
+    };
+
     public NarrationHighlightStyle WithAlpha(byte alpha) => this with { FillAlpha = alpha };
 }
 
