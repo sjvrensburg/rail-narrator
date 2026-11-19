@@ -602,6 +602,80 @@ public static class HighlightLines
         return result;
     }
 
+    /// <summary>
+    /// The boxes of a cue as one shape: <see cref="Uniform"/> boxes, the words on a line joined into
+    /// one band across the spaces between them, and consecutive lines of a column joined across the
+    /// leading between them. Drawn as a union, nothing is tinted twice where padded word boxes meet,
+    /// which is what made a passage highlighted all at once look like a stack of overlapping boxes.
+    /// </summary>
+    /// <remarks>
+    /// Only whitespace between the cue's own boxes is added. A gap wider than the line height (a
+    /// column gutter) is never bridged, nor one holding a box of <paramref name="context"/> the cue
+    /// does not cover: a word the narration is not reading stays uncovered.
+    /// </remarks>
+    /// <param name="rects">The boxes to draw.</param>
+    /// <param name="context">The paragraph's boxes on the same page, including <paramref name="rects"/>.</param>
+    public static IReadOnlyList<PageRect> Passage(IReadOnlyList<PageRect> rects, IReadOnlyList<PageRect> context)
+    {
+        ArgumentNullException.ThrowIfNull(rects);
+        ArgumentNullException.ThrowIfNull(context);
+        var uniform = Uniform(rects, context).Where(r => !r.IsEmpty).ToList();
+        if (uniform.Count == 0) return [];
+        var others = context.Where(r => !r.IsEmpty).ToList();
+
+        // Words on one line, left to right, joined while the gap is a space rather than a gutter.
+        var bands = new List<PageRect>();
+        foreach (var line in LineGroups(uniform))
+        {
+            line.Sort((a, b) => a.Left.CompareTo(b.Left));
+            var band = line[0];
+            for (int i = 1; i < line.Count; i++)
+            {
+                var next = line[i];
+                float gap = next.Left - band.Right;
+                bool joins = gap <= 0 || (gap <= Math.Max(band.Height, next.Height)
+                    && !others.Any(o => o.Left >= band.Right && o.Right <= next.Left
+                                     && Overlap(o, band) >= 0.5 * Math.Min(o.Height, band.Height)));
+                if (joins) band = band.Union(next);
+                else { bands.Add(band); band = next; }
+            }
+            bands.Add(band);
+        }
+
+        // Each band meets the band below it (or above it) half-way across the leading, when the two
+        // share some width and the leading is less than a line: the lines of one column.
+        var result = bands.ToArray();
+        for (int i = 0; i < bands.Count; i++)
+        {
+            float? below = null, above = null;
+            for (int j = 0; j < bands.Count; j++)
+            {
+                if (i == j || Math.Min(bands[i].Right, bands[j].Right) <= Math.Max(bands[i].Left, bands[j].Left)) continue;
+                float limit = 0.75f * Math.Min(bands[i].Height, bands[j].Height);
+                float down = bands[j].Top - bands[i].Bottom;
+                if (down > 0 && down <= limit && (below is null || down < below)) below = down;
+                float up = bands[i].Top - bands[j].Bottom;
+                if (up > 0 && up <= limit && (above is null || up < above)) above = up;
+            }
+            var r = result[i];
+            result[i] = new PageRect(r.Left, r.Top - (above ?? 0) / 2, r.Right, r.Bottom + (below ?? 0) / 2);
+        }
+        return result;
+    }
+
+    /// <summary>Groups boxes into lines by vertical overlap, keeping the boxes of each line.</summary>
+    private static List<List<PageRect>> LineGroups(IEnumerable<PageRect> boxes)
+    {
+        var groups = new List<(PageRect Extent, List<PageRect> Boxes)>();
+        foreach (var r in boxes.OrderBy(b => b.MidY))
+        {
+            int i = groups.FindIndex(g => Overlap(g.Extent, r) >= 0.5 * Math.Min(g.Extent.Height, r.Height));
+            if (i < 0) groups.Add((r, [r]));
+            else { groups[i].Boxes.Add(r); groups[i] = (groups[i].Extent.Union(r), groups[i].Boxes); }
+        }
+        return groups.Select(g => g.Boxes).ToList();
+    }
+
     /// <summary>Groups boxes into lines by vertical overlap; each line is the union of its boxes' heights.</summary>
     private static List<PageRect> Lines(IEnumerable<PageRect> boxes)
     {

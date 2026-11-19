@@ -80,6 +80,8 @@ public sealed class PdfSurface : Control
     private IReadOnlyDictionary<int, IReadOnlyList<PageRect>> _highlightsByPage =
         new Dictionary<int, IReadOnlyList<PageRect>>();
     private NarrationHighlightStyle _highlightStyle = NarrationHighlightStyle.Default;
+    private NarrationHighlightStyle _paraphraseStyle = NarrationHighlightStyle.Paraphrase;
+    private bool _highlightIsParaphrase;
 
     /// <summary>How far past a wide page's left or right edge the view may go, as a fraction of its width.</summary>
     private const double HorizontalOverscroll = 0.5;
@@ -330,19 +332,25 @@ public sealed class PdfSurface : Control
         return (Math.Clamp(x, Bounds.Width - scaledW - overscroll, overscroll), clampedY);
     }
 
-    /// <summary>Sets highlights grouped by page, so a unit spanning a page break lights up on either page.</summary>
-    public void SetHighlightMultiPage(IReadOnlyDictionary<int, IReadOnlyList<PageRect>> byPage)
+    /// <summary>
+    /// Sets highlights grouped by page, so a unit spanning a page break lights up on either page.
+    /// <paramref name="paraphrase"/> marks a passage spoken in other words than the page's, drawn
+    /// in its own colour.
+    /// </summary>
+    public void SetHighlightMultiPage(IReadOnlyDictionary<int, IReadOnlyList<PageRect>> byPage, bool paraphrase = false)
     {
         _highlightsByPage = byPage ?? new Dictionary<int, IReadOnlyList<PageRect>>();
+        _highlightIsParaphrase = paraphrase;
         InvalidateVisual();
     }
 
     public void ClearHighlight() => SetHighlightMultiPage(new Dictionary<int, IReadOnlyList<PageRect>>());
 
     /// <summary>Sets highlight colours and opacity. Configurable because one fixed value is unreadable for some readers.</summary>
-    public void SetHighlightStyle(NarrationHighlightStyle style)
+    public void SetHighlightStyle(NarrationHighlightStyle style, NarrationHighlightStyle? paraphrase = null)
     {
         _highlightStyle = style ?? NarrationHighlightStyle.Default;
+        _paraphraseStyle = paraphrase ?? NarrationHighlightStyle.Paraphrase;
         InvalidateVisual();
     }
 
@@ -674,34 +682,49 @@ public sealed class PdfSurface : Control
         if (!_highlightsByPage.TryGetValue(CurrentPage, out var rects) || rects.Count == 0) return;
 
         var transform = new PageTransform(Zoom, _offsetX, _offsetY);
-        var fillColour = _highlightStyle.FillColour;
+        var style = _highlightIsParaphrase ? _paraphraseStyle : _highlightStyle;
+        var fillColour = style.FillColour;
+        var outlineColour = style.OutlineColour;
         // On a filtered page the default amber can vanish (yellow on high-visibility yellow, say); use
-        // the colour RailReader pairs with that filter for its line highlight.
+        // the colour RailReader pairs with that filter for its line highlight. A paraphrase has its
+        // own tint per filter, distinct from that one, and an outline in it.
         if (_colourEffect != ColourEffect.None)
         {
-            var tint = _colourEffect.GetOverlayPalette().LineHighlight;
-            fillColour = new SkiaSharp.SKColor(tint.R, tint.G, tint.B);
+            if (_highlightIsParaphrase)
+            {
+                fillColour = NarrationHighlightStyle.ParaphraseTint(_colourEffect);
+                if (outlineColour is { } o && o != SkiaSharp.SKColors.Black) outlineColour = fillColour.WithAlpha(220);
+            }
+            else
+            {
+                var tint = _colourEffect.GetOverlayPalette().LineHighlight;
+                fillColour = new SkiaSharp.SKColor(tint.R, tint.G, tint.B);
+            }
         }
-        var fill = new SolidColorBrush(Color.FromArgb(_highlightStyle.FillAlpha,
+        var fill = new SolidColorBrush(Color.FromArgb(style.FillAlpha,
             fillColour.Red, fillColour.Green, fillColour.Blue));
-        IPen? outline = _highlightStyle.OutlineColour is { } c
+        IPen? outline = outlineColour is { } c
             ? new Pen(new SolidColorBrush(Color.FromArgb(c.Alpha, c.Red, c.Green, c.Blue)),
-                      _highlightStyle.OutlineWidthPoints * Zoom)
+                      style.OutlineWidthPoints * Zoom)
             : null;
-        float radius = (float)(_highlightStyle.CornerRadiusPoints * Zoom);
+        float radius = (float)(style.CornerRadiusPoints * Zoom);
         // Padding is in page points and is applied before the page-to-screen transform, which
         // already scales by the zoom. Multiplying by the zoom here as well scaled it twice, so at
         // 800% each box grew by 64 px a side and covered the neighbouring lines.
-        float pad = _highlightStyle.PaddingPoints;
+        float pad = style.PaddingPoints;
 
+        // One shape, filled and outlined once: separate boxes overlap by their padding, and every
+        // overlap was tinted twice (HighlightLines.Passage joins the boxes; the union does the rest).
+        Geometry? shape = null;
         foreach (var rect in rects)
         {
             if (rect.IsEmpty) continue;
             var (x0, y0) = transform.ToScreen(rect.Left - pad, rect.Top - pad);
             var (x1, y1) = transform.ToScreen(rect.Right + pad, rect.Bottom + pad);
-            var target = new Rect(x0, y0, Math.Max(1, x1 - x0), Math.Max(1, y1 - y0));
-            context.DrawRectangle(fill, outline, target, radius, radius);
+            var box = new RectangleGeometry(new Rect(x0, y0, Math.Max(1, x1 - x0), Math.Max(1, y1 - y0)), radius, radius);
+            shape = shape is null ? box : Geometry.Combine(shape, box, GeometryCombineMode.Union);
         }
+        if (shape is not null) context.DrawGeometry(fill, outline, shape);
     }
 
     /// <summary>

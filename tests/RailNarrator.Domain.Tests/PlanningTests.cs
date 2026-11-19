@@ -501,6 +501,49 @@ public sealed class CameraFollowTests
         Assert.Equal(108, a.Right);   // only the height changes
     }
 
+    /// <summary>
+    /// A passage lit all at once is one band per line, its lines meeting across the leading, so
+    /// padded word boxes no longer overlap and tint the spaces between them twice.
+    /// </summary>
+    [Fact]
+    public void PassageHighlight_IsOneBandPerLine_AndTheLinesMeet()
+    {
+        PageRect[] line1 = [new(20, 300, 60, 312), new(64, 300, 110, 312), new(114, 300, 180, 312)];
+        PageRect[] line2 = [new(20, 315, 90, 327), new(94, 315, 150, 327)];
+        PageRect[] words = [.. line1, .. line2];
+
+        var shape = HighlightLines.Passage(words, words);
+
+        Assert.Equal(2, shape.Count);
+        var (top, bottom) = shape[0].Top < shape[1].Top ? (shape[0], shape[1]) : (shape[1], shape[0]);
+        Assert.Equal(20, top.Left);
+        Assert.Equal(180, top.Right);
+        Assert.Equal(150, bottom.Right);
+        Assert.Equal(top.Bottom, bottom.Top, precision: 3);   // half-way across the 3 pt leading
+        Assert.Equal(313.5f, top.Bottom, precision: 3);
+    }
+
+    [Fact]
+    public void PassageHighlight_DoesNotBridgeAColumnGutter()
+    {
+        // Same baseline, one word in each column, 30 pt apart: wider than a 12 pt line.
+        PageRect[] words = [new(20, 300, 280, 312), new(310, 300, 400, 312)];
+        Assert.Equal(2, HighlightLines.Passage(words, words).Count);
+    }
+
+    [Fact]
+    public void PassageHighlight_NeverCoversAWordItDoesNotRead()
+    {
+        var before = new PageRect(20, 300, 60, 312);
+        var unread = new PageRect(63, 300, 70, 312);   // say, a footnote mark the cue skips
+        var after = new PageRect(73, 300, 120, 312);
+
+        var shape = HighlightLines.Passage([before, after], [before, unread, after]);
+
+        Assert.Equal(2, shape.Count);
+        Assert.DoesNotContain(shape, r => r.Left < unread.Right && r.Right > unread.Left);
+    }
+
     [Fact]
     public void FrameUnit_RefusesToZoomBelowTheUsersMinimum()
     {

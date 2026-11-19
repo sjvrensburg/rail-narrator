@@ -30,7 +30,7 @@ public partial class MainWindow : Window
 
         Surface.PageChanged += (page, count) => PageLabel.Text = count > 0 ? $"Page {page + 1} / {count}" : "Page –";
         Surface.Attach(_viewModel);
-        Surface.SetHighlightStyle(BuildHighlightStyle());
+        ApplyHighlightStyle();
         _viewModel.TopLevelProvider = () => this;
         // The surface only opens a document the view model reports as successfully loaded; a
         // display failure must not take narration down with it, so it is reported, not thrown.
@@ -39,7 +39,7 @@ public partial class MainWindow : Window
         _viewModel.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName is nameof(MainViewModel.HighlightAlpha) or nameof(MainViewModel.HighlightHighContrast))
-                Surface.SetHighlightStyle(BuildHighlightStyle());
+                ApplyHighlightStyle();
             if (e.PropertyName is nameof(MainViewModel.ColourEffect) or nameof(MainViewModel.ColourEffectIntensity))
                 Surface.SetColourEffect(_viewModel.ColourEffect, _viewModel.ColourEffectIntensity);
             // The pointer says "busy" wherever it is in the window while a document is opened.
@@ -54,11 +54,16 @@ public partial class MainWindow : Window
                 var map = _viewModel.Coordinator.Scheduler?.SourceMap;
                 var pages = map?.HighlightRectsByPage(cue.AnchorIds);
                 if (map is null || pages is null) { Surface.ClearHighlight(); return; }
-                // One box height per line, the same across the paragraph: a box sized to each word's
-                // ink jumps up and down as the reading moves along the line.
+                // One box height per line, the same across the paragraph (a box sized to each word's
+                // ink jumps up and down as the reading moves along the line), and the boxes joined
+                // into one shape, so a passage lit all at once is not a stack of overlapping boxes.
+                // The coordinator's plan holds the segment as resolved: a pending maths passage is
+                // known to be a paraphrase only once it has been interpreted.
+                var segment = _viewModel.Coordinator.Plan?.Segment(cue.SegmentId) ?? map.Segment(cue.SegmentId);
+                bool paraphrase = segment?.Provenance is ScriptProvenance.ModelGenerated or ScriptProvenance.LocalRule;
                 Surface.SetHighlightMultiPage(pages.ToDictionary(
                     p => p.Key,
-                    p => HighlightLines.Uniform(p.Value, map.UnitRects(cue.SegmentId, p.Key))));
+                    p => HighlightLines.Passage(p.Value, map.UnitRects(cue.SegmentId, p.Key))), paraphrase);
             }
             if (Avalonia.Threading.Dispatcher.UIThread.CheckAccess()) Apply();
             else Avalonia.Threading.Dispatcher.UIThread.Post(Apply);
@@ -101,10 +106,16 @@ public partial class MainWindow : Window
         Close();
     }
 
-    private NarrationHighlightStyle BuildHighlightStyle()
-        => _viewModel.HighlightHighContrast
-            ? NarrationHighlightStyle.HighContrast.WithAlpha(_viewModel.HighlightAlpha)
-            : NarrationHighlightStyle.Default.WithAlpha(_viewModel.HighlightAlpha);
+    private void ApplyHighlightStyle()
+    {
+        byte alpha = _viewModel.HighlightAlpha;
+        if (_viewModel.HighlightHighContrast)
+            Surface.SetHighlightStyle(NarrationHighlightStyle.HighContrast.WithAlpha(alpha),
+                NarrationHighlightStyle.ParaphraseHighContrast.WithAlpha(alpha));
+        else
+            Surface.SetHighlightStyle(NarrationHighlightStyle.Default.WithAlpha(alpha),
+                NarrationHighlightStyle.Paraphrase.WithAlpha(alpha));
+    }
 
     private void OnOpenClicked(object? sender, RoutedEventArgs e)
         => _viewModel.RunObserved(_viewModel.OpenDocumentAsync(this), "Could not open a document");
