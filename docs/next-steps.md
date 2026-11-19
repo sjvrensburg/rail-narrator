@@ -1,7 +1,7 @@
 # Next steps and open decisions
 
-Handover note, 19 November 2026, after PR #25 and on the `fix/fit-width-and-followups`
-branch. The branch builds with 0 warnings; 526 tests pass and 9 opt-in tests are skipped. What is verified, and how it was measured, is in `status.md`.
+Handover note, 19 November 2026, after PR #26 and on the `fix/heading-order`
+branch. The branch builds with 0 warnings; 528 tests pass and 9 opt-in tests are skipped. What is verified, and how it was measured, is in `status.md`.
 How to run the real models, the GUI and the audio path on a new machine is in
 `testing-real-world.md`.
 
@@ -49,6 +49,12 @@ Since PR #10:
   The status line keeps saying that following is paused. The fit-width behaviour was seen in the
   headless GUI on the reference machine; the race only in tests.
 
+- **Reading order on pages with a duplicate block** (`fix/heading-order`, `status.md` item 70).
+  With PP-DocLayoutV3, a page on which Core removed a duplicate block was read in order of
+  detection confidence: 11 of 455 pages over 18 papers, among them the page of the GARCH article
+  whose headings came after their paragraphs. The adapter now sorts a model's blocks into its
+  reading order before Core's post-processing. Measured on extractions; not listened to.
+
 - **Gapless playback** (was open decision 4, PR #17). The next passage is queued in the audio
   engine and written straight after the current one, so the ~0.4 s of output latency between
   passages is gone; smoke-tested by ear in the running app. Kokoro's own trailing silence
@@ -75,17 +81,19 @@ In rough priority order:
   thread-safe.
 - **Render only the crop for the maths interpreter.** A narrow equation makes the whole page
   render at up to 8192 px (`RenderCropPngAsync`). This needs a region render in RailReaderCore
-  (for example `RenderRegionPixmap(page, rect, scale)` beside `RenderPagePixmap`): Core's
+  (for example `RenderRegionPixmap(page, rect, scale)` beside `RenderPagePixmap`), requested in
+  [RailReaderCore #222](https://github.com/sjvrensburg/RailReaderCore/issues/222): Core's
   `PdfiumGate` and `PdfiumNative` are internal, so the application cannot call PDFium under
   Core's lock itself, and capping the resolution instead changes what the model sees. It no
   longer costs the reader anything visible (painting does not wait for PDFium); it costs the
   page rasteriser up to 134 ms and a 140 MB array per narrow equation.
-- **Headings read after their sections on one page.** On page 26 of the GARCH article
-  PP-DocLayoutV3's reading order is acknowledgement text, reference list, funding note and then
-  the headings "Acknowledgments", "References", "Funding", so the two that are read come after
-  the paragraphs they introduce. Found while fixing the spoken "References" (item 68). A heading
-  ordered after the block directly below it could be moved in front of it; check how often it
-  happens, and whether Heron's XY-cut++ order does it, before adding a rule.
+- **What is left of headings read late** (`status.md` item 70). PP-DocLayoutV3 itself places
+  "References" directly after its list in 2 of 18 papers; it is heard only with references
+  switched on, and a heading ordered straight after the block below it could be moved in front.
+  Heron with Core's XY-cut++ has 4 of 521 headings and 25 of 3,585 other neighbouring pairs out
+  of order on the same papers, among them a subsection heading before its section heading
+  (linton-mammen-2005, page 14) and a title read after the side column of an MDPI first page.
+  Those belong to Core's resolver: report the two pages there before working round them here.
 - **Kokoro's CPU thread default.** 4–6 threads were about 10 % faster than the provider's 8 on the
   i7-12700H; re-measure on the reference machine before changing it.
 

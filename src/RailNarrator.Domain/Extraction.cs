@@ -215,7 +215,11 @@ public enum OcrPolicy
 public static class ExtractorVersions
 {
     /// <summary>Bump when extraction output changes shape or meaning for the same input.</summary>
-    public const string Current = "extraction/2";   // 2: analysis raster sized in pixels, not read as a DPI
+    /// <remarks>
+    /// 2: analysis raster sized in pixels, not read as a DPI.
+    /// 3: a model's blocks are sorted into its reading order before post-processing.
+    /// </remarks>
+    public const string Current = "extraction/3";
 }
 
 /// <summary>

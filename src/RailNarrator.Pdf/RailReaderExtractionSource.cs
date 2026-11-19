@@ -13,8 +13,11 @@ namespace RailNarrator.Pdf;
 /// </summary>
 /// <param name="AnalyzerId">Stable identifier, folded into the extraction cache key.</param>
 /// <param name="AnalyzerFactory">Creates one analyzer per extraction. Analyzers hold native sessions and are not thread-safe.</param>
-/// <param name="Capabilities">The analyzer's self-description, used to decide whether a reading-order resolver is needed.</param>
-/// <param name="ResolverFactory">Reading-order resolver, or null to let Core pick from <paramref name="Capabilities"/>.</param>
+/// <param name="Capabilities">The analyzer's self-description: its input size, and whether it supplies a reading order.</param>
+/// <param name="ResolverFactory">
+/// Puts a page's blocks in reading order, or null to choose from <paramref name="Capabilities"/>: the
+/// model's own order when it supplies one, else XY-cut++. It runs for every analyzer.
+/// </param>
 /// <param name="OcrFactory">Creates an OCR engine, or null when recognition is unavailable.</param>
 /// <param name="Device">Where <paramref name="AnalyzerFactory"/> runs its model. Null means the CPU.</param>
 /// <param name="FallbackAnalyzerFactory">
@@ -182,7 +185,8 @@ public sealed class RailReaderExtractionSource : IExtractionSource, IDisposable
             int done = 0;
 
             using var analyzer = AnalyzerSlot.Create(backend);
-            var resolver = backend.ResolverFactory?.Invoke();
+            var resolver = backend.ResolverFactory?.Invoke()
+                ?? (backend.Capabilities.ProvidesReadingOrder ? new ModelOrderResolver() : new XYCutPlusPlusResolver());
             // Built on the first page that needs recognition, not up front: three ONNX models costing
             // 0.5-1.7 s that a document with a text layer on every page never uses.
             IOcrService? ocr = null;
@@ -252,7 +256,7 @@ public sealed class RailReaderExtractionSource : IExtractionSource, IDisposable
 
     private PageExtraction ExtractPage(
         IPdfService pdf, int pageIndex, int viewRotation, ExtractionRequest request,
-        ExtractionBackend backend, AnalyzerSlot analyzer, IReadingOrderResolver? resolver,
+        ExtractionBackend backend, AnalyzerSlot analyzer, IReadingOrderResolver resolver,
         Func<IOcrService?> getOcr, CoordinateFrameId frame)
     {
         var (pageW, pageH) = pdf.GetPageSize(pageIndex, viewRotation);
@@ -354,8 +358,13 @@ public sealed class RailReaderExtractionSource : IExtractionSource, IDisposable
             analysis = new PageAnalysis { PageWidth = pageW, PageHeight = pageH };
         }
 
-        if (!backend.Capabilities.ProvidesReadingOrder && resolver is not null)
-            resolver.AssignOrder(analysis.Blocks, pageW, pageH, text.CharBoxes);
+        // Every analyzer's blocks go through a resolver, a model's own order included, as in Core's
+        // AnalysisWorker: BlockPostProcessor wants the list sorted in reading order, and a model
+        // returns its detections by confidence with the order in a field. Left unsorted, the pass
+        // that removes a duplicate block renumbered the survivors by their place in the list, and
+        // such a page was read in order of confidence: body text, reference list and only then the
+        // headings above them.
+        resolver.AssignOrder(analysis.Blocks, pageW, pageH, text.CharBoxes);
 
         // Orientation and per-block line detection. Without this pass LayoutBlock.Lines is empty and
         // there is nothing to anchor a highlight to.
