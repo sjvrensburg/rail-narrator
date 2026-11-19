@@ -64,8 +64,9 @@ public sealed class PdfSurface : Control
 
     private PageRasterSource? _source;
     private int _openGeneration;
-    // Every raster held, by what it is a raster of. Touched on the UI thread only.
-    private readonly Dictionary<PageRasterKey, WriteableBitmap> _rasters = [];
+    // Every raster held, by what it is a raster of: all unfiltered, the colour filter is applied as
+    // they are drawn (FilteredPageDraw). Touched on the UI thread only.
+    private readonly Dictionary<PageRasterKey, Shared<SkiaSharp.SKImage>> _rasters = [];
     private readonly Dictionary<PageRasterKey, string> _failed = [];
     private PageRasterKey[] _requested = [];
     // When the page shown was turned to, for the opt-in log of how long it took to become sharp.
@@ -88,6 +89,9 @@ public sealed class PdfSurface : Control
 
     private ColourEffect _colourEffect = ColourEffect.None;
     private float _colourEffectIntensity = 1f;
+    // The filter the page is drawn through; null for none. Built on the UI thread.
+    private Shared<SkiaSharp.SKColorFilter>? _pageFilter;
+    private ColourEffectShaders? _shaders;
 
     private bool _frameRequested;
     private TimeSpan? _lastFrameTime;
@@ -198,12 +202,24 @@ public sealed class PdfSurface : Control
         InvalidateVisual();
     }
 
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnDetachedFromVisualTree(e);
+        // A frame already recorded keeps its own references, so this cannot pull a filter out
+        // from under the render thread.
+        _pageFilter?.Release();
+        _pageFilter = null;
+        _shaders?.Dispose();
+        _shaders = null;
+        _colourEffect = ColourEffect.None;   // re-attaching builds the filter again on the next SetColourEffect
+    }
+
     /// <summary>Releases the document and every raster of it.</summary>
     public void CloseDocument()
     {
         _source?.Dispose();
         _source = null;
-        foreach (var bitmap in _rasters.Values) bitmap.Dispose();
+        foreach (var image in _rasters.Values) image.Release();
         _rasters.Clear();
         _failed.Clear();
         _requested = [];
@@ -475,42 +491,47 @@ public sealed class PdfSurface : Control
 
     private float FilterStrength => _colourEffect == ColourEffect.None ? 0f : _colourEffectIntensity;
 
-    /// <summary>The raster the page shown should be drawn from at the present zoom and filter.</summary>
-    private PageRasterKey SharpKey(int page) => new(page, TargetDpi(), _colourEffect, FilterStrength);
+    /// <summary>The raster the page shown should be drawn from at the present zoom. Unfiltered: the filter is applied as it is drawn.</summary>
+    private static PageRasterKey Unfiltered(int page, int dpi) => new(page, dpi, ColourEffect.None, 0f);
 
-    private PageRasterKey PreviewKey(int page) => new(page, PreviewDpi, _colourEffect, FilterStrength);
+    private PageRasterKey SharpKey(int page) => Unfiltered(page, TargetDpi());
+
+    private PageRasterKey PreviewKey(int page) => Unfiltered(page, PreviewDpi);
 
     /// <summary>
     /// Applies one of RailReader's colour filters (high contrast, high visibility, amber, invert) to
-    /// the page. The rasteriser filters each raster once, on its own thread; until the filtered page
-    /// arrives the page stays as it was.
+    /// the page. The filter is applied as the page is drawn, so a change shows at the next frame:
+    /// no raster is rendered or filtered again.
     /// </summary>
     public void SetColourEffect(ColourEffect effect, double intensity)
     {
         float i = (float)Math.Clamp(intensity, 0, 1);
-        if (effect == _colourEffect && Math.Abs(i - _colourEffectIntensity) < 0.001f) return;
+        if (effect == _colourEffect && Math.Abs(i - _colourEffectIntensity) < 0.001f && (_pageFilter is not null || effect == ColourEffect.None)) return;
         _colourEffect = effect;
         _colourEffectIntensity = i;
-        InvalidateVisual();   // the paint asks for the page through the new filter
+        _pageFilter?.Release();
+        _pageFilter = null;
+        if (effect != ColourEffect.None)
+        {
+            _shaders ??= new ColourEffectShaders();
+            if (_shaders.CreateColorFilter(effect, i) is { } filter) _pageFilter = new Shared<SkiaSharp.SKColorFilter>(filter);
+        }
+        InvalidateVisual();
     }
 
     /// <summary>
-    /// The best raster held for the page shown: the sharp one, else that page through the same
-    /// filter at the highest resolution held (another zoom, or its preview), else that page through
-    /// another filter. Null when there is nothing of the page yet.
+    /// The best raster held for the page shown: the sharp one, else that page at the highest
+    /// resolution held (another zoom, or its preview). Null when there is nothing of the page yet.
     /// </summary>
-    private (PageRasterKey Key, WriteableBitmap Bitmap)? BestRaster()
+    private (PageRasterKey Key, Shared<SkiaSharp.SKImage> Image)? BestRaster()
     {
         var sharp = SharpKey(CurrentPage);
         if (_rasters.TryGetValue(sharp, out var exact)) return (sharp, exact);
-        (PageRasterKey Key, WriteableBitmap Bitmap)? best = null;
-        int bestScore = -1;
-        foreach (var (key, bitmap) in _rasters)
+        (PageRasterKey Key, Shared<SkiaSharp.SKImage> Image)? best = null;
+        foreach (var (key, image) in _rasters)
         {
             if (key.PageIndex != CurrentPage) continue;
-            bool sameFilter = key.Effect == sharp.Effect && key.Intensity == sharp.Intensity;
-            int score = (sameFilter ? 1_000_000 : 0) + key.Dpi;
-            if (score > bestScore) { best = (key, bitmap); bestScore = score; }
+            if (best is null || key.Dpi > best.Value.Key.Dpi) best = (key, image);
         }
         return best;
     }
@@ -532,13 +553,12 @@ public sealed class PdfSurface : Control
         foreach (var key in _rasters.Keys)
         {
             if (key == sharp || key == standIn) continue;
-            bool nearbyPreview = key.Dpi == PreviewDpi && key.Effect == sharp.Effect && key.Intensity == sharp.Intensity
-                && Math.Abs(key.PageIndex - CurrentPage) <= PreviewKeepRadius;
+            bool nearbyPreview = key.Dpi == PreviewDpi && Math.Abs(key.PageIndex - CurrentPage) <= PreviewKeepRadius;
             if (!nearbyPreview) (drop ??= []).Add(key);
         }
         if (drop is not null)
             foreach (var key in drop)
-                if (_rasters.Remove(key, out var bitmap)) bitmap.Dispose();
+                if (_rasters.Remove(key, out var image)) image.Release();
 
         var wanted = new List<PageRasterKey>(2 + PreviewOffsets.Length);
         if (!_rasters.ContainsKey(sharp) && !_failed.ContainsKey(sharp))
@@ -563,17 +583,20 @@ public sealed class PdfSurface : Control
     }
 
     /// <summary>
-    /// A raster has been rendered. Runs on the rasteriser's thread: the pixels are copied into a
-    /// bitmap for the compositor here, and only the hand-over is posted to the UI thread.
+    /// A raster has been rendered. Runs on the rasteriser's thread: the pixels are copied into an
+    /// image for the compositor here, and only the hand-over is posted to the UI thread.
     /// </summary>
     private void OnRasterReady(PageRasterSource source, PageRaster raster)
     {
         var key = raster.Key;
         var renderTime = raster.RenderTime;
-        WriteableBitmap bitmap;
+        Shared<SkiaSharp.SKImage> bitmap;
         try
         {
-            bitmap = ToWriteableBitmap(raster.Bitmap);
+            // FromBitmap copies a mutable bitmap's pixels, so the image outlives the raster.
+            var image = SkiaSharp.SKImage.FromBitmap(raster.Bitmap)
+                ?? throw new InvalidOperationException("The page raster could not be copied for display.");
+            bitmap = new Shared<SkiaSharp.SKImage>(image);
         }
         catch (Exception ex)
         {
@@ -588,7 +611,7 @@ public sealed class PdfSurface : Control
         Dispatcher.UIThread.Post(() =>
         {
             // Rendered for a document that has since been closed.
-            if (!ReferenceEquals(source, _source)) { bitmap.Dispose(); return; }
+            if (!ReferenceEquals(source, _source)) { bitmap.Release(); return; }
             if (key.Dpi == PreviewDpi) _previewRenderTime = renderTime;
             if (_pageShownAt != 0 && key == SharpKey(CurrentPage))
             {
@@ -598,7 +621,7 @@ public sealed class PdfSurface : Control
                     $"{System.Diagnostics.Stopwatch.GetElapsedTime(_pageShownAt).TotalMilliseconds:F0} ms after it was turned to, {standIn} until then");
                 _pageShownAt = 0;
             }
-            if (_rasters.Remove(key, out var previous)) previous.Dispose();
+            if (_rasters.Remove(key, out var previous)) previous.Release();
             _rasters[key] = bitmap;
             InvalidateVisual();
         });
@@ -610,28 +633,6 @@ public sealed class PdfSurface : Control
         // Remembered so the paint does not ask for it again on every frame.
         _failed[key] = message;
         InvalidateVisual();
-    }
-
-    /// <summary>Copies a Skia raster into a bitmap the compositor can blit. Safe off the UI thread.</summary>
-    private static unsafe WriteableBitmap ToWriteableBitmap(SkiaSharp.SKBitmap skia)
-    {
-        var bitmap = new WriteableBitmap(new PixelSize(skia.Width, skia.Height), new Vector(96, 96),
-            PixelFormat.Bgra8888, AlphaFormat.Premul);
-        try
-        {
-            using var buffer = bitmap.Lock();
-            int rowBytes = skia.Width * 4;
-            byte* src = (byte*)skia.GetPixels();
-            byte* dst = (byte*)buffer.Address;
-            for (int y = 0; y < skia.Height; y++)
-                Buffer.MemoryCopy(src + (long)y * skia.RowBytes, dst + (long)y * buffer.RowBytes, rowBytes, rowBytes);
-            return bitmap;
-        }
-        catch
-        {
-            bitmap.Dispose();
-            throw;
-        }
     }
 
     public override void Render(DrawingContext context)
@@ -649,10 +650,7 @@ public sealed class PdfSurface : Control
             {
                 var destination = new Rect(_offsetX, _offsetY, pageW * Zoom, pageH * Zoom);
                 if (BestRaster() is { } raster)
-                {
-                    var size = raster.Bitmap.PixelSize;
-                    context.DrawImage(raster.Bitmap, new Rect(0, 0, size.Width, size.Height), destination);
-                }
+                    context.Custom(new FilteredPageDraw(bounds, raster.Image.AddReference(), _pageFilter?.AddReference(), destination));
                 else
                 {
                     // Nothing of this page has been rendered yet: blank paper in the filter's
