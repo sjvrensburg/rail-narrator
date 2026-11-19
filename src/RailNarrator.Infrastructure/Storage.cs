@@ -89,8 +89,24 @@ public sealed record RailNarratorSettings
 
     public string? LastDocumentPath { get; init; }
     // Infrastructure deliberately does not reference the Speech assembly, so the default id is
-    // the literal rather than SpeechProviderIds.Kokoro. Keep the two in sync.
-    public string SpeechProviderId { get; init; } = "kokoro";
+    // the literal rather than SpeechProviderIds.Auto. Keep the two in sync.
+    /// <summary>
+    /// The speech engine: <c>phonon</c>, <c>kokoro</c>, <c>zonos3-mini</c>, or <c>auto</c> (the default):
+    /// Phonon when installed (tools/setup-phonon.sh), else Kokoro. ADR-0009.
+    /// </summary>
+    public string SpeechProviderId { get; init; } = "auto";
+
+    /// <summary>Phonon's C library; defaults to the one beside the application, then the setup script's.</summary>
+    public string? PhononLibraryPath { get; init; }
+
+    /// <summary>Phonon's model folder; defaults to the setup script's.</summary>
+    public string? PhononModelDirectory { get; init; }
+
+    /// <summary>The Phonon voice; Maeve (British English) when not chosen.</summary>
+    public string? PhononVoiceId { get; init; }
+
+    /// <summary>CPU threads for Phonon. 4 was as fast as 8 on the reference laptop.</summary>
+    public int PhononThreads { get; init; } = 4;
     public string? KokoroModelPath { get; init; }
     public string? KokoroVoicesDirectory { get; init; }
     public string? KokoroVoiceId { get; init; }

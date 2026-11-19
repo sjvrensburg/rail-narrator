@@ -14,7 +14,13 @@ namespace RailNarrator.Speech;
 /// </remarks>
 public static class SpeechProviderIds
 {
-    /// <summary>In-process Kokoro via ONNX Runtime. Default.</summary>
+    /// <summary>Phonon first when installed, else Kokoro (ADR-0009). A setting, not a provider.</summary>
+    public const string Auto = "auto";
+
+    /// <summary>In-process Phonon through Gradium's C library (ADR-0009).</summary>
+    public const string Phonon = PhononTtsProvider.Id;
+
+    /// <summary>In-process Kokoro via ONNX Runtime.</summary>
     public const string Kokoro = "kokoro";
 
     /// <summary>ZONOS3-Mini through its native ggml sidecar's v2 HTTP API.</summary>
@@ -23,7 +29,7 @@ public static class SpeechProviderIds
     /// <summary>Deterministic provider for tests and offline development.</summary>
     public const string Fake = "fake";
 
-    public static IReadOnlyList<string> All { get; } = [Kokoro, Zonos, Fake];
+    public static IReadOnlyList<string> All { get; } = [Phonon, Kokoro, Zonos, Fake];
 
     public static bool IsKnown(string id) => All.Contains(id);
 }

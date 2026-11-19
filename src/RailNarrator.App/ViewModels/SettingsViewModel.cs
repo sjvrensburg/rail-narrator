@@ -5,6 +5,7 @@ using RailNarrator.App.Composition;
 using RailNarrator.Domain;
 using RailNarrator.Inference;
 using RailNarrator.Infrastructure;
+using RailNarrator.Speech;
 
 namespace RailNarrator.App.ViewModels;
 
@@ -299,13 +300,17 @@ public sealed class SettingsViewModel : ViewModelBase
 
     public IReadOnlyList<SettingOption<string>> SpeechProviders { get; } =
     [
-        new("kokoro", "Kokoro (on this computer)", "Kokoro-82M, run in Rail Narrator itself. Needs the Kokoro model (Models and endpoints menu)."),
-        new("zonos3", "ZONOS3 (local server)", "A ZONOS3 sidecar on this computer, reached over HTTP. Set its address and speaker below (advanced)."),
+        new(SpeechProviderIds.Auto, "Automatic", "Phonon when it is installed, else Kokoro."),
+        new(SpeechProviderIds.Phonon, "Phonon (on this computer)", "Gradium's phonon-31m-en, run in Rail Narrator itself on the processor: about 16 times faster than real time, British and American voices. Install it with tools/setup-phonon.sh."),
+        new(SpeechProviderIds.Kokoro, "Kokoro (on this computer)", "Kokoro-82M, run in Rail Narrator itself. Needs the Kokoro model (Models and endpoints menu)."),
+        new(SpeechProviderIds.Zonos, "ZONOS3 (local server)", "A ZONOS3 sidecar on this computer, reached over HTTP. Set its address and speaker below (advanced)."),
     ];
 
     public SettingOption<string>? SpeechProvider
     {
-        get => SpeechProviders.FirstOrDefault(o => o.Value == _s.SpeechProviderId) ?? SpeechProviders[0];
+        // "zonos3" is what this dialogue saved for ZONOS3 before it used the provider's own id.
+        get => SpeechProviders.FirstOrDefault(o => o.Value == (_s.SpeechProviderId == "zonos3" ? SpeechProviderIds.Zonos : _s.SpeechProviderId))
+               ?? SpeechProviders[0];
         set { if (value is not null) Save(s => s with { SpeechProviderId = value.Value }); }
     }
 
@@ -487,6 +492,7 @@ public sealed class SettingsViewModel : ViewModelBase
             HighlightAlpha = 0,
             HighlightHighContrast = false,
             KokoroVoiceId = null,
+            PhononVoiceId = null,
             DarkMode = false,
             UiFontScale = 1,
             SidebarVisible = false,

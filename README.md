@@ -49,7 +49,10 @@ before trusting any claim here.
 dotnet build RailNarrator.slnx -c Release
 dotnet test RailNarrator.slnx -c Release
 
-# The model is NOT bundled and NOT fetched implicitly. See docs/model-manifest.json.
+# A speech engine. Models are NOT bundled and NOT fetched implicitly.
+# Phonon (preferred when installed; needs git and a Rust toolchain; ADR-0009):
+tools/setup-phonon.sh
+# and/or Kokoro (see docs/model-manifest.json):
 mkdir -p ~/.local/share/rail-narrator/models
 curl -L -o ~/.local/share/rail-narrator/models/kokoro-fp16.onnx \
   https://github.com/Lyrcaxis/KokoroSharpBinaries/releases/download/v2.0.0/kokoro-fp16.onnx
@@ -90,7 +93,7 @@ $S all --kokoro-model <path>         # whole chain, printed pass/fail summary
 |---|---|---|
 | `RailNarrator.Domain` | Anchors, reading units, plans, source maps, cue scheduling, playback state, follow policy, caching keys | *nothing* |
 | `RailNarrator.Pdf` | RailReaderCore adapter: extraction snapshots, page rasters rendered off the UI thread, coordinate transforms, hit-testing, overlays | Core, SkiaSharp |
-| `RailNarrator.Speech` | Kokoro and ZONOS3 adapters, local MFA word alignment, PCM/WAV codecs | Domain, KokoroSharp |
+| `RailNarrator.Speech` | Phonon (Gradium's C library), Kokoro and ZONOS3 adapters, local MFA word alignment, PCM/WAV codecs | Domain, KokoroSharp |
 | `RailNarrator.Audio` | Output device, resampling, pitch-preserving speed, media clock | Domain |
 | `RailNarrator.Inference` | Maths interpretation (page image + context → words), transcription, verbalisation, validation, local rule reader | Domain, Core.Vlm |
 | `RailNarrator.Infrastructure` | XDG settings, caches, model manifest and downloads, sidecar lifecycle | Domain |
@@ -111,6 +114,7 @@ Recorded in `docs/decisions/`, each with the measurement that drove it:
 - **[ADR-0006](docs/decisions/ADR-0006-layout-on-the-gpu.md)** — layout analysis on the GPU when one is usable (about twice as fast on a 24-page chapter), the CPU otherwise
 - **[ADR-0007](docs/decisions/ADR-0007-kokoro-on-the-gpu.md)** — Kokoro on the GPU through WebGPU (Vulkan), never CUDA or ROCm; fp32 with int32 tokens, every clip checked, CPU fallback
 - **[ADR-0008](docs/decisions/ADR-0008-heron-layout-model.md)** — Docling Heron as the layout model (FP32 on the GPU, INT8 on the CPU, XY-cut++ order), references found by their heading; 1.5–2.4× faster than PP-DocLayoutV3
+- **[ADR-0009](docs/decisions/ADR-0009-phonon-speech-engine.md)** — Phonon (Gradium, Apache 2.0) as a second speech engine through Gradium's C library: real-time factor 0.061 against Kokoro's 0.224 on the same CPU, word alignment 34/40 passages against 35/40; Maeve by default
 
 ## Guarantees worth stating plainly
 

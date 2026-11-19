@@ -35,6 +35,7 @@ tools/RailNarrator.OrderSurvey/bin/Release/net10.0/rail-narrator-order-survey he
 ./packaging/build-release.sh                       # self-contained linux-x64 archive into dist/
 bash tools/setup-word-alignment.sh                 # optional MFA runtime (needs micromamba, several GB)
 bash tools/kokoro-webgpu-model.sh                  # optional: Kokoro on the GPU via WebGPU (ADR-0007)
+tools/setup-phonon.sh                              # optional: Phonon engine (needs cargo; builds Gradium's C library, fetches model + voices; ADR-0009)
 ```
 
 There is no separate lint step: `TreatWarningsAsErrors` is on for every project except `RailNarrator.App`, whose Avalonia XAML compiler warnings (AVLN…) are not turned into errors. The App is still expected to build with 0 warnings: after XAML changes, check a `--no-incremental` build's raw output (`rtk proxy dotnet build …`), since an incremental build skips unchanged XAML and a filtered summary can hide AVLN lines. Avalonia 12 obsoleted `Watermark`; use `PlaceholderText`.
@@ -44,6 +45,7 @@ Opt-in integration tests are skipped unless their environment is set:
 | Variables | Enables |
 |---|---|
 | `RAIL_NARRATOR_KOKORO_MODEL` | real Kokoro synthesis tests (also the smoke tool's default model) |
+| `RAIL_NARRATOR_PHONON_DIR` | `PhononProviderTests`: Phonon through Gradium's C library (a `tools/setup-phonon.sh` install directory) |
 | `RAIL_NARRATOR_KOKORO_INCOMPATIBLE_MODEL` | incompatible-ONNX-export refusal test |
 | `RN_MFA_EXECUTABLE`, `RN_MFA_DICTIONARY`, `RN_MFA_MODEL` (+ Kokoro model) | `RealKokoroAudioAlignsEveryWord` |
 | …and `RN_MFA_G2P` | `RealKokoroAudioWithWordsTheDictionaryLacks_AlignsEveryWord` (generated pronunciations) |
@@ -54,7 +56,7 @@ Opt-in integration tests are skipped unless their environment is set:
 | `RN_WEBGPU_INTEGRATION=1` (+ layout model) | `LayoutAccelerationTests.OnTheGpu_…`: GPU and CPU layout give the same reading (needs a WebGPU-capable GPU) |
 | `RN_WEBGPU_INTEGRATION=1`, `RAIL_NARRATOR_KOKORO_MODEL`, `RAIL_NARRATOR_KOKORO_GPU_MODEL` | `KokoroAccelerationTests.OnTheGpu_KokoroGivesTheCpusAudio`: Kokoro on WebGPU matches the CPU |
 
-Runtime prerequisites: `libportaudio.so.2`, and the Kokoro model at `~/.local/share/rail-narrator/models/kokoro-fp16.onnx` (see `docs/model-manifest.json`). Models are never bundled and never fetched implicitly — keep it that way. Settings live in `$XDG_CONFIG_HOME/rail-narrator/settings.json`; `RN_FOLLOW_LOG=1` writes camera/frame-gap diagnostics to `$XDG_STATE_HOME/rail-narrator/logs/follow.log`.
+Runtime prerequisites: `libportaudio.so.2`, and a speech engine: Phonon installed by `tools/setup-phonon.sh` in `~/.local/share/rail-narrator/phonon` (chosen first by `SpeechProviderId` `auto`), or the Kokoro model at `~/.local/share/rail-narrator/models/kokoro-fp16.onnx` (see `docs/model-manifest.json`). Models are never bundled and never fetched implicitly — keep it that way. Settings live in `$XDG_CONFIG_HOME/rail-narrator/settings.json`; `RN_FOLLOW_LOG=1` writes camera/frame-gap diagnostics to `$XDG_STATE_HOME/rail-narrator/logs/follow.log`.
 
 The SDK is pinned by `global.json` (10.0.100, `latestFeature`). Dependency versions live only in `Directory.Packages.props` (central package management); csproj files carry `PackageReference` without versions.
 
@@ -89,7 +91,7 @@ RailReaderExtractionSource ─► ExtractionSnapshot ─► ReadingUnitBuilder �
 `RailNarrator.Domain` references nothing (no Skia, ONNX, HTTP or RailReaderCore) and holds the contracts plus all narration logic. Every external capability is a port in `Domain/Ports.cs` (and `IAudioTransport` in `Coordination.cs`), implemented outward:
 
 - `Pdf` — RailReaderCore adapter: extraction, coordinate transforms, hit-testing, overlay rendering
-- `Speech` — `ITtsProvider` (Kokoro in-process, ZONOS3 HTTP sidecar, fake), `MfaForcedAligner` driving the embedded `alignment_worker.py`, PCM/WAV codecs
+- `Speech` — `ITtsProvider` (Phonon and Kokoro in-process, ZONOS3 HTTP sidecar, fake), `MfaForcedAligner` driving the embedded `alignment_worker.py`, PCM/WAV codecs
 - `Audio` — PortAudio callback output, resampler, WSOLA speed change, presented-frame media clock; `FakeAudioOutputDevice` for tests
 - `Inference` — maths transcription (VLM) and verbalisation (LLM), `MathResponseValidator`, `LocalLatexSpeaker` fallback
 - `Infrastructure` — XDG paths, settings, disk caches, model manifest/downloader, sidecar lifecycle
@@ -118,6 +120,7 @@ New external dependencies go behind a port in Domain so domain tests keep runnin
 - **Caching is per stage** (`Domain/Caching.cs`), each key folding in exactly the inputs that affect that stage. When changing output-affecting logic, bump the matching version constant — `ExtractorVersions.Current`, `NarrationVersions.{MathPrompt,LocalMathReader,ProsePipeline}`, or the worker revision in `MfaForcedAligner` — or stale cached snapshots/plans/audio/timings will be reused. Maths has a second, separate layer: cached model answers are keyed by the interpreter's `Revision` (`MathInterpreter.cs`: `MathInterpretationPrompt.Version`, `TranscriptionPromptVersion`, `LocalLatexSpeaker.Version`), not by `NarrationVersions` — bumping one does not invalidate the other. Extraction snapshots are cached on disk by `CachingExtractionSource` (Infrastructure); the app extracts through `ServiceRegistry.CachedExtraction` and keeps `Extraction` for rendering and hit-testing.
 - **Layout on the GPU goes through `LayoutAnalyzerConstruction` only** (ADR-0006). Core's WebGPU switch is a static `LayoutAnalyzer.ConfigureSession` hook, so every `LayoutAnalyzer` construction, CPU ones included, holds `WebGpuAccelerator.ConstructionLock` for enable → construct → disable. Never `new LayoutAnalyzer(...)` elsewhere. The device (`LayoutDevice.Id`) is part of the extraction cache key: CPU and GPU give the same reading but not byte-identical geometry. A GPU that fails at start-up or mid-document hands over to the CPU with a page warning; OCR stays on the CPU.
 - **Kokoro on the GPU goes through WebGPU only, never CUDA or ROCm** (ADR-0007). The GPU model is the fp32 export with int32 `tokens` (the plugin aborts on int64 inputs; fp16 gives NaN on it), run by `KokoroSessionRunner` with inputs built exactly as KokoroSharp builds them (`KokoroInputs`). Every GPU clip passes `KokoroOutputCheck` or synthesis falls back to the CPU for the run (`KokoroRunnerChain`). The CPU model revision must stay unchanged so cached audio stays valid; the GPU's names the device.
+- **Phonon runs through Gradium's C library only** (ADR-0009): `PhononTtsProvider` calls `libptts_ffi.so` through function pointers, one call at a time behind its gate, on the CPU. The library and model come from `tools/setup-phonon.sh` (pinned runtime commit, model and voice revisions, SHA-256 per file) or, for the library, from beside the application in a release; the app never builds or downloads them. Its audio is not repeatable byte for byte, which the cache tolerates (clips are synthesised once; timing is keyed by PCM hash). Each engine keeps its own voice setting (`PhononVoiceId`, default Maeve; `KokoroVoiceId`), and a restored position's voice from another engine is dropped. `ServiceRegistry.SpeechProvider` is the one engine in use; the voice list and the coordinator both take it.
 - **Host services are supplied, not inherited from Core.** Core's `AppConfig` hard-codes `~/.config/railreader2`; this app uses its own XDG directories (`XdgPaths`) and an inert `NullAnnotationStore`. Highlights are transient overlays and must never be written into the PDF.
 - **Providers are registered only when implemented and configured**, so the UI never offers an inert selector. An API key is either read from an environment variable named in settings or stored in `settings.json` (`MathLlmApiKey`, `VlmApiKey`; the stored key wins); `SettingsStore.Save` writes the file mode 0600 from creation, so keep every write going through it, and never log, display or put a key in a message (`EndpointProbe` reports refusals without it).
 

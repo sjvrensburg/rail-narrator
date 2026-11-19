@@ -38,6 +38,41 @@ public sealed class ServiceRegistry : IAsyncDisposable
     /// <summary>Extraction through the on-disk snapshot cache. Use this to extract; <see cref="Extraction"/> for display.</summary>
     public required CachingExtractionSource CachedExtraction { get; init; }
     public required SpeechProviderRegistry SpeechProviders { get; init; }
+
+    /// <summary>The engine the application speaks with: chosen in settings, else the first available.</summary>
+    public required ITtsProvider SpeechProvider { get; init; }
+
+    /// <summary>The saved voice for an engine: each keeps its own, so switching engines keeps both choices.</summary>
+    public static string? VoiceFor(RailNarratorSettings settings, string providerId) => providerId switch
+    {
+        PhononTtsProvider.Id => settings.PhononVoiceId ?? PhononTtsProvider.DefaultVoice,
+        "kokoro" => settings.KokoroVoiceId,
+        _ => settings.ZonosSpeakerId,
+    };
+
+    /// <summary>
+    /// "auto": Phonon when installed, else Kokoro (ADR-0009). "zonos3" is what the Settings
+    /// dialogue saved for ZONOS3 before it used the provider's own id.
+    /// </summary>
+    private static string ResolveProviderId(RailNarratorSettings settings, SpeechProviderRegistry registry)
+        => settings.SpeechProviderId switch
+        {
+            SpeechProviderIds.Auto or "" => registry.Get(SpeechProviderIds.Phonon) is not null ? SpeechProviderIds.Phonon : SpeechProviderIds.Kokoro,
+            "zonos3" => SpeechProviderIds.Zonos,
+            var id => id,
+        };
+
+    /// <summary>
+    /// Phonon's library and model folder: the settings, else the library beside the application (the
+    /// release archive ships it there) or the setup script's, and the setup script's model.
+    /// </summary>
+    private static (string Library, string Model) PhononPaths(RailNarratorSettings settings)
+    {
+        string installed = Path.Combine(XdgPaths.Data, "phonon");
+        string beside = Path.Combine(AppContext.BaseDirectory, "libptts_ffi.so");
+        string library = settings.PhononLibraryPath ?? (File.Exists(beside) ? beside : Path.Combine(installed, "libptts_ffi.so"));
+        return (library, settings.PhononModelDirectory ?? Path.Combine(installed, "phonon-31m-en"));
+    }
     public required IAudioOutputDevice AudioDevice { get; init; }
     public required AudioPlaybackEngine AudioEngine { get; init; }
     public required NarrationCoordinator Coordinator { get; init; }
@@ -125,6 +160,18 @@ public sealed class ServiceRegistry : IAsyncDisposable
                       $"({ModelManifest.KokoroFp16.HumanSize}, {ModelManifest.KokoroFp16.Licence}).");
         }
 
+        // Phonon (ADR-0009), registered when its runtime and model are installed.
+        var (phononLibrary, phononModel) = PhononPaths(settings);
+        if (PhononTtsProvider.IsInstalled(phononLibrary, phononModel))
+        {
+            registry.Register(new PhononTtsProvider(new PhononProviderSettings(
+                phononLibrary, phononModel, Threads: settings.PhononThreads)));
+        }
+        else if (settings.SpeechProviderId == PhononTtsProvider.Id)
+        {
+            notes.Add($"Phonon is chosen but not installed (looked for '{phononLibrary}' and '{phononModel}'). Run tools/setup-phonon.sh.");
+        }
+
         string zonosUrl = settings.ZonosBaseUrl ?? "http://127.0.0.1:19191";
         if (settings.ZonosSpeakerId is { Length: > 0 })
         {
@@ -202,17 +249,18 @@ public sealed class ServiceRegistry : IAsyncDisposable
         if (aligner is not null)
             notes.Add("Word highlighting uses local alignment when installed; see docs/word-highlighting.md for setup.");
 
+        // The configured provider, or a fake that reports unavailability. The coordinator and the
+        // voice list both use this one.
+        var speechProvider = SelectProvider(registry, ResolveProviderId(settings, registry), notes);
         var coordinator = new NarrationCoordinator(
-            // A registry-level provider is resolved lazily below; the coordinator needs one instance,
-            // so the configured provider (or a fake that reports unavailability) is chosen here.
-            SelectProvider(registry, settings.SpeechProviderId, notes),
+            speechProvider,
             audioEngine,
             assetStore,
             options: new NarrationCoordinatorOptions(
                 LookaheadSegments: settings.LookaheadSegments,
                 LookaheadSeconds: settings.LookaheadSeconds,
                 MaxConcurrentSynthesis: settings.MaxConcurrentSynthesis,
-                VoiceId: settings.KokoroVoiceId ?? settings.ZonosSpeakerId,
+                VoiceId: VoiceFor(settings, speechProvider.ProviderId),
                 PlaybackRate: settings.PlaybackRate,
                 FollowMode: settings.FollowMode,
                 RequestTimings: settings.WordHighlighting),
@@ -232,6 +280,7 @@ public sealed class ServiceRegistry : IAsyncDisposable
                 // key (device=webgpu) names, so it is not stored.
                 isDegraded: () => extraction.OcrStartupError is not null || extraction.LayoutDeviceFellBack),
             SpeechProviders = registry,
+            SpeechProvider = speechProvider,
             AudioDevice = audioDevice,
             AudioEngine = audioEngine,
             Coordinator = coordinator,

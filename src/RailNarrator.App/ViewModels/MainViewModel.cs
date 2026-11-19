@@ -75,7 +75,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         _zoom = ViewZoom.Clamp(services.CurrentSettings.PreferredZoom);
         _playbackRate = services.CurrentSettings.PlaybackRate;
         _followMode = services.CurrentSettings.FollowMode;
-        _selectedVoiceId = services.CurrentSettings.KokoroVoiceId ?? services.CurrentSettings.ZonosSpeakerId;
+        _selectedVoiceId = ServiceRegistry.VoiceFor(services.CurrentSettings, services.SpeechProvider.ProviderId);
         _highlightAlpha = services.CurrentSettings.HighlightAlpha;
         _colourEffectIntensity = Math.Clamp(services.CurrentSettings.ColourEffectIntensity, 0, 1);
         _colourEffect = Enum.TryParse<ColourEffect>(services.CurrentSettings.ColourEffect, ignoreCase: true, out var effect)
@@ -668,10 +668,13 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             // The coordinator advances its generation token so a synthesis still in flight for the old
             // voice is discarded rather than played over the new one.
             RunObserved(Coordinator.SetVoiceAsync(id), "Could not change voice");
-            // Only the Kokoro voice is a free preference: the ZONOS3 speaker id also decides whether
-            // that provider is registered at all, so it stays a deliberate settings-file choice.
-            if (_voiceProviderId == "kokoro" && !_choosingVoiceForReader)
+            // The Kokoro and Phonon voices are free preferences, kept apart so switching engines keeps
+            // both. The ZONOS3 speaker id also decides whether that provider is registered at all, so
+            // it stays a deliberate settings-file choice.
+            if (!_choosingVoiceForReader && _voiceProviderId == "kokoro")
                 PersistPreference(s => s with { KokoroVoiceId = id });
+            if (!_choosingVoiceForReader && _voiceProviderId == PhononTtsProvider.Id)
+                PersistPreference(s => s with { PhononVoiceId = id });
         }
     }
 
@@ -722,9 +725,10 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     public string SpeechProviderSummary
         => string.Join(", ", _services.SpeechProviders.RegisteredIds.Select(id =>
-            id == "kokoro" && _services.Kokoro is { } k
+            (id == "kokoro" && _services.Kokoro is { } k
                 ? k.GpuDevice is { } gpu ? $"kokoro on {gpu} (WebGPU)" : "kokoro on the CPU"
-                : id));
+                : id == PhononTtsProvider.Id ? "phonon on the CPU" : id)
+            + (id == _services.SpeechProvider.ProviderId ? " (in use)" : "")));
 
     /// <summary>The layout analyzer and its device. Fixed for the run: the backend is built once at startup.</summary>
     public string LayoutSummary => _services.LayoutSummary;
@@ -906,6 +910,12 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             RebuildTranscript();
             ShowVoices(available);
 
+            // A document last read with another engine saved that engine's voice: keep the voice in
+            // use instead, or every passage would be spoken in the fallback with a warning.
+            if (position is { VoiceId: { } savedVoice } && available.Voices.Count > 0
+                && available.Voices.All(v => v.Id != savedVoice))
+                position = position with { VoiceId = null };
+
             await Coordinator.LoadPlanAsync(plan, position);
             if (position is not null) ShowRestoredPreferences(position);
             // The starting passage is where the reader already is; only a move is worth saving.
@@ -968,9 +978,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     /// </summary>
     private async Task<(string? ProviderId, IReadOnlyList<TtsVoice> Voices, IReadOnlyList<string> Devices)> ListVoicesAsync()
     {
-        var provider = _services.SpeechProviders.Get(_services.CurrentSettings.SpeechProviderId)
-                       ?? await _services.SpeechProviders.FirstAvailableAsync().ConfigureAwait(false);
-        if (provider is null) return (null, [], []);
+        var provider = _services.SpeechProvider;
         var voices = await provider.ListVoicesAsync().ConfigureAwait(false);
         var devices = _services.AudioDevice.Enumerate()
             .Select(d => $"{d.Id}: {d.Name}{(d.IsDefault ? " (default)" : "")}").ToList();

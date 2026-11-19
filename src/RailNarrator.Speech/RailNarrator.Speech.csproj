@@ -1,7 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <RootNamespace>RailNarrator.Speech</RootNamespace>
-    <Description>TTS provider adapters (in-process Kokoro, ZONOS3 sidecar) plus PCM/WAV codecs.</Description>
+    <Description>TTS provider adapters (in-process Kokoro and Phonon, ZONOS3 sidecar) plus PCM/WAV codecs.</Description>
+    <!-- Phonon's C library calls back into managed code through a function pointer. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../RailNarrator.Domain/RailNarrator.Domain.csproj" />
