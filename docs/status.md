@@ -940,3 +940,9 @@ threads meeting.
     name, a long notice trimmed with its button, and a dismissed notice staying dismissed (it came
     back with every snapshot until fixed). *Not verified:* Play starting from a chosen heading (no
     voice in the sandbox), dragging the splitter, and the restart notice after a real download.
+    The same change adds dropping a PDF onto the window (the reader tried it and found it
+    missing; RailReader2 has none): a local `.pdf` shows "Drop to open paper.pdf" over the page
+    while dragged and is opened on release, as by File ▸ Open; anything else is refused. Checked
+    under Xvfb with a real XDND drag from a GTK drag source: the hint, the paper opened from an
+    empty window, and a `.txt` refused with no hint and the open document kept. *Not verified:*
+    from the reader's file manager.

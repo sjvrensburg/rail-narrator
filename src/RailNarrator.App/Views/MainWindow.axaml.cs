@@ -1,6 +1,7 @@
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Platform.Storage;
 using RailNarrator.App.Composition;
 using RailNarrator.App.ViewModels;
 using RailNarrator.Domain;
@@ -78,6 +79,59 @@ public partial class MainWindow : Window
         _viewModel.RestartRequested += Restart;
         _viewModel.PageRequested += page => Surface.ShowPageFromTop(page);
         SetUpSidebar();
+        SetUpFileDrop();
+    }
+
+    // ---- dropping a PDF onto the window -------------------------------------------------------
+
+    /// <summary>
+    /// A PDF dragged from a file manager onto the window is opened, as from File ▸ Open. RailReader2
+    /// has no drop; the reader asked for it here. Only a local file ending in .pdf is accepted, so
+    /// the pointer says "no" over the window for anything else.
+    /// </summary>
+    private void SetUpFileDrop()
+    {
+        DragDrop.SetAllowDrop(this, true);
+        AddHandler(DragDrop.DragOverEvent, OnFileDragOver);
+        AddHandler(DragDrop.DragLeaveEvent, (_, _) => DropHint.IsVisible = false);
+        AddHandler(DragDrop.DropEvent, OnFileDrop);
+    }
+
+    /// <summary>The first local PDF among the dragged items, or null.</summary>
+    private static string? DraggedPdf(DragEventArgs e)
+    {
+        var files = e.DataTransfer.TryGetFiles();
+        if (files is null) return null;
+        foreach (var file in files)
+        {
+            if (file.TryGetLocalPath() is { } path
+                && string.Equals(Path.GetExtension(path), ".pdf", StringComparison.OrdinalIgnoreCase)
+                && File.Exists(path))
+                return path;
+        }
+        return null;
+    }
+
+    private void OnFileDragOver(object? sender, DragEventArgs e)
+    {
+        string? path = DraggedPdf(e);
+        e.DragEffects = path is null ? DragDropEffects.None : DragDropEffects.Copy;
+        DropHintText.Text = path is null ? "" : $"Drop to open {Path.GetFileName(path)}";
+        DropHint.IsVisible = path is not null;
+        e.Handled = true;
+    }
+
+    private void OnFileDrop(object? sender, DragEventArgs e)
+    {
+        DropHint.IsVisible = false;
+        e.Handled = true;
+        if (DraggedPdf(e) is not { } path)
+        {
+            _viewModel.Status("Only a PDF file on this computer can be opened.");
+            return;
+        }
+        Activate();
+        _viewModel.RunObserved(_viewModel.LoadDocumentAsync(path), "Could not open the dropped file");
     }
 
     // ---- sidebar ---------------------------------------------------------------------------

@@ -377,6 +377,19 @@
            being done to it and how far that has got. The veil takes the pointer, so a click cannot
            start the previous document reading underneath. The stage is a live region, so a screen
            reader announces each change. -->
+      <!-- While a PDF is dragged over the window: where it will go. Takes no input. -->
+      <Border Name="DropHint" IsVisible="False" IsHitTestVisible="False" Margin="24"
+              Background="{DynamicResource OverlayVeilBrush}" CornerRadius="12"
+              BorderBrush="{DynamicResource SystemControlHighlightAccentBrush}" BorderThickness="3">
+        <Border Classes="overlayCard" BorderThickness="2" CornerRadius="12" Padding="28,20"
+                HorizontalAlignment="Center" VerticalAlignment="Center">
+          <StackPanel Spacing="10" HorizontalAlignment="Center">
+            <c:Icon Data="{StaticResource IconFolderOpen}" SizeFactor="3" HorizontalAlignment="Center" />
+            <TextBlock Name="DropHintText" FontSize="18" FontWeight="SemiBold" TextAlignment="Center" />
+          </StackPanel>
+        </Border>
+      </Border>
+
       <Border Name="LoadingVeil" IsVisible="{Binding IsLoading}" Background="{DynamicResource OverlayVeilBrush}">
         <Border Name="LoadingCard" HorizontalAlignment="Center" VerticalAlignment="Center"
                 Padding="32,26" CornerRadius="12" MinWidth="460" MaxWidth="640" Margin="24"
