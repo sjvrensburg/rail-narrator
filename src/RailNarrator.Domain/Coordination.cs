@@ -183,6 +183,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     // What each passage's preparation is doing right now, by segment id, so a wait the reader asked
     // for can say what it is waiting on. Written by whichever path is doing the work.
     private readonly ConcurrentDictionary<string, PreparationStage> _stages = new(StringComparer.Ordinal);
+    private long _loadSequence;
     private CancellationTokenSource? _interpretCts;
     private readonly CancellationTokenSource _lifetime = new();
     private Task? _interpretLoop;
@@ -261,11 +262,20 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     {
         ArgumentNullException.ThrowIfNull(plan);
         ThrowIfDisposed();
-        long gen = AdvanceGeneration();
+        long load = Interlocked.Increment(ref _loadSequence);
+        AdvanceGeneration();   // work for the document being replaced stops now
 
         await _audio.StopAsync(ct).ConfigureAwait(false);
+        // A later load that finished while this one waited for the transport has the document the
+        // reader asked for last; this one must not put its plan back over it.
+        if (load != Interlocked.Read(ref _loadSequence)) return;
+        long gen;
         lock (_gate)
         {
+            // A new plan is a new generation from here. Anything that began while the transport
+            // was stopping (a voice change is not awaited by the application) belongs to the
+            // document before, and must neither prepare for it nor cancel this plan's lookahead.
+            gen = AdvanceGeneration();
             _plan = plan;
             _scheduler = new CueScheduler(plan);
             _prepared.Clear();
@@ -519,12 +529,21 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         if (string.IsNullOrWhiteSpace(voiceId)) return;
         if (string.Equals(_options.VoiceId, voiceId, StringComparison.Ordinal)) return;
 
+        bool wasPlaying = _audio.State == PlaybackState.Playing;
         _options = _options with { VoiceId = voiceId };
         long generation = AdvanceGeneration();
-        bool wasPlaying = _audio.State == PlaybackState.Playing;
+        // Discarded now, with the change, not once the transport has stopped: a seek that finishes
+        // while it is stopping would otherwise find the old voice's clip ready and play it.
+        lock (_gate) _prepared.Clear();
         await _audio.StopAsync(ct).ConfigureAwait(false);
 
-        lock (_gate) _prepared.Clear();
+        // A load or a seek that finished while the transport was stopping prepares for itself, in
+        // the new voice. Carrying on here would clear what it prepared.
+        if (generation != Generation)
+        {
+            PublishSnapshotOnly();
+            return;
+        }
         _lastCue = null;
 
         StartPreparation(generation);
@@ -616,6 +635,10 @@ public sealed class NarrationCoordinator : IAsyncDisposable
 
     private void StartPreparation(long generation)
     {
+        // An operation overtaken while it awaited (the transport stopping, a cache being cleared)
+        // must not start preparing: a loop for an older generation prepares nothing, and starting
+        // it cancels the lookahead of whatever overtook it.
+        if (generation != Generation) return;
         lock (_prepareGate)
         {
             _prepareCts?.Cancel();

@@ -6,6 +6,7 @@ using Avalonia.Threading;
 using RailNarrator.App.Composition;
 using RailNarrator.Domain;
 using RailNarrator.Infrastructure;
+using RailNarrator.Pdf;
 using RailNarrator.Speech;
 
 namespace RailNarrator.App.ViewModels;
@@ -59,6 +60,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     private bool _busy;
     private int _selectedTranscriptIndex;
     private double _zoom = 1.0;
+    private bool _fitWidth = true;
     private string? _selectedVoiceId;
     private double _playbackRate = 1.0;
     private FollowMode _followMode = FollowMode.Follow;
@@ -69,7 +71,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public MainViewModel(ServiceRegistry services)
     {
         _services = services ?? throw new ArgumentNullException(nameof(services));
-        _zoom = services.CurrentSettings.PreferredZoom;
+        _fitWidth = services.CurrentSettings.FitWidth;
+        _zoom = ViewZoom.Clamp(services.CurrentSettings.PreferredZoom);
         _playbackRate = services.CurrentSettings.PlaybackRate;
         _followMode = services.CurrentSettings.FollowMode;
         _selectedVoiceId = services.CurrentSettings.KokoroVoiceId ?? services.CurrentSettings.ZonosSpeakerId;
@@ -310,7 +313,18 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public double Zoom
     {
         get => _zoom;
-        set { if (Set(ref _zoom, Math.Clamp(value, 0.25, 8.0))) OnPropertyChanged(nameof(ZoomPercent)); }
+        set { if (Set(ref _zoom, ViewZoom.Clamp(value))) OnPropertyChanged(nameof(ZoomPercent)); }
+    }
+
+    /// <summary>
+    /// True while the page's width is fitted to the reading area, through page turns and resizes
+    /// (the View menu's tick). Cleared by any zoom the reader chooses; clearing it by hand keeps
+    /// the present magnification. Remembered between sessions.
+    /// </summary>
+    public bool FitWidth
+    {
+        get => _fitWidth;
+        set { if (Set(ref _fitWidth, value)) ScheduleZoomPreferenceSave(); }
     }
 
     public int ZoomPercent => (int)Math.Round(_zoom * 100);
@@ -767,20 +781,57 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         }
     }
 
-    /// <summary>Applies a zoom, remembering it as the reader's preference.</summary>
+    /// <summary>
+    /// Applies a zoom the reader chose (toolbar, keyboard, Ctrl+wheel). It replaces fit-width and
+    /// is remembered: a page turn, a resize or the next document must not snap back to a fit.
+    /// </summary>
     public void ApplyZoom(double zoom)
     {
         Zoom = zoom;
-        // The user's magnification is a preference, not a transient state: follow mode must restore it
-        // rather than snapping back to a fit.
-        PersistSettings(s => s with { PreferredZoom = Zoom });
-        OnPropertyChanged(nameof(ZoomPercent));
+        FitWidth = false;
+        ScheduleZoomPreferenceSave();
+    }
+
+    private DispatcherTimer? _zoomSaveTimer;
+
+    /// <summary>
+    /// Saves the zoom preference once the reader has stopped zooming: a turn of the wheel is a
+    /// dozen zooms, and each save reads and rewrites the settings file on this thread.
+    /// </summary>
+    private void ScheduleZoomPreferenceSave()
+    {
+        _zoomSaveTimer ??= new DispatcherTimer(TimeSpan.FromMilliseconds(400), DispatcherPriority.Background,
+            (_, _) => SaveZoomPreferenceNow());
+        _zoomSaveTimer.Stop();
+        _zoomSaveTimer.Start();
+    }
+
+    /// <summary>Writes a zoom preference that is waiting to be saved. Called on the way out as well.</summary>
+    public void SaveZoomPreferenceNow()
+    {
+        if (_zoomSaveTimer is not { IsEnabled: true } timer) return;
+        timer.Stop();
+        try
+        {
+            // While fitting, the zoom shown is derived from the page and the window; the reader's
+            // own last magnification stays on file.
+            PersistSettings(s => FitWidth ? s with { FitWidth = true } : s with { FitWidth = false, PreferredZoom = Zoom });
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Notes.Add($"Could not save the preference: {ex.Message}");
+        }
     }
 
     private void CycleFollowMode()
         => FollowMode = FollowMode == FollowMode.Off ? FollowMode.Follow : FollowMode.Off;
 
     private DispatcherTimer? _followResumeTimer;
+
+    /// <summary>What the status line says while browsing has paused following.</summary>
+    private string FollowPauseNotice => _services.CurrentSettings.FollowAutoResumeSeconds is > 0 and var seconds
+        ? $"Following paused while you browse; it resumes {seconds:0.#} s after you stop (or press F9)."
+        : "Following paused while you browse. Press F9 to resume.";
 
     /// <summary>
     /// Called by the surface when the reader pans or navigates by hand. Pauses following, and (unless
@@ -795,9 +846,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             Coordinator.SuspendFollow();
             FollowSuspended = true;
         }
-        StatusMessage = seconds > 0
-            ? $"Following paused while you browse; it resumes {seconds:0.#} s after you stop (or press F9). Audio continues."
-            : "Following paused while you browse. Press F9 to resume. Audio continues.";
+        StatusMessage = FollowPauseNotice + " Audio continues.";
         if (seconds <= 0) return;
         _followResumeTimer ??= new DispatcherTimer(TimeSpan.FromSeconds(seconds), DispatcherPriority.Background, (_, _) =>
         {
@@ -832,8 +881,12 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             else if (snapshot.Message is { } message) StatusMessage = message;
             // Playing carries no message of its own, so the line used to keep whatever was said
             // last ("Seeking", "Preparing speech") for as long as the passage lasted.
+            // While the reader browses, it also says the view has stopped following: the notice
+            // given when browsing began is replaced by this line within a moment, and without it
+            // only the Resume button showed why the page no longer moved.
             else if (snapshot.State == PlaybackState.Playing && snapshot.SegmentCount > 0)
-                StatusMessage = $"Reading passage {snapshot.SegmentIndex + 1} of {snapshot.SegmentCount}.";
+                StatusMessage = $"Reading passage {snapshot.SegmentIndex + 1} of {snapshot.SegmentCount}."
+                    + (snapshot.FollowSuspended ? " " + FollowPauseNotice : "");
             // Save the place on every move, not only at exit: a crash, a power cut or a SIGKILL
             // otherwise lost the whole session's progress. Not while loading, when the snapshot
             // describes a plan whose restored preferences are not applied yet.
@@ -1084,6 +1137,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        SaveZoomPreferenceNow();   // a zoom made in the last moments before closing
         _services.Coordinator.SnapshotChanged -= OnSnapshotChanged;
         _services.Coordinator.SegmentResolved -= OnSegmentResolved;
         _services.Coordinator.ActiveCueChanged -= OnActiveCueChanged;

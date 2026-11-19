@@ -7,12 +7,12 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 502 passing, 9 opt-in skips, 0 warnings
+## Verified by automated tests — 526 passing, 9 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
-| `RailNarrator.Domain.Tests` | 242 | A cue with no timing inside it that crosses a page break framed on the page holding most of it (a word on the page it is printed on, an equal split on the earlier page, a page with no geometry never), a seek, a start from a stop and a new document ending a pause in following while a resume from Pause leaves it; One gliding follow mode: the reading line held at the reading height (the line's, not the word's, so the view does not bob), a line wider than the view panned between aligned words at their measured pace, starting with the line's start 20 % in from the left and ending with its end near the middle, a new line reached by a quicker carriage-return glide, the frame-loop follow target present only while playing and following; highlight boxes given one height per line across the paragraph, the other column not taken as part of the line, a sentence or equation cue without word timing framed at its start and held (never panned at a guessed rate), a page change cut rather than glided, the glide eased without overshoot at 20–144 fps, keeping its speed when retargeted and bounded after a stalled frame; a seek to an unprepared passage reports its stage (interpreting, loading, synthesising, timing words) and elapsed time and clears when it plays, a prepared passage starts with no wait reported; Abbreviations expanded only as whole words ("Chap.", "overlap.", "p.adjust" untouched); maths italic letters (U+1D400 block, ℎ) mark their sentence as maths and are spoken as plain letters and Greek names, mapped back to both UTF-16 units; silent marks not counted as words; a zoom re-checks the camera at once unless following is suspended; Decimals and signed numbers after a year cue ("from 0.20", "by 0.75") read as numbers, not handed to the year reading; Play waits for the maths ahead (and starts anyway after the cap), a refused interpretation read mechanically from a transcription and labelled, a failed page crop reported, Front-matter metadata skipped (body sentences that start the same way kept), A lead-in sentence and its equation interpreted as one passage, Citation markers left out (and brackets that are content kept), regenerate re-asks the model, Maths left pending with an honest fallback, interpreted once with surrounding definitions and cached, spoken by the coordinator; Layout roles (model formulas trusted over geometry, display lines merged, headings kept apart, inline maths kept in its sentence, tables announced, publisher cover sheets skipped), years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
-| `RailNarrator.Pdf.Tests` | 41 (+5 opt-in) | Page rasters for the reading surface rendered on a worker: page sizes read at open, rasters delivered in the order asked and once each, a render the reader has paged past abandoned (and one that cannot be cancelled dropped, not handed over), a render still wanted carried on, a page that cannot be rendered reported once, colour filters applied there and blank paper's colour matching each filter's own; Layout analysis that fails to start, or fails mid-document, finishes on the CPU fallback from the page that failed and says so once, and the source then reports it so the snapshot is not cached under the GPU key; opt-in, the `Cpu` setting never uses the GPU, and (`RN_WEBGPU_INTEGRATION=1`) the GPU gives the same blocks, kinds, reading units and geometry within 0.1 pt as the CPU; A passage crop is a PNG of its ink; **Real PDFs** through the real RailReaderCore pipeline, including a cached snapshot building the same plan as a fresh one; opt-in, the real PP-DocLayoutV3 model through the adapter |
+| `RailNarrator.Domain.Tests` | 251 | A voice change overtaken by a plan load or a seek neither cancelling its lookahead nor letting the old voice play, and an older load not putting its plan back over a newer one; the heading of a reference list that is not read skipped with it (by the block below it, not the model's reading order; other headings kept; read when references are); A cue with no timing inside it that crosses a page break framed on the page holding most of it (a word on the page it is printed on, an equal split on the earlier page, a page with no geometry never), a seek, a start from a stop and a new document ending a pause in following while a resume from Pause leaves it; One gliding follow mode: the reading line held at the reading height (the line's, not the word's, so the view does not bob), a line wider than the view panned between aligned words at their measured pace, starting with the line's start 20 % in from the left and ending with its end near the middle, a new line reached by a quicker carriage-return glide, the frame-loop follow target present only while playing and following; highlight boxes given one height per line across the paragraph, the other column not taken as part of the line, a sentence or equation cue without word timing framed at its start and held (never panned at a guessed rate), a page change cut rather than glided, the glide eased without overshoot at 20–144 fps, keeping its speed when retargeted and bounded after a stalled frame; a seek to an unprepared passage reports its stage (interpreting, loading, synthesising, timing words) and elapsed time and clears when it plays, a prepared passage starts with no wait reported; Abbreviations expanded only as whole words ("Chap.", "overlap.", "p.adjust" untouched); maths italic letters (U+1D400 block, ℎ) mark their sentence as maths and are spoken as plain letters and Greek names, mapped back to both UTF-16 units; silent marks not counted as words; a zoom re-checks the camera at once unless following is suspended; Decimals and signed numbers after a year cue ("from 0.20", "by 0.75") read as numbers, not handed to the year reading; Play waits for the maths ahead (and starts anyway after the cap), a refused interpretation read mechanically from a transcription and labelled, a failed page crop reported, Front-matter metadata skipped (body sentences that start the same way kept), A lead-in sentence and its equation interpreted as one passage, Citation markers left out (and brackets that are content kept), regenerate re-asks the model, Maths left pending with an honest fallback, interpreted once with surrounding definitions and cached, spoken by the coordinator; Layout roles (model formulas trusted over geometry, display lines merged, headings kept apart, inline maths kept in its sentence, tables announced, publisher cover sheets skipped), years and identifiers read in context, Offset-unit conversion, normalisation mappings, cue validation, cue resolution, source maps, word boundaries from measured glyph geometry, unmapped ligature glyphs, running heads, planner behaviour, coordinator invariants and lock ordering, lookahead, pause/resume, release of played clips, cache keys, camera policy |
+| `RailNarrator.Pdf.Tests` | 56 (+5 opt-in) | Fit-width as a mode: the zoom following the page shown and the view's width, a zoom the reader chose surviving a resize and a page turn, fitting again on request, limits and unusable stored values; Page rasters for the reading surface rendered on a worker: page sizes read at open, rasters delivered in the order asked and once each, a render the reader has paged past abandoned (and one that cannot be cancelled dropped, not handed over), a render still wanted carried on, a page that cannot be rendered reported once, colour filters applied there and blank paper's colour matching each filter's own; Layout analysis that fails to start, or fails mid-document, finishes on the CPU fallback from the page that failed and says so once, and the source then reports it so the snapshot is not cached under the GPU key; opt-in, the `Cpu` setting never uses the GPU, and (`RN_WEBGPU_INTEGRATION=1`) the GPU gives the same blocks, kinds, reading units and geometry within 0.1 pt as the CPU; A passage crop is a PNG of its ink; **Real PDFs** through the real RailReaderCore pipeline, including a cached snapshot building the same plan as a fresh one; opt-in, the real PP-DocLayoutV3 model through the adapter |
 | `RailNarrator.Speech.Tests` | 48 (+3 opt-in) | Opt-in, real Kokoro speech holding acronyms and words the dictionary lacks aligned word by word; PCM/WAV codecs, silence trimming, provider contracts, ZONOS3 HTTP contract against a stubbed transport |
 | `RailNarrator.Audio.Tests` | 43 (+1 opt-in) | Resampler (polyphase path equal to the direct sinc filter on four rate pairs), time-stretcher (fast grain search equal to the direct search at three rates), playback engine against a controllable fake device, engine lock ordering, coordinator-plus-engine transition stress |
 | `RailNarrator.Infrastructure.Tests` | 22 | Cache round-trips and waveform integrity, including same-length replacement; extraction-cache keying, degraded and encrypted documents never stored, corrupt entries treated as misses |
@@ -280,8 +280,10 @@ Not fixed yet. Each was observed in the run described above.
   (i7-12700H): RTF 0.75 at best and 1–2 typically; fp32, int8 and thread counts were all tried
   (ADR-0007). With the converted model installed it runs on the laptop's GPU instead (item 60);
   without it, reading still pauses every few passages there.
-- **Start-up still blocks for about 14 s before the window appears** (item 61): the layout probe
-  (6-7 s on the GPU) runs before the window is shown and could run in the background. Kokoro's
+- **Start-up still blocks for about 14 s before the window appears on the laptop** (item 61): the
+  layout probe (6-7 s on its GPU) runs before the window is shown and could run in the background.
+  On the reference machine the window opens 1.0 s after the process starts (object graph 0.4 s, of
+  which the layout model's GPU session 0.27 s; 2026-11-19), so the delay cannot be measured there. Kokoro's
   initialisation no longer waits for extraction to finish: it starts beside it (item 65), so
   "Ready" waits for whichever is slower, not for both in turn. The 15 s CPU figure for Kokoro on
   the i7-12700H has not been re-measured since.
@@ -289,13 +291,6 @@ Not fixed yet. Each was observed in the run described above.
   i7-12700H (the two one-line pages of the `crosspage` fixture took 28 s). The rule
   (`CoverageLooksSparse`: under 0.5 % ink and under 60 characters) exists to catch scans with a stray
   text layer; whether to keep it, lower its DPI or check the page's ink first is open.
-- **A resize of the reading area resets the zoom to fit-width.** Opening the script panel changed
-  235 % to 173 %; at 400 % or 800 % it would discard the reader's magnification. The toolbar
-  growing by a row does it too (the colour filter's strength slider made the reading area 18 px
-  shorter in the run for item 63).
-- **Fit-width is worked out from the page shown when the document opens.** On the GARCH article the
-  publisher's cover sheet is 634 pt wide and the article's pages 504 pt, so every page after the
-  first fills only 79 % of the window's width.
 - **An equation crop renders its whole page, at up to 8192 px.** The crop is scaled so the passage
   is 1400 px wide, and the whole page is rasterised at that scale under PDFium's lock: 32-49 ms
   for a passage 300-450 pt wide and 134 ms for an 80 pt-wide equation on the reference machine;
@@ -769,3 +764,51 @@ threads meeting.
     now has one frame 59-63 ms late. Seen in the window for fresh and cached opens of the GARCH
     article and a fresh open of the thesis chapter; not tried with a failing open, or through the
     file picker.
+66. **Fit-width was a number worked out once, and any resize threw the reader's zoom away.** Fit
+    was computed from the page shown when the document opened, so on the GARCH article (cover
+    sheet 634 pt wide, article pages 504 pt) every page after the first filled 79 % of the
+    window; and every change in the reading area's size re-fitted, so opening the script panel
+    turned 235 % into 173 %. Fit-width is now a mode (`ViewZoom`): while it is on, the zoom is
+    re-derived when the page shown or the reading area's width changes; a zoom the reader chooses
+    (toolbar, keyboard, Ctrl+wheel) turns it off and is kept through page turns and resizes. The
+    toolbar's Fit button and the View menu's item show and toggle the mode. Both the mode and the
+    reader's zoom are saved, so the next document and the next session open the same way; a
+    settings file from before has no mode and opens fitted, as it always did. A page narrower
+    than the reading area sits in the middle of it. Seen in the window on the GARCH article at
+    1440 px: the cover at 227 % and page 2 at 286 %, both filling the width; after two zoom-ins
+    (446 %) a page turn and opening the script panel left 446 %, with the passage being read
+    still in view; Fit with the panel open gave 210 %, and 286 % again when it closed; after
+    zooming out to 117 % and a SIGTERM, a relaunch opened at 117 % with the page centred. No
+    frame over 50 ms late in any of it. Not tried: Ctrl+wheel in the window (it takes the same
+    path as the toolbar), a document whose pages differ in size mid-reading with follow on, a
+    HiDPI display.
+67. **A voice change could cancel the preparation of whatever came after it.** The application
+    does not await a voice change, and each coordinator operation awaits the transport's stop. A
+    voice change still waiting for that stop when a plan load or a seek finished carried on
+    afterwards for its own, older generation: it cleared the prepared clips and restarted
+    preparation, which cancelled the newer operation's lookahead and prepared nothing. A seek that
+    overtook it could also find the old voice's clip still prepared and play it. Three tests with
+    a transport whose stop yields reproduce this (nothing prepared after a load; the next passage
+    played in the old voice; an older load's plan put back over a newer one) and fail on the code
+    before. Now prepared clips are discarded when the voice changes, an overtaken operation stops
+    after its await, `StartPreparation` refuses an older generation, and a plan load takes a fresh
+    generation when it installs its plan. Not seen in the window: with the real engine idle its
+    stop completes at once, and a fresh launch prepared its four lookahead passages and started
+    Play 70 ms after the click. The "Synthesising speech" for 2 s noted under item 65 was not
+    reproduced and is not explained by this.
+68. **"References" was read aloud with nothing after it.** The list is skipped by default but its
+    heading was spoken. A heading or title whose next block is a reference that is not read is
+    now skipped with it (`ReferenceSections.HeadingsOfUnreadLists`), judged by the block that
+    follows and not by the heading's words. "Next" is the nearest block below in the same column,
+    and only for a heading that ends its column or page the next block in reading order: on the
+    GARCH article PP-DocLayoutV3 orders page 26 as acknowledgement, reference list, funding note
+    and then the headings "Acknowledgments", "References", "Funding", so a rule that went by
+    reading order would have dropped "Funding" and kept "References" (a first version did, and
+    was caught on that page's extraction). `ProsePipeline` is `prose/8`, so cached plans and
+    audio are rebuilt. With references switched on, heading and list are both read.
+69. **The status line forgot that following was paused.** "Following paused while you browse…" was
+    replaced within a moment by "Reading passage N of M", leaving only the Resume button to say
+    why the page no longer moved. While following is paused the line now keeps the notice:
+    "Reading passage 6 of 593. Following paused while you browse; it resumes 6 s after you stop (or
+    press F9)." Seen in the window: the notice stayed while browsing and went when following
+    resumed by itself.

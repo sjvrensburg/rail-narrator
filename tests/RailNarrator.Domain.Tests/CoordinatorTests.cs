@@ -619,6 +619,82 @@ public sealed class NarrationCoordinatorTests
         Assert.Equal(plan.Segments[5].Id, coordinator.Snapshot.SegmentId);
     }
 
+    /// <summary>
+    /// The application sets the voice from a selector's setter, without awaiting it, and loads the
+    /// plan next. A voice change still waiting for the transport to stop when the load finishes
+    /// used to start preparation for its own, older generation afterwards: that cancelled the
+    /// load's lookahead and prepared nothing, so nothing was ready until Play.
+    /// </summary>
+    [Fact]
+    public async Task AVoiceChangeStillStopping_DoesNotCancelTheLookaheadOfALoadThatOvertookIt()
+    {
+        // Synthesis outlasts the voice change's stop, so the load's lookahead is still at work on
+        // its first passage when the voice change resumes.
+        var tts = new FakeTtsProvider(new FakeTtsOptions(Latency: TimeSpan.FromMilliseconds(300)));
+        var transport = new FakeAudioTransport { StopDelay = TimeSpan.FromMilliseconds(150) };
+        var store = new CountingStore();
+        await using var coordinator = new NarrationCoordinator(tts, transport, store,
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 2));
+
+        var voiceChange = coordinator.SetVoiceAsync("fake-alternate");
+        transport.StopDelay = TimeSpan.Zero;   // the load's own stop completes at once
+        await coordinator.LoadPlanAsync(PlanWith(4));
+        await voiceChange;
+
+        await WaitUntil(() => store.StoreCount >= 2, timeoutMs: 2000, what: "the lookahead after the load");
+        Assert.Equal(PlaybackState.Idle, coordinator.Snapshot.State);
+    }
+
+    /// <summary>
+    /// The same overtaking by a seek: what the seek plays must be in the new voice. The clips
+    /// prepared in the old voice are discarded when the voice changes, not when its stop completes.
+    /// </summary>
+    [Fact]
+    public async Task AVoiceChangeStillStopping_DoesNotLetASeekPlayTheOldVoice()
+    {
+        var tts = new FakeTtsProvider();
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(tts, transport,
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 3, VoiceId: "fake-default"));
+        var plan = PlanWith(4);
+        await coordinator.LoadPlanAsync(plan);
+        await coordinator.PlayAsync();
+        await WaitUntil(() => transport.Loaded.Count == 1 && coordinator.Snapshot.State == PlaybackState.Playing, what: "playback");
+        await Task.Delay(100);   // the lookahead prepares the next passages in the first voice
+
+        transport.StopDelay = TimeSpan.FromMilliseconds(150);
+        var voiceChange = coordinator.SetVoiceAsync("fake-alternate");
+        transport.StopDelay = TimeSpan.Zero;
+        await coordinator.NextSegmentAsync();
+        await voiceChange;
+
+        await WaitUntil(() => coordinator.Snapshot.State == PlaybackState.Playing
+                              && transport.Loaded[^1].SegmentId == plan.Segments[1].Id, what: "playback of the next passage");
+        Assert.Equal("fake-alternate", transport.Loaded[^1].Asset.VoiceId);
+    }
+
+    /// <summary>The document asked for last is the one loaded, whichever load's stop finishes last.</summary>
+    [Fact]
+    public async Task ALoadOvertakenByALaterLoad_DoesNotPutItsPlanBack()
+    {
+        var tts = new FakeTtsProvider();
+        var transport = new FakeAudioTransport { StopDelay = TimeSpan.FromMilliseconds(150) };
+        var store = new CountingStore();
+        await using var coordinator = new NarrationCoordinator(tts, transport, store,
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 1));
+        var first = PlanWith(2);
+        var second = PlanWith(5);
+
+        var slow = coordinator.LoadPlanAsync(first);
+        transport.StopDelay = TimeSpan.Zero;
+        await coordinator.LoadPlanAsync(second);
+        await slow;
+
+        Assert.Same(second, coordinator.Plan);
+        await WaitUntil(() => store.StoreCount >= 1, timeoutMs: 2000, what: "the second document's lookahead");
+        Assert.Equal(5, coordinator.Snapshot.SegmentCount);
+    }
+
     [Fact]
     public async Task AScriptEdit_InvalidatesTheCachedSpeechForThatDocument()
     {

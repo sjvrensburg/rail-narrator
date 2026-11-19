@@ -70,7 +70,7 @@ public sealed class PdfSurface : Control
     private PageRasterKey[] _requested = [];
     // When the page shown was turned to, for the opt-in log of how long it took to become sharp.
     private long _pageShownAt;
-    private double _zoom = 1.0;
+    private ViewZoom _magnification = new();
     private double _offsetX, _offsetY;
     private Point _dragStart;
     private (double X, double Y) _dragOffsetStart;
@@ -117,12 +117,18 @@ public sealed class PdfSurface : Control
         {
             // A zoom from the toolbar or keyboard: keep the middle of the view where it is, then let
             // follow place the word being read at the new magnification. Zooms that start here
-            // (wheel, fit) have already set _zoom, so they do not come through twice.
-            if (e.PropertyName == nameof(MainViewModel.Zoom) && Math.Abs(viewModel.Zoom - _zoom) > 1e-9)
+            // (wheel, fit) have already been applied, so they do not come through twice.
+            if (e.PropertyName == nameof(MainViewModel.Zoom) && Math.Abs(viewModel.Zoom - Zoom) > 1e-9)
                 ZoomAbout(viewModel.Zoom, Bounds.Width / 2, Bounds.Height / 2);
+            // The View menu's "Fit width" was ticked or cleared.
+            if (e.PropertyName == nameof(MainViewModel.FitWidth) && viewModel.FitWidth != _magnification.FitsWidth)
+            {
+                if (viewModel.FitWidth) FitToWidth();
+                else _magnification.Pin();
+            }
             InvalidateVisual();
         };
-        _zoom = viewModel.Zoom;
+        _magnification = new ViewZoom(viewModel.FitWidth, viewModel.Zoom);
         RequestFrame();
     }
 
@@ -183,7 +189,9 @@ public sealed class PdfSurface : Control
         source.Ready += raster => OnRasterReady(source, raster);
         source.Failed += (key, ex) => Dispatcher.UIThread.Post(() => OnRasterFailed(source, key, ex.Message));
         CurrentPage = 0;
-        FitToWidth();
+        _offsetX = 0;
+        _offsetY = 0;
+        Relayout();
         PageChanged?.Invoke(CurrentPage, PageCount);
         InvalidateVisual();
     }
@@ -204,17 +212,8 @@ public sealed class PdfSurface : Control
 
     public int PageCount => _source?.PageCount ?? 0;
 
-    public double Zoom
-    {
-        get => _zoom;
-        set
-        {
-            _zoom = Math.Clamp(value, 0.25, 8.0);
-            if (_viewModel is not null) _viewModel.Zoom = _zoom;
-            ClampOffsets();
-            InvalidateVisual();
-        }
-    }
+    /// <summary>Screen units per page point: fitted to the page's width, or the reader's own (<see cref="ViewZoom"/>).</summary>
+    public double Zoom => _magnification.Zoom;
 
     /// <summary>Raised with the zero-based page shown and the page count whenever either changes.</summary>
     public event Action<int, int>? PageChanged;
@@ -226,7 +225,7 @@ public sealed class PdfSurface : Control
         {
             CurrentPage = page;
             _pageShownAt = System.Diagnostics.Stopwatch.GetTimestamp();
-            ClampOffsets();   // the new page may be a different size
+            Relayout();   // the new page may be a different size: fit follows it
             PageChanged?.Invoke(CurrentPage, PageCount);
         }
         if (focus is { IsEmpty: false } rect) CentreOn(rect);
@@ -250,22 +249,40 @@ public sealed class PdfSurface : Control
         _viewModel?.NotifyManualNavigation();
         GoToPage(target);
         var (_, h) = _source.PageSize(CurrentPage);
-        _offsetY = direction > 0 ? 0 : Bounds.Height - h * _zoom;
+        _offsetY = direction > 0 ? 0 : Bounds.Height - h * Zoom;
         ClampOffsets();
         InvalidateVisual();
     }
 
-    /// <summary>Fits the page width to the control and records that as the reader's zoom.</summary>
+    /// <summary>
+    /// Fits the page's width to the view and keeps it fitted, through page turns and resizes, until
+    /// the reader chooses a magnification.
+    /// </summary>
     public void FitToWidth()
     {
+        _magnification.Fit();
+        if (_viewModel is { FitWidth: false } vm) vm.FitWidth = true;
+        Relayout();
+        _viewModel?.Coordinator.RefollowCurrentCue();
+    }
+
+    /// <summary>
+    /// The page shown or the view's size changed. When fitting, the zoom is re-derived from the page
+    /// now shown, keeping the same part of the page at the top of the view; a zoom the reader chose
+    /// is left alone. Either way the offsets are brought back inside the page.
+    /// </summary>
+    private void Relayout()
+    {
         if (_source is null || Bounds.Width <= 0) return;
-        var (w, _) = _source.PageSize(CurrentPage);
-        if (w <= 0) return;
-        CancelGlide();
-        _zoom = Math.Clamp(Bounds.Width / w, 0.25, 8.0);
-        _offsetX = 0;
-        _offsetY = 0;
-        if (_viewModel is not null) _viewModel.Zoom = _zoom;
+        double before = Zoom;
+        if (_magnification.Layout(Bounds.Width, _source.PageSize(CurrentPage).Width))
+        {
+            CancelGlide();   // its target was worked out for the old magnification's limits
+            _offsetX *= Zoom / before;
+            _offsetY *= Zoom / before;
+            if (_viewModel is not null) _viewModel.Zoom = Zoom;
+        }
+        ClampOffsets();
         InvalidateVisual();
     }
 
@@ -277,19 +294,22 @@ public sealed class PdfSurface : Control
     private void ZoomAbout(double zoom, double x, double y)
     {
         CancelGlide();
-        var (pageX, pageY) = new PageTransform(_zoom, _offsetX, _offsetY).ToPage(x, y);
-        double next = Math.Clamp(zoom, 0.25, 8.0);
-        _offsetX = x - pageX * next;
-        _offsetY = y - pageY * next;
-        Zoom = next;
+        var (pageX, pageY) = new PageTransform(Zoom, _offsetX, _offsetY).ToPage(x, y);
+        _magnification.SetByReader(zoom);
+        _offsetX = x - pageX * Zoom;
+        _offsetY = y - pageY * Zoom;
+        ClampOffsets();
+        InvalidateVisual();
+        // Remembered as the reader's preference, and "Fit width" is no longer ticked.
+        _viewModel?.ApplyZoom(Zoom);
         _viewModel?.Coordinator.RefollowCurrentCue();
     }
 
     private void CentreOn(PageRect rect)
     {
         if (Bounds.Width <= 0 || Bounds.Height <= 0) return;
-        _offsetX = Bounds.Width / 2 - rect.MidX * _zoom;
-        _offsetY = Bounds.Height * FollowVerticalBias - rect.MidY * _zoom;
+        _offsetX = Bounds.Width / 2 - rect.MidX * Zoom;
+        _offsetY = Bounds.Height * FollowVerticalBias - rect.MidY * Zoom;
         ClampOffsets();
     }
 
@@ -299,13 +319,15 @@ public sealed class PdfSurface : Control
     {
         if (_source is null) return (x, y);
         var (w, h) = _source.PageSize(CurrentPage);
-        double scaledW = w * _zoom, scaledH = h * _zoom;
+        double scaledW = w * Zoom, scaledH = h * Zoom;
+        double clampedY = Math.Clamp(y, Math.Min(0, Bounds.Height - scaledH), Math.Max(0, Bounds.Height - scaledH));
+        // A page no wider than the view sits in the middle of it: there is nothing to scroll to.
+        if (scaledW <= Bounds.Width) return ((Bounds.Width - scaledW) / 2, clampedY);
         // A page wider than the view may be scrolled past its edges by up to half the view, so the
         // follow camera can bring a line's start in from the left edge and stop with its end near the
-        // middle (FollowOptions.LineStartFraction, LineEndFraction). A page that fits stays put.
-        double overscroll = scaledW > Bounds.Width ? Bounds.Width * HorizontalOverscroll : 0;
-        return (Math.Clamp(x, Math.Min(0, Bounds.Width - scaledW) - overscroll, Math.Max(0, Bounds.Width - scaledW) + overscroll),
-                Math.Clamp(y, Math.Min(0, Bounds.Height - scaledH), Math.Max(0, Bounds.Height - scaledH)));
+        // middle (FollowOptions.LineStartFraction, LineEndFraction).
+        double overscroll = Bounds.Width * HorizontalOverscroll;
+        return (Math.Clamp(x, Bounds.Width - scaledW - overscroll, overscroll), clampedY);
     }
 
     /// <summary>Sets highlights grouped by page, so a unit spanning a page break lights up on either page.</summary>
@@ -339,7 +361,7 @@ public sealed class PdfSurface : Control
 
         // Decide in page points, so it behaves identically at every zoom and DPI and never changes
         // the reader's magnification; then glide there frame by frame (StepGlide).
-        var visible = new PageTransform(_zoom, _offsetX, _offsetY).ToPageRect(0, 0, Bounds.Width, Bounds.Height);
+        var visible = new PageTransform(Zoom, _offsetX, _offsetY).ToPageRect(0, 0, Bounds.Width, Bounds.Height);
         var decision = CameraFollowPlanner.Plan(
             new PageViewport(newPage ? -1 : CurrentPage, visible), target,
             _viewModel?.FollowMode ?? FollowMode.Follow,
@@ -351,8 +373,8 @@ public sealed class PdfSurface : Control
         {
             // Clamp the destination the way the offsets are clamped, so the glide ends where the view
             // can actually be, rather than straining against the page edge.
-            var (offX, offY) = ClampedOffsets(-decision.TargetVisible.Visible.Left * _zoom, -decision.TargetVisible.Visible.Top * _zoom);
-            var destination = (X: -offX / _zoom, Y: -offY / _zoom);
+            var (offX, offY) = ClampedOffsets(-decision.TargetVisible.Visible.Left * Zoom, -decision.TargetVisible.Visible.Top * Zoom);
+            var destination = (X: -offX / Zoom, Y: -offY / Zoom);
             if (decision.GlideSeconds <= 0 || newPage)
             {
                 CancelGlide();
@@ -368,7 +390,7 @@ public sealed class PdfSurface : Control
                 _glideSeconds = decision.GlideSeconds;
             }
         }
-        FollowLog.Write(target.PageIndex, target.CueRects, visible, decision, Bounds, _zoom, (beforeX, beforeY), (_offsetX, _offsetY));
+        FollowLog.Write(target.PageIndex, target.CueRects, visible, decision, Bounds, Zoom, (beforeX, beforeY), (_offsetX, _offsetY));
     }
 
     private string? _shownPreparingSegmentId;
@@ -405,7 +427,7 @@ public sealed class PdfSurface : Control
         if (rects.Count == 0) return;
 
         // Already in view (a click on the page being read): leave the camera where it is.
-        var visible = new PageTransform(_zoom, _offsetX, _offsetY).ToPageRect(0, 0, Bounds.Width, Bounds.Height);
+        var visible = new PageTransform(Zoom, _offsetX, _offsetY).ToPageRect(0, 0, Bounds.Width, Bounds.Height);
         if (page == CurrentPage && rects.All(r => r.Left >= visible.Left && r.Right <= visible.Right
                                                && r.Top >= visible.Top && r.Bottom <= visible.Bottom)) return;
         // No word timing exists yet, so the passage's start is framed and held, as for any sentence cue.
@@ -415,13 +437,13 @@ public sealed class PdfSurface : Control
     /// <summary>Moves the camera one frame along its glide.</summary>
     private void StepGlide(double dtSeconds)
     {
-        if (_glideTarget is not { } target || _zoom <= 0) return;
-        double x = -_offsetX / _zoom, y = -_offsetY / _zoom;
+        if (_glideTarget is not { } target || Zoom <= 0) return;
+        double x = -_offsetX / Zoom, y = -_offsetY / Zoom;
         x = CameraGlide.Step(x, target.X, ref _glideVelocityX, _glideSeconds, dtSeconds);
         y = CameraGlide.Step(y, target.Y, ref _glideVelocityY, _glideSeconds, dtSeconds);
-        (_offsetX, _offsetY) = ClampedOffsets(-x * _zoom, -y * _zoom);
-        if (CameraGlide.HasArrived(-_offsetX / _zoom, target.X, _glideVelocityX)
-            && CameraGlide.HasArrived(-_offsetY / _zoom, target.Y, _glideVelocityY))
+        (_offsetX, _offsetY) = ClampedOffsets(-x * Zoom, -y * Zoom);
+        if (CameraGlide.HasArrived(-_offsetX / Zoom, target.X, _glideVelocityX)
+            && CameraGlide.HasArrived(-_offsetY / Zoom, target.Y, _glideVelocityY))
             CancelGlide();
         InvalidateVisual();
     }
@@ -437,7 +459,7 @@ public sealed class PdfSurface : Control
     private int TargetDpi()
     {
         double scale = TopLevel.GetTopLevel(this)?.RenderScaling ?? 1.0;
-        int dpi = (int)Math.Round(72 * _zoom * scale);
+        int dpi = (int)Math.Round(72 * Zoom * scale);
         int[] ladder = [72, 96, 120, 150, 200, 260, 340, 440, 580, 760];
         foreach (int step in ladder) if (dpi <= step) return step;
         return ladder[^1];
@@ -617,7 +639,7 @@ public sealed class PdfSurface : Control
 
             if (pageW > 0 && pageH > 0)
             {
-                var destination = new Rect(_offsetX, _offsetY, pageW * _zoom, pageH * _zoom);
+                var destination = new Rect(_offsetX, _offsetY, pageW * Zoom, pageH * Zoom);
                 if (BestRaster() is { } raster)
                 {
                     var size = raster.Bitmap.PixelSize;
@@ -651,7 +673,7 @@ public sealed class PdfSurface : Control
     {
         if (!_highlightsByPage.TryGetValue(CurrentPage, out var rects) || rects.Count == 0) return;
 
-        var transform = new PageTransform(_zoom, _offsetX, _offsetY);
+        var transform = new PageTransform(Zoom, _offsetX, _offsetY);
         var fillColour = _highlightStyle.FillColour;
         // On a filtered page the default amber can vanish (yellow on high-visibility yellow, say); use
         // the colour RailReader pairs with that filter for its line highlight.
@@ -664,9 +686,9 @@ public sealed class PdfSurface : Control
             fillColour.Red, fillColour.Green, fillColour.Blue));
         IPen? outline = _highlightStyle.OutlineColour is { } c
             ? new Pen(new SolidColorBrush(Color.FromArgb(c.Alpha, c.Red, c.Green, c.Blue)),
-                      _highlightStyle.OutlineWidthPoints * _zoom)
+                      _highlightStyle.OutlineWidthPoints * Zoom)
             : null;
-        float radius = (float)(_highlightStyle.CornerRadiusPoints * _zoom);
+        float radius = (float)(_highlightStyle.CornerRadiusPoints * Zoom);
         // Padding is in page points and is applied before the page-to-screen transform, which
         // already scales by the zoom. Multiplying by the zoom here as well scaled it twice, so at
         // 800% each box grew by 64 px a side and covered the neighbouring lines.
@@ -699,7 +721,7 @@ public sealed class PdfSurface : Control
         var pen = new Pen(new SolidColorBrush(Color.FromArgb(alpha, 0x2F, 0x80, 0xED)), 2,
             new DashStyle([4, 3], phase * 7));
         var fill = new SolidColorBrush(Color.FromArgb((byte)(alpha / 6), 0x2F, 0x80, 0xED));
-        var transform = new PageTransform(_zoom, _offsetX, _offsetY);
+        var transform = new PageTransform(Zoom, _offsetX, _offsetY);
         float pad = _highlightStyle.PaddingPoints;
         foreach (var rect in rects)
         {
@@ -722,7 +744,7 @@ public sealed class PdfSurface : Control
         {
             // Click to read: hit-test the original PDF and start at the containing unit. A click on
             // blank space does nothing rather than choosing an arbitrary passage.
-            var (pageX, pageY) = new PageTransform(_zoom, _offsetX, _offsetY).ToPage(point.X, point.Y);
+            var (pageX, pageY) = new PageTransform(Zoom, _offsetX, _offsetY).ToPage(point.X, point.Y);
             if (SourceHitTester.HitTest(plan, CurrentPage, pageX, pageY) is { } hit
                 && SourceHitTester.SegmentFor(plan, hit.Unit) is { } segment)
             {
@@ -785,7 +807,7 @@ public sealed class PdfSurface : Control
         {
             // Zoom about the pointer so the text under the cursor stays under it. The new zoom is
             // kept (follow pans, it never zooms), and following carries on.
-            ZoomAbout(_zoom * (e.Delta.Y > 0 ? 1.15 : 1 / 1.15), point.X, point.Y);
+            ZoomAbout(Zoom * (e.Delta.Y > 0 ? 1.15 : 1 / 1.15), point.X, point.Y);
             e.Handled = true;
             return;
         }
@@ -804,7 +826,7 @@ public sealed class PdfSurface : Control
         CancelGlide();
         _viewModel?.NotifyManualNavigation();
         var (_, h) = _source.PageSize(CurrentPage);
-        double minY = Math.Min(0, Bounds.Height - h * _zoom);
+        double minY = Math.Min(0, Bounds.Height - h * Zoom);
         bool atBottom = _offsetY <= minY + 0.5, atTop = _offsetY >= -0.5;
         if (notchesY < 0 && atBottom && CurrentPage + 1 < _source.PageCount) { TurnPage(+1); return; }
         if (notchesY > 0 && atTop && CurrentPage > 0) { TurnPage(-1); return; }
@@ -831,7 +853,13 @@ public sealed class PdfSurface : Control
     protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
     {
         base.OnPropertyChanged(change);
-        if (change.Property == BoundsProperty) FitToWidth();
+        // A resize (the window, the script panel, a toolbar row): fit follows it, the reader's own
+        // zoom is kept, and the passage being read is brought back into view if it was pushed out.
+        if (change.Property == BoundsProperty && _source is not null)
+        {
+            Relayout();
+            _viewModel?.Coordinator.RefollowCurrentCue();
+        }
     }
 }
 

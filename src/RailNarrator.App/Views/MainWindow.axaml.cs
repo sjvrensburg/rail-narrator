@@ -113,8 +113,6 @@ public partial class MainWindow : Window
 
     private void OnNextPageClicked(object? sender, RoutedEventArgs e) => Surface.TurnPage(+1);
 
-    private void OnFitClicked(object? sender, RoutedEventArgs e) => Surface.FitToWidth();
-
     private void OnCycleColourFilterClicked(object? sender, RoutedEventArgs e) => _viewModel.CycleColourEffect();
 
     private void OnColourFilterClicked(object? sender, RoutedEventArgs e)

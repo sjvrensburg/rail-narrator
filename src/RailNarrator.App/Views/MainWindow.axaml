@@ -43,7 +43,7 @@
       <MenuItem Header="_View">
         <MenuItem Header="Zoom _in" Command="{Binding ZoomIn}" InputGesture="Ctrl+OemPlus" />
         <MenuItem Header="Zoom _out" Command="{Binding ZoomOut}" InputGesture="Ctrl+OemMinus" />
-        <MenuItem Header="_Fit width" Click="OnFitClicked" />
+        <MenuItem Header="_Fit width" ToggleType="CheckBox" IsChecked="{Binding FitWidth, Mode=TwoWay}" />
         <MenuItem Header="Zoom 200%" Command="{Binding Zoom200}" />
         <MenuItem Header="Zoom 400%" Command="{Binding Zoom400}" />
         <MenuItem Header="Zoom 800%" Command="{Binding Zoom800}" />
@@ -120,7 +120,8 @@
         <TextBlock Text="{Binding ZoomPercent, StringFormat={}{0}%}" VerticalAlignment="Center" MinWidth="48"
                    TextAlignment="Center" />
         <Button Content="+" Command="{Binding ZoomIn}" ToolTip.Tip="Zoom in (Ctrl++)" />
-        <Button Content="Fit" Click="OnFitClicked" ToolTip.Tip="Fit page width" />
+        <ToggleButton Content="Fit" IsChecked="{Binding FitWidth, Mode=TwoWay}"
+                      ToolTip.Tip="Fit the page's width, and keep it fitted through page turns and resizes" />
 
         <Separator Width="1" Margin="6,2" />
 

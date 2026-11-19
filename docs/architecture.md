@@ -128,6 +128,12 @@ hash, extraction, reading order, planning and the speech model's start-up on the
 pool and only awaits and reports them, so the loading card over the reading area keeps
 moving.
 
+The magnification is either fitted to the width of the page shown or the reader's own
+(`ViewZoom`). Fitting is a mode: the zoom is re-derived when the page shown or the reading
+area's width changes, because pages differ in size (a publisher's cover sheet in front of
+an article). A zoom the reader chose is never replaced by a page turn or a resize, and both
+the mode and the zoom are saved as preferences.
+
 Where the camera goes is the coordinator's decision (`FollowTarget`), made from the media
 clock. A word is shown on the page it is printed on. A cue with no timing inside it (a
 sentence with maths, an equation, an interpreted lead-in and its equation) can cross a page
