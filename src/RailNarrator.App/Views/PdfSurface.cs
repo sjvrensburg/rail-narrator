@@ -260,6 +260,21 @@ public sealed class PdfSurface : Control
     /// The reader turns to the next or previous page: shown from its top (or, going back, its bottom),
     /// with following paused so the camera does not pull the view straight back.
     /// </summary>
+    /// <summary>The open document's outline; empty when it has none or nothing is open.</summary>
+    public IReadOnlyList<OutlineEntry> Outline => _source?.Outline ?? [];
+
+    /// <summary>Shows a page from its top (an outline heading was chosen). Browsing: following pauses.</summary>
+    public void ShowPageFromTop(int page)
+    {
+        if (_source is null || page < 0 || page >= _source.PageCount) return;
+        CancelGlide();
+        _viewModel?.NotifyManualNavigation();
+        GoToPage(page);
+        _offsetY = 0;
+        ClampOffsets();
+        InvalidateVisual();
+    }
+
     public void TurnPage(int direction)
     {
         if (_source is null) return;

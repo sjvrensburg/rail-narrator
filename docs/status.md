@@ -925,3 +925,24 @@ threads meeting.
     canvas and Settings, were saved, and were applied again at the next start. *Not verified:* on
     the reader's desktop, and the opening and preparing cards in either theme (no screenshot of
     them since the change).
+77. **The sidebar and status bar follow RailReader2** (the second of the three GUI changes). The
+    script, maths review and diagnostics moved from a fixed 380 px panel on the right to a sidebar
+    on the left (toggle in the toolbar, F6) with RailReader2's accordion (one section open, filling
+    the panel) and a splitter; its width, visibility and open section are remembered. A new
+    Outline section shows the PDF's own bookmarks: choosing a heading shows its page and, unless
+    reading is under way (then it seeks there), makes the next Play start from the first passage
+    on that page ("Play reads from “4 Proposed models”"). The status bar names the section being
+    shown ("3 Data and model inputs › 3.2 Daily and hourly…", the paper's title left out), and
+    notices with an action take its place, as RailReader2's toasts: speech unavailable → Speech
+    settings…, a model downloaded → Restart now. The open document's name is shown as a tab in
+    the toolbar and in the window title. Checked under Xvfb on a real paper with an outline: the
+    accordion, the outline tree, a heading turning to its page and setting the start, the section
+    name, a long notice trimmed with its button, and a dismissed notice staying dismissed (it came
+    back with every snapshot until fixed). *Not verified:* Play starting from a chosen heading (no
+    voice in the sandbox), dragging the splitter, and the restart notice after a real download.
+    The same change adds dropping a PDF onto the window (the reader tried it and found it
+    missing; RailReader2 has none): a local `.pdf` shows "Drop to open paper.pdf" over the page
+    while dragged and is opened on release, as by File ▸ Open; anything else is refused. Checked
+    under Xvfb with a real XDND drag from a GTK drag source: the hint, the paper opened from an
+    empty window, and a `.txt` refused with no hint and the open document kept. *Not verified:*
+    from the reader's file manager.

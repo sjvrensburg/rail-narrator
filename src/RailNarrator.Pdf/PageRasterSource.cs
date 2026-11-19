@@ -79,11 +79,12 @@ public sealed class PageRasterSource : IDisposable
     private ColourEffectShaders? _shaders;
     private bool _disposed;
 
-    private PageRasterSource(string path, IPdfService pdf, (double Width, double Height)[] pageSizes)
+    private PageRasterSource(string path, IPdfService pdf, (double Width, double Height)[] pageSizes, IReadOnlyList<OutlineEntry> outline)
     {
         Path = path;
         _pdf = pdf;
         _pageSizes = pageSizes;
+        Outline = outline;
         _worker = new Thread(Work) { IsBackground = true, Name = "page-raster" };
         _worker.Start();
     }
@@ -101,13 +102,20 @@ public sealed class PageRasterSource : IDisposable
             var pdf = (factory ?? new SkiaPdfServiceFactory()).CreatePdfService(path, password);
             var sizes = pdf.GetPageSizes(0).ToArray();
             ct.ThrowIfCancellationRequested();
-            return new PageRasterSource(path, pdf, sizes);
+            // The outline is read here too, for the same reason: it takes the PDFium lock.
+            IReadOnlyList<OutlineEntry> outline;
+            try { outline = pdf.Outline.ToList(); }
+            catch (Exception) { outline = []; }   // a damaged outline must not stop the document opening
+            return new PageRasterSource(path, pdf, sizes, outline);
         }, ct);
     }
 
     public string Path { get; }
 
     public int PageCount => _pageSizes.Length;
+
+    /// <summary>The document's own outline (its bookmarks), read when it was opened; empty when it has none.</summary>
+    public IReadOnlyList<OutlineEntry> Outline { get; }
 
     /// <summary>A page's size in points. Answered from memory; never calls PDFium.</summary>
     public (double Width, double Height) PageSize(int pageIndex)

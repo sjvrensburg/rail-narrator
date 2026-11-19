@@ -489,6 +489,9 @@ public sealed class SettingsViewModel : ViewModelBase
             KokoroVoiceId = null,
             DarkMode = false,
             UiFontScale = 1,
+            SidebarVisible = false,
+            SidebarWidth = 300,
+            SidebarSection = "Outline",
         });
 
     private static string? Blank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
