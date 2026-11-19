@@ -143,6 +143,48 @@ public sealed class NarrationCoordinatorTests
         Assert.NotNull(coordinator.Snapshot.Error);
     }
 
+    /// <summary>
+    /// A passage longer than the provider accepts used to stop reading for good: an interpretation
+    /// of 1,239 characters met Kokoro's 1,200 and every Play stopped at it. It is spoken in pieces,
+    /// joined into one clip.
+    /// </summary>
+    [Fact]
+    public async Task APassageLongerThanTheProviderAccepts_IsSpokenInPieces_AsOneClip()
+    {
+        string longText = string.Join(" ", Enumerable.Range(1, 8).Select(i => $"This is sentence {i} of a long interpreted passage about equations."));
+        var anchor = SyntheticNarration.Anchor("a0", 0, new PageRect(72, 100, 300, 112));
+        var plan = SyntheticNarration.Plan([SyntheticNarration.ProseUnit("u0", longText, anchor)]);
+        var tts = new FakeTtsProvider(new FakeTtsOptions(MaxTextChars: 150));
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(tts, transport);
+        await coordinator.LoadPlanAsync(plan);
+        await coordinator.PlayAsync();
+
+        await WaitUntil(() => transport.Loaded.Count == 1, what: "the passage to be loaded");
+        Assert.NotEqual(PlaybackState.Error, coordinator.Snapshot.State);
+        Assert.True(tts.Requests.Count > 1, "the passage was not split");
+        Assert.All(tts.Requests, r => Assert.True(r.Text.Length <= 150, $"a piece of {r.Text.Length} characters was sent"));
+        Assert.Equal(plan.Segments[0].SpokenText.Replace(" ", ""), string.Concat(tts.Requests.Select(r => r.Text)).Replace(" ", ""));
+    }
+
+    [Fact]
+    public void SynthesisPieces_EndAtSentencesThenClausesThenWords_AndCoverTheText()
+    {
+        const string text = "First sentence here. Second one, with a clause; and more words follow it. Third.";
+        var pieces = NarrationCoordinator.SynthesisPieces(text, 30);
+        Assert.All(pieces, p => Assert.InRange(p.Length, 1, 30));
+        Assert.All(pieces, p => Assert.False(char.IsWhiteSpace(text[p.Start])));
+        Assert.Equal("First sentence here.", text.Substring(pieces[0].Start, pieces[0].Length));
+        Assert.Equal("Second one, with a clause;", text.Substring(pieces[1].Start, pieces[1].Length));
+        Assert.Equal(text.Replace(" ", ""), string.Concat(pieces.Select(p => text.Substring(p.Start, p.Length))).Replace(" ", ""));
+
+        // No break at all: cut at the limit rather than refuse.
+        var word = NarrationCoordinator.SynthesisPieces(new string('x', 70), 30);
+        Assert.Equal([30, 30, 10], word.Select(p => p.Length));
+        Assert.Single(NarrationCoordinator.SynthesisPieces("  short  ", 30));
+        Assert.Empty(NarrationCoordinator.SynthesisPieces("   ", 30));
+    }
+
     [Fact]
     public async Task Lookahead_IsBoundedSoABookIsNotSynthesisedBeforePlayback()
     {

@@ -959,12 +959,6 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         }
 
         int maxChars = caps.MaxTextChars > 0 ? caps.MaxTextChars : int.MaxValue;
-        if (segment.SpokenText.Length > maxChars)
-        {
-            Publish(PlaybackState.Error, null, NarrationError.SpeechSynthesisFailed(
-                $"This passage exceeds the provider's {maxChars}-character limit. Split or shorten it before narration.", segment.Id));
-            return;
-        }
         string text = segment.SpokenText;
         var warnings = new List<string>();
 
@@ -972,8 +966,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         _stages[segment.Id] = PreparationStage.Synthesising;
         try
         {
-            result = await _tts.SynthesizeAsync(new TtsSynthesisRequest(
-                text, voice, segment.Language, format, 1.0, Seed: null, _options.RequestTimings), ct).ConfigureAwait(false);
+            result = await SynthesizeWithinLimitAsync(text, voice, segment.Language, format, maxChars, ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
@@ -1084,6 +1077,101 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         _aligning[segment.Id] = task;
         _ = task.ContinueWith(t => ((ICollection<KeyValuePair<string, Task>>)_aligning)
             .Remove(new KeyValuePair<string, Task>(segment.Id, t)), TaskScheduler.Default);
+    }
+
+    /// <summary>
+    /// Synthesises <paramref name="text"/>, in pieces when it is longer than the provider accepts,
+    /// joined into one clip. The pieces' timings are moved to their place in the clip and the text.
+    /// </summary>
+    /// <remarks>
+    /// The length of a passage is not known until it is spoken: an interpretation is written by the
+    /// model just before synthesis. One of 1,239 characters (a sentence leading into a display
+    /// equation) met Kokoro's 1,200-character limit and was refused with an error, and reading
+    /// stopped there for good: every Play reached the same passage. Splitting where a sentence, then a
+    /// clause, then a word ends keeps the voice's phrasing; the pieces are one passage to the reader.
+    /// </remarks>
+    private async Task<TtsSynthesisResult> SynthesizeWithinLimitAsync(
+        string text, string voice, string language, AudioFormat format, int maxChars, CancellationToken ct)
+    {
+        TtsSynthesisRequest Request(string piece) => new(piece, voice, language, format, 1.0, Seed: null, _options.RequestTimings);
+        if (text.Length <= maxChars) return await _tts.SynthesizeAsync(Request(text), ct).ConfigureAwait(false);
+
+        var pieces = SynthesisPieces(text, maxChars);
+        var pcm = new List<ReadOnlyMemory<byte>>();
+        var cues = new List<TimedCue>();
+        long frames = 0;
+        AudioFormat? produced = null;
+        TimingProvenance provenance = TimingProvenance.None;
+        var warnings = new List<string>();
+        foreach (var piece in pieces)
+        {
+            var part = await _tts.SynthesizeAsync(Request(text.Substring(piece.Start, piece.Length)), ct).ConfigureAwait(false);
+            if (part.IsSilentOrEmpty) return part;   // reported as silence by the caller, as for a whole passage
+            if (produced is { } first && first != part.Format)
+                throw new InvalidOperationException("The speech provider returned the pieces of one passage in different audio formats.");
+            produced = part.Format;
+            foreach (var cue in part.Timings)
+                cues.Add(cue with
+                {
+                    StartSample = cue.StartSample + frames,
+                    EndSample = cue.EndSample + frames,
+                    SpokenRange = cue.SpokenRange is { } r ? new TextRange(r.Start + piece.Start, r.Length) : null,
+                });
+            if (part.Timings.Count > 0) provenance = part.TimingProvenance;
+            frames += part.FrameCount;
+            pcm.Add(part.Pcm);
+            warnings.AddRange(part.Warnings);
+        }
+        var joined = new byte[pcm.Sum(p => p.Length)];
+        int offset = 0;
+        foreach (var p in pcm) { p.Span.CopyTo(joined.AsSpan(offset)); offset += p.Length; }
+        warnings.Add($"Synthesised in {pieces.Count} pieces: longer than the speech provider's {maxChars}-character limit.");
+        return new TtsSynthesisResult(joined, produced!.Value, frames, cues, provenance, null, null, warnings);
+    }
+
+    /// <summary>
+    /// Cuts <paramref name="text"/> into consecutive ranges of at most <paramref name="maxChars"/>,
+    /// each ending where a sentence ends if one does, else a clause, else a word, else at the limit.
+    /// A range never starts with whitespace (providers trim it, which would shift timings).
+    /// </summary>
+    public static IReadOnlyList<TextRange> SynthesisPieces(string text, int maxChars)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        if (maxChars < 1) throw new ArgumentOutOfRangeException(nameof(maxChars));
+        var pieces = new List<TextRange>();
+        int start = 0;
+        while (start < text.Length && char.IsWhiteSpace(text[start])) start++;
+        while (start < text.Length)
+        {
+            int end;
+            if (text.Length - start <= maxChars) end = text.Length;
+            else
+            {
+                int limit = start + maxChars;   // exclusive
+                end = LastBreak(text, start, limit, ".?!") ?? LastBreak(text, start, limit, ";:,") ?? LastBreak(text, start, limit, null) ?? limit;
+            }
+            int trimmedEnd = end;
+            while (trimmedEnd > start && char.IsWhiteSpace(text[trimmedEnd - 1])) trimmedEnd--;
+            if (trimmedEnd > start) pieces.Add(new TextRange(start, trimmedEnd - start));
+            start = end;
+            while (start < text.Length && char.IsWhiteSpace(text[start])) start++;
+        }
+        return pieces;
+
+        // The end (exclusive) of the last break in [from, limit): after a mark in "marks" followed by
+        // whitespace, or after whitespace itself when "marks" is null. Breaks in the first half are
+        // ignored, so a piece is never cut to a sliver.
+        static int? LastBreak(string s, int from, int limit, string? marks)
+        {
+            int floor = from + (limit - from) / 2;
+            for (int i = Math.Min(limit, s.Length) - 1; i > floor; i--)
+            {
+                if (!char.IsWhiteSpace(s[i])) continue;
+                if (marks is null) return i;
+                if (marks.Contains(s[i - 1])) return i;
+            }
+            return null;
+        }
     }
 
     private void AttachTimings(NarrationSegment segment, SpeechAsset asset, IReadOnlyList<string>? extra = null)
