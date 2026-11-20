@@ -23,6 +23,9 @@
          and the official Anthropic SDK (the version Core 0.94.0 builds against) for interpretation. -->
     <PackageVersion Include="RailReader.Core.Vlm.Anthropic" Version="0.94.0" />
     <PackageVersion Include="Anthropic" Version="13.10.0" />
+    <!-- The formula model (PP-FormulaNet_plus-M, ADR-0011) runs in-process on the ONNX Runtime that
+         RailReader.Core.Analysis 0.94.0 already brings; pinned here so it stays that one. -->
+    <PackageVersion Include="Microsoft.ML.OnnxRuntime" Version="1.32.0" />
 
     <!-- Pinned to the same 3.119.* RailReader.Renderer.Skia uses, so one native binary serves both. -->
     <PackageVersion Include="SkiaSharp" Version="3.119.4" />

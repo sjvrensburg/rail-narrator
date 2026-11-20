@@ -5,6 +5,10 @@ spoken in the original document, and follows the reading position — including
 mathematics: a language model you point it at (any OpenAI-compatible endpoint, local
 by default, or Claude) looks at each equation and each sentence with maths in it, and the
 narrator says what it *means* in the paper's own terms instead of reading notation.
+An optional formula model (PP-FormulaNet_plus-M, about 0.6 GB) transcribes display equations
+to LaTeX on your own computer in about a second each: the language model can be given that
+LaTeX with the page image or in place of it, and with no language model at all the equations
+are read by rule from it.
 With a layout model installed it also skips what a first reading skips: page
 furniture, footnotes, references, figures and table cells.
 
@@ -95,7 +99,7 @@ $S all --kokoro-model <path>         # whole chain, printed pass/fail summary
 | `RailNarrator.Pdf` | RailReaderCore adapter: extraction snapshots, page rasters rendered off the UI thread, coordinate transforms, hit-testing, overlays | Core, SkiaSharp |
 | `RailNarrator.Speech` | Phonon (Gradium's C library), Kokoro and ZONOS3 adapters, local MFA word alignment, PCM/WAV codecs | Domain, KokoroSharp |
 | `RailNarrator.Audio` | Output device, resampling, pitch-preserving speed, media clock | Domain |
-| `RailNarrator.Inference` | Maths interpretation (page image + context → words), transcription, verbalisation, validation, local rule reader; over an OpenAI-compatible endpoint or Claude | Domain, Core.Vlm, Anthropic SDK |
+| `RailNarrator.Inference` | Maths interpretation (page image + context → words), transcription, verbalisation, validation, local rule reader; over an OpenAI-compatible endpoint or Claude; the formula model in-process | Domain, Core.Vlm, Anthropic SDK, ONNX Runtime, SkiaSharp |
 | `RailNarrator.Infrastructure` | XDG settings, caches, model manifest and downloads, sidecar lifecycle | Domain |
 | `RailNarrator.App` | Avalonia views, commands, Skia-backed PDF surface | all of the above |
 
@@ -115,7 +119,8 @@ Recorded in `docs/decisions/`, each with the measurement that drove it:
 - **[ADR-0007](docs/decisions/ADR-0007-kokoro-on-the-gpu.md)** — Kokoro on the GPU through WebGPU (Vulkan), never CUDA or ROCm; fp32 with int32 tokens, every clip checked, CPU fallback
 - **[ADR-0008](docs/decisions/ADR-0008-heron-layout-model.md)** — Docling Heron as the layout model (FP32 on the GPU, INT8 on the CPU, XY-cut++ order), references found by their heading; 1.5–2.4× faster than PP-DocLayoutV3
 - **[ADR-0009](docs/decisions/ADR-0009-phonon-speech-engine.md)** — Phonon (Gradium, Apache 2.0) as a second speech engine through Gradium's C library: real-time factor 0.061 against Kokoro's 0.224 on the same CPU, word alignment 34/40 passages against 35/40; Maeve by default
-- **[ADR-0010](docs/decisions/ADR-0010-claude-for-maths.md)** — Claude as an option for both maths endpoints, beside any OpenAI-compatible one: Core's client for the vision model, Anthropic's .NET SDK for interpretation; tested against a stubbed transport, not yet against the real API
+- **[ADR-0010](docs/decisions/ADR-0010-claude-for-maths.md)** — Claude as an option for both maths endpoints, beside any OpenAI-compatible one: Core's client for the vision model, Anthropic's .NET SDK for interpretation; tested against a stubbed transport and, on one drawn equation, the real API
+- **[ADR-0011](docs/decisions/ADR-0011-formula-model.md)** — PP-FormulaNet_plus-M as a formula model for display equations, in-process on the CPU: its LaTeX given to the language model with or in place of the page image, read by rule when there is no interpretation, and checked against the page's text layer; 80 equations of one paper in 72 s, 15 of them compared with the page
 
 ## Guarantees worth stating plainly
 
@@ -138,7 +143,9 @@ Recorded in `docs/decisions/`, each with the measurement that drove it:
   directories and an inert annotation store.
 - **Nothing is uploaded without an explicitly configured remote endpoint.** Choosing
   Claude in Settings is such a configuration: each passage with maths then goes to
-  Anthropic as a page image with the text around it, and the dialogue says so. An API key
+  Anthropic as a page image with the text around it, and the dialogue says so. With the
+  formula model installed and "the formula model's LaTeX only" chosen, no page image is sent:
+  a display equation goes as LaTeX, and every passage as its text. An API key
   is either read from an environment variable you name, or typed into Settings and
   stored in `settings.json`, which is then written readable by you only (mode 0600);
   for Claude, a key given neither way is left to Anthropic's SDK to find

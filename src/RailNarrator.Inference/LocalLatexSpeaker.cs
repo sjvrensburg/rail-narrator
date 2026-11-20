@@ -27,7 +27,7 @@ namespace RailNarrator.Inference;
 public static partial class LocalLatexSpeaker
 {
     /// <summary>Changes whenever the phrasing changes; part of cache keys for readings made with it.</summary>
-    public const string Version = "clearspeak/2";
+    public const string Version = "clearspeak/3";
 
     /// <summary>Renders a LaTeX expression as spoken English. Deterministic and offline.</summary>
     public static string Speak(string latex)
@@ -143,7 +143,8 @@ public static partial class LocalLatexSpeaker
         ["div"] = "divided by", ["pm"] = "plus or minus", ["mp"] = "minus or plus", ["cup"] = "union",
         ["cap"] = "intersection", ["setminus"] = "minus", ["circ"] = "composed with", ["otimes"] = "tensor",
         ["oplus"] = "direct sum", ["odot"] = "times", ["mid"] = "given", ["nmid"] = "does not divide",
-        ["vert"] = "given", ["land"] = "and", ["wedge"] = "and", ["lor"] = "or", ["vee"] = "or",
+        // A typed bar that did not pair up into an absolute value: "E(y | F)".
+        ["vert"] = "given", ["|"] = "given", ["land"] = "and", ["wedge"] = "and", ["lor"] = "or", ["vee"] = "or",
         ["forall"] = "for every", ["exists"] = "there exists", ["nexists"] = "there does not exist",
         ["neg"] = "not", ["lnot"] = "not", ["/"] = "over", ["!"] = "factorial",
     };

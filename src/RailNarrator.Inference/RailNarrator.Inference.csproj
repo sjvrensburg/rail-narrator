@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <RootNamespace>RailNarrator.Inference</RootNamespace>
-    <Description>Mathematical interpretation, transcription and verbalisation over an OpenAI-compatible endpoint or Claude, with closed-schema validation.</Description>
+    <Description>Mathematical interpretation, transcription and verbalisation over an OpenAI-compatible endpoint or Claude, with closed-schema validation, and a formula-recognition model in-process.</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../RailNarrator.Domain/RailNarrator.Domain.csproj" />
@@ -17,5 +17,8 @@
     <PackageReference Include="RailReader.Core.Vlm.Anthropic" />
     <!-- Claude for interpretation and verbalisation, which do not go through Core. -->
     <PackageReference Include="Anthropic" />
+    <!-- The formula model in-process: ONNX Runtime for the graph, Skia to decode the crop. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime" />
+    <PackageReference Include="SkiaSharp" />
   </ItemGroup>
 </Project>

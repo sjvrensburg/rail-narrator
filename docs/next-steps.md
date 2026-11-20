@@ -1,8 +1,8 @@
 # Next steps and open decisions
 
-Handover note, 19 November 2026, on the `feat/core-0.94.0-claude-maths` branch (from `main`
-after PR #38). It builds with 0 warnings; the test runner reports 592 passed and 14 skipped.
-`status.md` gives 589 passing and 17 opt-in, because it
+Handover note, 20 November 2026, on the `feat/formula-model` branch (from `main` after PR #39).
+It builds with 0 warnings; the test runner reports 655 passed and 16 skipped.
+`status.md` gives 652 passing and 19 opt-in, because it
 counts as opt-in the three Phonon tests that return early without an install and so report as
 passed. What is verified, and how it was measured, is in `status.md`. How to run the real models,
 the GUI and the audio path on a new machine is in `testing-real-world.md`.
@@ -18,6 +18,13 @@ narration.
 
 Since PR #10:
 
+- **A formula model for display equations** (ADR-0011, `status.md` item 85): PP-FormulaNet_plus-M
+  runs in process on the CPU and reads a display equation to LaTeX in about a second. The
+  language model can be given that LaTeX with the page image, in place of it, or not at all
+  (Settings ▸ Maths ▸ Formula model); a refused equation is read by rule from it; and with no
+  language model, display equations are read by rule where they were announced as unreadable.
+  Its LaTeX is checked against the page's text layer (Greek letters and decimal numbers). Run on
+  the GARCH paper only; 15 of its 80 transcriptions were compared with the page.
 - **Claude is an option for maths** (ADR-0010, `status.md` item 84): each maths endpoint in
   Settings ▸ Maths can be an OpenAI-compatible endpoint, as before, or Claude through Anthropic's
   API. Tested against a stubbed transport and, on one drawn equation, against the real API; not
@@ -78,6 +85,27 @@ Since PR #10:
 
 In rough priority order:
 
+- **The formula model with Heron, first** (`status.md` item 85). Heron is the layout model the
+  application picks when installed, and every formula measurement so far used PP-DocLayoutV3.
+  Heron has no class for an equation number, so its equation blocks may include the number, which
+  the model would transcribe and which would shrink the formula in its image (cut it out by the
+  text layer's geometry if so). `rail-narrator-mathbench` builds a PP-DocLayoutV3 backend only;
+  it needs a Heron option for this.
+- **Finish the comparison of the three settings**: `rail-narrator-mathbench --pages 2-6` with
+  `--evidence both` and `--evidence latex` against the image-only tally (71 interpreted, 14 by
+  rule, 776 s). The run with both was stopped after 16 passages. It decides whether `Both` should
+  stay the default.
+- **The formula model beyond one paper.** Run
+  `rail-narrator-mathbench --formula-model … --no-llm` on papers from other fields and
+  publishers. Proof-read more than 15 transcriptions. Then a text-only
+  language model with `--evidence latex`, which is the case the option exists for and has not
+  been run.
+- **Sentences with maths in the line** get nothing from the formula model: it reads a formula's
+  crop, not a line of text. They are 135 of the GARCH paper's 224 maths passages, the cheap ones
+  (about 3 s each on the local model). Reading them locally needs either the inline formulae's
+  boxes (the layout models have an inline-maths class; whether its boxes are tight enough to crop was
+  not looked at)
+  or a line-level model.
 - **Claude on a real paper** (`status.md` item 84). The five opt-in tests pass against Anthropic's
   real API, but they send one drawn equation. Next: `rail-narrator-mathbench --provider claude`
   on the GARCH paper, first with `--pages` or `--only` to see the cost of a passage, then the

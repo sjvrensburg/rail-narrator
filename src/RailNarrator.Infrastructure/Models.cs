@@ -183,7 +183,38 @@ public static class ModelManifest
         Required: false,
         FileName: "docling-layout-heron.onnx");
 
-    public static IReadOnlyList<ModelAsset> All { get; } = [KokoroFp16, KokoroFp32, KokoroWebGpu, KokoroVoices, ZonosBackbone, ZonosDecoderFull, LayoutHeronInt8, LayoutHeron, LayoutPpDocV3];
+    /// <summary>
+    /// PP-FormulaNet_plus-M (Baidu), the formula model: a display equation's image to LaTeX, on the
+    /// CPU. The file is OpenDataLab's ONNX export (the one MinerU 4 runs), with the decoding loop
+    /// inside the graph. Their repository carries no licence tag of its own and says "Original model
+    /// licenses and attribution remain applicable": the weights are Baidu's, Apache-2.0. The URL is
+    /// pinned to the repository commit; size and digest are of the file downloaded on the reference
+    /// machine and equal those in OpenDataLab's manifest. ADR-0011.
+    /// </summary>
+    public static ModelAsset FormulaModel { get; } = new(
+        Id: "pp-formulanet-plus-m",
+        Description: "PP-FormulaNet_plus-M formula model: reads a display equation's image to LaTeX, on the CPU.",
+        Url: "https://huggingface.co/opendatalab/MinerU-4_models_onnx/resolve/358310b4f64b95f9fefc372ad899356e4111f376/MFR/pp_formulanet_plus_m/PP-FormulaNet_plus-M.onnx",
+        Revision: "opendatalab/MinerU-4_models_onnx @ 358310b4 (ONNX export of PaddlePaddle/PP-FormulaNet_plus-M)",
+        Bytes: 591_263_297,
+        Sha256: "20a32595c2b30282dcd069e6295e9fad96115697beb66acb9b681b814006d193",
+        Licence: "Apache-2.0 (PaddlePaddle PP-FormulaNet_plus-M weights; ONNX export by OpenDataLab)",
+        Required: false,
+        FileName: "PP-FormulaNet_plus-M.onnx");
+
+    /// <summary>The formula model's <c>inference.yml</c>: its tokeniser's vocabulary. Needed beside <see cref="FormulaModel"/>.</summary>
+    public static ModelAsset FormulaModelConfig { get; } = new(
+        Id: "pp-formulanet-plus-m-config",
+        Description: "PP-FormulaNet_plus-M vocabulary (inference.yml). Needed beside the formula model.",
+        Url: "https://huggingface.co/opendatalab/MinerU-4_models_onnx/resolve/358310b4f64b95f9fefc372ad899356e4111f376/MFR/pp_formulanet_plus_m/PP-FormulaNet_plus-M_inference.yml",
+        Revision: "opendatalab/MinerU-4_models_onnx @ 358310b4 (PaddleX inference.yml of PP-FormulaNet_plus-M)",
+        Bytes: 2_244_564,
+        Sha256: "87b5f3d7f2b2fe553627d77b37f496608ca150ebd0ef62d362591edca47b5538",
+        Licence: "Apache-2.0 (PaddlePaddle)",
+        Required: false,
+        FileName: "PP-FormulaNet_plus-M_inference.yml");
+
+    public static IReadOnlyList<ModelAsset> All { get; } = [KokoroFp16, KokoroFp32, KokoroWebGpu, KokoroVoices, ZonosBackbone, ZonosDecoderFull, LayoutHeronInt8, LayoutHeron, LayoutPpDocV3, FormulaModel, FormulaModelConfig];
 
     public static ModelAsset? Find(string id) => All.FirstOrDefault(a => a.Id == id);
 

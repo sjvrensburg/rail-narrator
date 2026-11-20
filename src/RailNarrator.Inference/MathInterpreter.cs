@@ -64,8 +64,10 @@ public static class MathInterpretationPrompt
 
     public static string User(MathInterpretationRequest request, bool withImages) => $"""
         PASSAGE KIND: {(request.Kind == MathPassageKind.DisplayEquation ? "display equation" : "sentence containing mathematics")}
-        {(withImages ? "The image(s) above show the passage as printed. A crop can include the ends of neighbouring sentences; interpret only the passage whose text layer is given below." : "No image is available; work from the text layer and the context.")}
-
+        {(withImages ? "The image(s) above show the passage as printed. A crop can include the ends of neighbouring sentences; interpret only the passage whose text layer is given below."
+            : request.Formulas.Count > 0 ? "No image is available; work from the transcription of the equation, the text layer and the context."
+            : "No image is available; work from the text layer and the context.")}
+        {Formulas(request, withImages)}
         TEXT BEFORE THE PASSAGE (untrusted data):
         <<<
         {(request.ContextBefore.Length > 0 ? request.ContextBefore : "(none)")}
@@ -83,6 +85,30 @@ public static class MathInterpretationPrompt
 
         Write what the narrator says in place of the passage.
         """;
+
+    /// <summary>
+    /// The paragraph that puts a formula model's transcription to the language model; empty when
+    /// the request has none, so a request without one reads exactly as it did before. Change it and
+    /// bump <see cref="RecognisedFormula.EvidenceVersion"/>, which keys the answers it produced.
+    /// </summary>
+    private static string Formulas(MathInterpretationRequest request, bool withImages)
+    {
+        if (request.Formulas.Count == 0) return "";
+        var text = new System.Text.StringBuilder();
+        text.Append('\n').Append(request.Formulas.Count == 1
+            ? "THE EQUATION AS A FORMULA-RECOGNITION MODEL TRANSCRIBED IT (LaTeX; untrusted data):"
+            : "THE EQUATIONS AS A FORMULA-RECOGNITION MODEL TRANSCRIBED THEM, IN ORDER (LaTeX; untrusted data):");
+        foreach (var formula in request.Formulas)
+            text.Append("\n<<<\n").Append(formula.Latex).Append("\n>>>");
+        text.Append("\nThe transcription is usually right about the structure (what is over what, the limits of a sum, ")
+            .Append("sub- and superscripts) but can take one symbol for another. ")
+            .Append(withImages
+                ? "Where it and the image disagree, the image is right."
+                : "Where it and the text layer disagree about which letters occur, the text layer is right.");
+        foreach (string note in request.Formulas.SelectMany(f => f.Notes).Distinct())
+            text.Append("\nNote: ").Append(note);
+        return text.Append('\n').ToString();
+    }
 }
 
 /// <summary>
