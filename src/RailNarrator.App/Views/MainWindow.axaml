@@ -98,6 +98,7 @@
         <MenuItem Header="Download _Kokoro model…" Command="{Binding DownloadKokoroModel}" />
         <MenuItem Header="Download _layout model (Docling Heron INT8, 69 MB)…" Command="{Binding DownloadLayoutModel}" />
         <MenuItem Header="Download layout model for the _GPU (Docling Heron FP32, 171 MB)…" Command="{Binding DownloadLayoutModelGpu}" />
+        <MenuItem Header="Download _formula model (PP-FormulaNet_plus-M, 594 MB)…" Command="{Binding DownloadFormulaModel}" />
         <MenuItem Header="_Endpoints and API keys…" Command="{Binding OpenSettings}" />
         <MenuItem Header="_Test text LLM endpoint" Command="{Binding TestMathEndpoint}" />
         <MenuItem Header="Test _vision endpoint" Command="{Binding TestVisionEndpoint}" />
@@ -351,6 +352,7 @@
                 <TextBlock Text="{Binding TimingSummary}" FontSize="11" TextWrapping="Wrap" />
                 <TextBlock Text="{Binding MathEndpointSummary, StringFormat=Text LLM: {0}}" FontSize="11" TextWrapping="Wrap" />
                 <TextBlock Text="{Binding VisionEndpointSummary, StringFormat=Vision: {0}}" FontSize="11" TextWrapping="Wrap" />
+                <TextBlock Text="{Binding FormulaModelSummary, StringFormat=Formula model: {0}}" FontSize="11" TextWrapping="Wrap" />
                 <TextBlock Text="{Binding CacheBytes, StringFormat=Speech cache: {0} bytes}" FontSize="11" />
                 <ItemsControl ItemsSource="{Binding Notes}">
                   <ItemsControl.ItemTemplate>

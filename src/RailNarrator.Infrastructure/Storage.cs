@@ -166,6 +166,26 @@ public sealed record RailNarratorSettings
     [JsonIgnore]
     public MathThinkingPolicy EffectiveMathThinking => MathLlmDisableThinking ? MathThinkingPolicy.Off : MathLlmThinking;
 
+    /// <summary>
+    /// What the language model is given for a display equation when the formula model is installed:
+    /// the page image, the formula model's LaTeX, or both (the default). <c>Formula</c> sends no
+    /// image at all, so a model that cannot see will do; a sentence with maths in its line is then
+    /// interpreted from its text layer. Without the formula model it is always the image. ADR-0011.
+    /// </summary>
+    public MathEvidence MathLlmEvidence { get; init; } = MathEvidence.Both;
+
+    /// <summary>
+    /// Use the formula model (PP-FormulaNet_plus-M) when its two files are installed. It reads
+    /// display equations to LaTeX on the CPU; loaded, it holds about 1.1 GB of memory.
+    /// </summary>
+    public bool UseFormulaModel { get; init; } = true;
+
+    /// <summary>The formula model's ONNX file; defaults to the manifest's name in the models directory.</summary>
+    public string? FormulaModelPath { get; init; }
+
+    /// <summary>The formula model's <c>inference.yml</c> (its vocabulary); defaults likewise.</summary>
+    public string? FormulaModelConfigPath { get; init; }
+
     /// <summary>Which API the vision model speaks; see <see cref="MathLlmProvider"/>.</summary>
     public LlmProvider VlmProvider { get; init; } = LlmProvider.OpenAiCompatible;
 

@@ -139,6 +139,40 @@ public sealed class SettingsStoreFollowModeTests : IDisposable
         Assert.Equal(RailNarrator.Infrastructure.LlmProvider.Anthropic, store.Load().MathLlmProvider);
         Assert.Equal(RailNarrator.Infrastructure.LlmProvider.OpenAiCompatible, store.Load().VlmProvider);
     }
+
+    [Fact]
+    public void TheFormulaModelIsUsedWhenInstalled_AndTheEvidenceIsBothUnlessChosen()
+    {
+        string path = Path.Combine(_dir, "settings.json");
+        var store = new RailNarrator.Infrastructure.SettingsStore(path);
+        // A settings file from before the formula model existed.
+        File.WriteAllText(path, """{ "MathLlmBaseUrl": "http://127.0.0.1:8088/v1", "MathLlmModel": "m" }""");
+        Assert.True(store.Load().UseFormulaModel);
+        Assert.Equal(RailNarrator.Domain.MathEvidence.Both, store.Load().MathLlmEvidence);
+        Assert.Null(store.Load().FormulaModelPath);
+
+        store.Save(store.Load() with { MathLlmEvidence = RailNarrator.Domain.MathEvidence.Formula, UseFormulaModel = false });
+        Assert.Contains("\"MathLlmEvidence\": \"Formula\"", File.ReadAllText(path));
+        Assert.Equal(RailNarrator.Domain.MathEvidence.Formula, store.Load().MathLlmEvidence);
+        Assert.False(store.Load().UseFormulaModel);
+    }
+
+    [Fact]
+    public void TheFormulaModelsTwoFilesAreInTheManifest_PinnedAndNeverRequired()
+    {
+        var model = RailNarrator.Infrastructure.ModelManifest.FormulaModel;
+        var config = RailNarrator.Infrastructure.ModelManifest.FormulaModelConfig;
+        Assert.Contains(model, RailNarrator.Infrastructure.ModelManifest.All);
+        Assert.Contains(config, RailNarrator.Infrastructure.ModelManifest.All);
+        foreach (var asset in new[] { model, config })
+        {
+            Assert.False(asset.Required);
+            Assert.Equal(64, asset.Sha256!.Length);
+            // A commit, not a branch: the file behind the digest cannot change under the URL.
+            Assert.Matches("^https://huggingface.co/opendatalab/MinerU-4_models_onnx/resolve/[0-9a-f]{40}/", asset.Url);
+            Assert.Contains("Apache-2.0", asset.Licence, StringComparison.Ordinal);
+        }
+    }
 }
 
 /// <summary>Which layout model runs, and on which file per device (ADR-0008).</summary>

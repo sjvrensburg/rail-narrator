@@ -84,6 +84,15 @@ public sealed class ServiceRegistry : IAsyncDisposable
     public required IMathVerbaliser? MathVerbaliser { get; init; }
     public required IMathTranscriber? MathTranscriber { get; init; }
     public required IMathInterpreter? MathInterpreter { get; init; }
+
+    /// <summary>The formula model (ADR-0011) when it is installed and in use.</summary>
+    public required PpFormulaNetRecogniser? FormulaModel { get; init; }
+
+    /// <summary>
+    /// Maths passages get their words during playback (a language model, or the formula model read
+    /// by rule): the planner leaves them pending and Regenerate asks the resolver again.
+    /// </summary>
+    public required bool ResolvesMathsLate { get; init; }
     public required IReadOnlyList<string> StartupNotes { get; init; }
 
     /// <summary>The Kokoro provider when one is registered, for its device in the diagnostics.</summary>
@@ -210,6 +219,28 @@ public sealed class ServiceRegistry : IAsyncDisposable
             MathThinkingPolicy.Always => MathThinking.Always,
             _ => MathThinking.EquationsOnly,
         };
+
+        // The formula model (ADR-0011): a display equation's image to LaTeX, in-process. Used when
+        // its two files are installed; never fetched from here.
+        PpFormulaNetRecogniser? formulas = null;
+        var formulaFiles = new FormulaModelFiles(
+            settings.FormulaModelPath ?? Path.Combine(XdgPaths.Models, ModelManifest.FormulaModel.FileName),
+            settings.FormulaModelConfigPath ?? Path.Combine(XdgPaths.Models, ModelManifest.FormulaModelConfig.FileName));
+        if (settings.UseFormulaModel && formulaFiles.Exist)
+            formulas = new PpFormulaNetRecogniser(formulaFiles);
+        else if (settings.UseFormulaModel && (settings.FormulaModelPath is not null || settings.MathLlmEvidence == MathEvidence.Formula))
+            notes.Add($"The formula model is not installed (looked for '{formulaFiles.ModelPath}' and '{formulaFiles.ConfigPath}'), " +
+                      "so the language model is sent the page image. Download it from Models and endpoints " +
+                      $"({ModelManifest.FormulaModel.HumanSize}, {ModelManifest.FormulaModel.Licence}).");
+        IMathReader? formulaReader = formulas is null ? null : new FormulaMathReader();
+        var evidence = formulas is null ? MathEvidence.Image : settings.MathLlmEvidence;
+        string sent = evidence switch
+        {
+            MathEvidence.Formula => "as the formula model's LaTeX for a display equation and the text around it, without the page image",
+            MathEvidence.Both => "as a page image, with the formula model's LaTeX for a display equation and the text around it",
+            _ => "as a page image with the text around it",
+        };
+
         if (settings.MathLlmProvider == LlmProvider.Anthropic)
         {
             // Claude: choosing it is the configuration. The address is optional (a gateway), the
@@ -219,9 +250,9 @@ public sealed class ServiceRegistry : IAsyncDisposable
             var claudeInterpreter = new ClaudeMathInterpreter(claude, thinking: mathThinking);
             interpreter = claudeInterpreter;
             segmentResolver = new MathInterpretationResolver(interpreter, extraction, new DiskTextCache(),
-                PlannerOptionsFor(settings, interpret: true), reader: claudeInterpreter);
-            notes.Add($"Maths is interpreted by Claude ({claude.EffectiveModel}): each passage with maths is sent to {claude.Address} " +
-                      "as a page image with the text around it.");
+                PlannerOptionsFor(settings, interpret: true), reader: claudeInterpreter,
+                formulas: formulas, formulaReader: formulaReader, evidence: evidence);
+            notes.Add($"Maths is interpreted by Claude ({claude.EffectiveModel}): each passage with maths is sent to {claude.Address} {sent}.");
         }
         else if (!string.IsNullOrWhiteSpace(settings.MathLlmBaseUrl) && !string.IsNullOrWhiteSpace(settings.MathLlmModel))
         {
@@ -236,7 +267,20 @@ public sealed class ServiceRegistry : IAsyncDisposable
             // A refused interpretation is read mechanically from the same model's transcription of
             // the passage image, rather than from the garbled text layer.
             segmentResolver = new MathInterpretationResolver(interpreter, extraction, new DiskTextCache(),
-                PlannerOptionsFor(settings, interpret: true), reader: (IMathReader)interpreter);
+                PlannerOptionsFor(settings, interpret: true), reader: (IMathReader)interpreter,
+                formulas: formulas, formulaReader: formulaReader, evidence: evidence);
+            if (formulas is not null)
+                notes.Add($"Each passage with maths is sent to the language model {sent}.");
+        }
+        else if (formulas is not null)
+        {
+            // No language model, but the formula model: a display equation is transcribed during
+            // playback and read by rule; a sentence with maths keeps its printed reading.
+            segmentResolver = new MathInterpretationResolver(null, extraction, new DiskTextCache(),
+                PlannerOptionsFor(settings, interpret: true), formulas: formulas, formulaReader: formulaReader);
+            notes.Add("No LLM is configured for maths. Display equations are read by rule from the formula model's " +
+                      "transcription (the notation, not its meaning) and sentences with maths are read as printed; set a " +
+                      "language model in Settings to have them interpreted.");
         }
         else
         {
@@ -258,6 +302,12 @@ public sealed class ServiceRegistry : IAsyncDisposable
             transcriber = new VlmMathTranscriber(vlm,
                 new VlmEndpointConfig(settings.VlmBaseUrl, settings.VlmModel, settings.ResolveVlmApiKey()),
                 extraction);
+        }
+        else if (formulas is not null)
+        {
+            // The older reading modes transcribe an equation before reading it: with no vision
+            // model configured, the formula model is the transcriber.
+            transcriber = new FormulaModelTranscriber(formulas);
         }
 
         string alignmentRoot = Path.Combine(XdgPaths.Data, "alignment");
@@ -312,6 +362,8 @@ public sealed class ServiceRegistry : IAsyncDisposable
             MathVerbaliser = verbaliser,
             MathTranscriber = transcriber,
             MathInterpreter = interpreter,
+            FormulaModel = formulas,
+            ResolvesMathsLate = segmentResolver is not null,
             StartupNotes = notes,
             Kokoro = kokoro,
             LayoutSummary = backend.Capabilities.Classes.Count > 0
@@ -359,7 +411,7 @@ public sealed class ServiceRegistry : IAsyncDisposable
         return new NarrationPlanner(
             MathVerbaliser,
             resolver,
-            PlannerOptionsFor(settings, interpret: MathInterpreter is not null),
+            PlannerOptionsFor(settings, interpret: ResolvesMathsLate),
             localMathReader: LocalMathReader.Reader);
     }
 
@@ -464,6 +516,7 @@ public sealed class ServiceRegistry : IAsyncDisposable
         AudioDevice.Dispose();
         if (Sidecar is not null) await Sidecar.DisposeAsync().ConfigureAwait(false);
         if (MathVerbaliser is IDisposable disposableVerbaliser) disposableVerbaliser.Dispose();
+        FormulaModel?.Dispose();
         Extraction.Dispose();
         Models.Dispose();
         foreach (string id in SpeechProviders.RegisteredIds)

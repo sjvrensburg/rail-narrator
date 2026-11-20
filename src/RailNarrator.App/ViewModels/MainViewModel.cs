@@ -131,6 +131,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         DownloadKokoroModel = new RelayCommand(() => DownloadModelAsync(ModelManifest.KokoroFp16), () => !Busy, OnCommandError);
         DownloadLayoutModel = new RelayCommand(() => DownloadModelAsync(ModelManifest.LayoutHeronInt8), () => !Busy, OnCommandError);
         DownloadLayoutModelGpu = new RelayCommand(() => DownloadModelAsync(ModelManifest.LayoutHeron), () => !Busy, OnCommandError);
+        // The vocabulary first: the model is of no use without it, and it is the small one.
+        DownloadFormulaModel = new RelayCommand(() => DownloadModelAsync(ModelManifest.FormulaModelConfig, ModelManifest.FormulaModel), () => !Busy, OnCommandError);
         RegenerateMaths = new RelayCommand(() => RegenerateMathsAsync(), () => MathsReview is { CanRegenerate: true }, OnCommandError);
         ApplyMathsEdit = new RelayCommand(() => ApplyMathsEditAsync(), () => !Busy, OnCommandError);
     }
@@ -709,6 +711,11 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         ? $"{url} / {_services.CurrentSettings.VlmModel}"
         : "not configured";
 
+    /// <summary>Whether display equations are transcribed by the formula model (ADR-0011).</summary>
+    public string FormulaModelSummary => _services.FormulaModel is not null
+        ? "PP-FormulaNet_plus-M, on the CPU"
+        : _services.CurrentSettings.UseFormulaModel ? "not installed" : "switched off";
+
     /// <summary>Kokoro has loaded: say where it runs, and why not on the GPU when that was wanted.</summary>
     private void OnKokoroDeviceSettled() => Dispatcher.UIThread.Post(() =>
     {
@@ -766,6 +773,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     /// <summary>Docling Heron FP32, the layout model on a GPU.</summary>
     public RelayCommand DownloadLayoutModelGpu { get; }
+
+    /// <summary>PP-FormulaNet_plus-M and its vocabulary (ADR-0011).</summary>
+    public RelayCommand DownloadFormulaModel { get; }
     public RelayCommand RegenerateMaths { get; }
     public RelayCommand ApplyMathsEdit { get; }
 
@@ -1226,7 +1236,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             SpokenVersion: segment.SpokenText,
             Warnings: segment.Warnings,
             Provenance: segment.Provenance,
-            CanRegenerate: (_services.MathVerbaliser is not null || _services.MathInterpreter is not null) && unit is not null);
+            CanRegenerate: (_services.MathVerbaliser is not null || _services.ResolvesMathsLate) && unit is not null);
         OnPropertyChanged(nameof(MathsReview));
     }
 
@@ -1234,7 +1244,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     {
         if (MathsReview is null || Plan is null || _snapshot is null) return;
         var unit = Plan.Segment(MathsReview.SegmentId)?.ReadingUnitIds.Select(id => Plan.Unit(id)).FirstOrDefault(u => u is not null);
-        if (_services.MathInterpreter is not null && unit is { Kind: ReadingUnitKind.DisplayMath } or { ContainsMaths: true })
+        if (_services.ResolvesMathsLate && unit is { Kind: ReadingUnitKind.DisplayMath } or { ContainsMaths: true })
         {
             // An interpreted passage: ask the model again for this one passage, bypassing its cache.
             Busy = true;
@@ -1332,19 +1342,24 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         finally { Busy = false; }
     }
 
-    private async Task DownloadModelAsync(ModelAsset asset)
+    /// <summary>Downloads a model's files in the order given; the last one names the model in the messages.</summary>
+    private async Task DownloadModelAsync(params ModelAsset[] assets)
     {
+        var asset = assets[^1];
         Busy = true;
         try
         {
-            // The size and licence are shown before anything is fetched; a surprise multi-hundred-MB
-            // download is not acceptable behaviour for a local-first app.
-            StatusMessage = $"Downloading {asset.Id} ({asset.HumanSize}, {asset.Licence})…";
-            await _services.Models.DownloadAsync(asset, new Progress<DownloadProgress>(p =>
-                Dispatcher.UIThread.Post(() => StatusMessage =
-                    p.BytesTotal > 0
-                        ? $"{p.Phase}: {p.BytesReceived / 1_000_000.0:F1} / {p.BytesTotal / 1_000_000.0:F1} MB"
-                        : $"{p.Phase}…")));
+            foreach (var file in assets)
+            {
+                // The size and licence are shown before anything is fetched; a surprise multi-hundred-MB
+                // download is not acceptable behaviour for a local-first app.
+                StatusMessage = $"Downloading {file.Id} ({file.HumanSize}, {file.Licence})…";
+                await _services.Models.DownloadAsync(file, new Progress<DownloadProgress>(p =>
+                    Dispatcher.UIThread.Post(() => StatusMessage =
+                        p.BytesTotal > 0
+                            ? $"{p.Phase}: {p.BytesReceived / 1_000_000.0:F1} / {p.BytesTotal / 1_000_000.0:F1} MB"
+                            : $"{p.Phase}…")));
+            }
             StatusMessage = $"{asset.Id} downloaded and verified.";
             Notes.Add($"{asset.Id} is installed at {_services.Models.PathFor(asset)}. Restart to enable it.");
             ShowNotice($"{asset.Id} is installed. Rail Narrator uses it after a restart.", "Restart now", () => RestartRequested?.Invoke());
@@ -1401,6 +1416,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         DownloadKokoroModel.RaiseCanExecuteChanged();
         DownloadLayoutModel.RaiseCanExecuteChanged();
         DownloadLayoutModelGpu.RaiseCanExecuteChanged();
+        DownloadFormulaModel.RaiseCanExecuteChanged();
         ApplyMathsEdit.RaiseCanExecuteChanged();
     }
 

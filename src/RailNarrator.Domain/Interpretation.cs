@@ -21,6 +21,10 @@ public enum MathPassageKind
 /// The passage contains a display equation — itself, or the equation a lead-in sentence introduces.
 /// An interpreter may spend more effort on these: they carry the most meaning per word.
 /// </param>
+/// <param name="Formulas">
+/// The passage's display equations as a formula model transcribed them, in reading order; none when
+/// no formula model is in use or it could not read them. A transcription can misread a symbol.
+/// </param>
 public sealed record MathInterpretationRequest(
     MathPassageKind Kind,
     string TextLayer,
@@ -28,7 +32,11 @@ public sealed record MathInterpretationRequest(
     string ContextBefore,
     string ContextAfter,
     string Language,
-    bool HasDisplayEquation = false);
+    bool HasDisplayEquation = false,
+    IReadOnlyList<RecognisedFormula>? Formulas = null)
+{
+    public IReadOnlyList<RecognisedFormula> Formulas { get; init; } = Formulas ?? [];
+}
 
 /// <summary>An interpretation, or why there is none.</summary>
 /// <param name="Spoken">Words to speak in place of the passage. Null when rejected.</param>
@@ -119,11 +127,21 @@ public interface ISegmentResolver
 /// the prose around the notation is still worth hearing. A display equation becomes the explicit
 /// "could not be read" announcement: its text layer is not a reading of it.
 /// </para>
+/// <para>
+/// With an <see cref="IFormulaRecogniser"/>, a display equation is also transcribed locally from a
+/// tight crop of its own, and <see cref="MathEvidence"/> decides what the interpreter is given: the
+/// page image, the transcription, or both. A transcription the interpreter did not turn into an
+/// answer is read by rule (the formula reader) before the interpreter's own transcription is asked
+/// for, and with no interpreter at all that reading is what a display equation gets.
+/// </para>
 /// </remarks>
 public sealed class MathInterpretationResolver : ISegmentResolver
 {
-    private readonly IMathInterpreter _interpreter;
+    private readonly IMathInterpreter? _interpreter;
     private readonly IMathReader? _reader;
+    private readonly IFormulaRecogniser? _formulas;
+    private readonly IMathReader? _formulaReader;
+    private readonly MathEvidence _evidence;
     private readonly IExtractionSource? _crops;
     private readonly ITextCache? _cache;
     private readonly NarrationPlannerOptions _options;
@@ -131,18 +149,36 @@ public sealed class MathInterpretationResolver : ISegmentResolver
     private readonly int _contextAfterChars;
     private readonly int _cropPixelWidth;
 
+    /// <summary>
+    /// Pixels across an equation's crop for the formula model. It scales every crop into a 384 px
+    /// square, so more than this adds nothing; less loses the sub- and superscripts of a wide equation.
+    /// </summary>
+    public const int FormulaCropPixelWidth = 1024;
+
+    /// <param name="interpreter">The language model; null when none is configured and a formula model alone reads display equations.</param>
+    /// <param name="formulas">A formula model for display equations, or null.</param>
+    /// <param name="formulaReader">Reads a request's <see cref="MathInterpretationRequest.Formulas"/> by rule, with no model call.</param>
+    /// <param name="evidence">What the interpreter is given when a formula model is in use; without one it is the image.</param>
     public MathInterpretationResolver(
-        IMathInterpreter interpreter,
+        IMathInterpreter? interpreter,
         IExtractionSource? crops = null,
         ITextCache? cache = null,
         NarrationPlannerOptions? options = null,
         int contextBeforeChars = 1500,
         int contextAfterChars = 400,
         int cropPixelWidth = 1400,
-        IMathReader? reader = null)
+        IMathReader? reader = null,
+        IFormulaRecogniser? formulas = null,
+        IMathReader? formulaReader = null,
+        MathEvidence evidence = MathEvidence.Both)
     {
-        _interpreter = interpreter ?? throw new ArgumentNullException(nameof(interpreter));
+        if (interpreter is null && (formulas is null || formulaReader is null))
+            throw new ArgumentException("Without an interpreter, a formula model and its reader are needed.", nameof(interpreter));
+        _interpreter = interpreter;
         _reader = reader;
+        _formulas = formulas;
+        _formulaReader = formulaReader;
+        _evidence = formulas is null ? MathEvidence.Image : evidence;
         _crops = crops;
         _cache = cache;
         _options = options ?? NarrationPlannerOptions.Default;
@@ -188,33 +224,70 @@ public sealed class MathInterpretationResolver : ISegmentResolver
                 OriginalText = string.Join(" ", parts.Select(p => p.OriginalText)), ContainsMaths = true };
         var kind = unit.Kind == ReadingUnitKind.DisplayMath ? MathPassageKind.DisplayEquation : MathPassageKind.SentenceWithMaths;
 
-        if (!await _interpreter.IsAvailableAsync(ct).ConfigureAwait(false))
-            return Fallback(segment, unit, "The maths interpreter is not reachable, so this passage was not interpreted.");
+        bool hasEquation = parts.Any(p => p.Kind == ReadingUnitKind.DisplayMath);
+        bool canInterpret = _interpreter is not null && await _interpreter.IsAvailableAsync(ct).ConfigureAwait(false);
+        string unavailable = _interpreter is null
+            ? "No language model is configured for maths, so this passage was not interpreted."
+            : "The maths interpreter is not reachable, so this passage was not interpreted.";
+        // Without an interpreter only a display equation can still be read, from the formula model.
+        if (!canInterpret && !(hasEquation && _formulas is not null && _formulaReader is not null))
+            return Fallback(segment, unit, unavailable);
 
-        var (images, cropProblem) = await CropsAsync(unit, ct).ConfigureAwait(false);
+        var warnings = new List<string>();
+        var formulas = hasEquation ? await FormulasAsync(parts, refresh, warnings, ct).ConfigureAwait(false) : [];
+        // The image goes to the interpreter unless the reader chose the transcription alone.
+        IReadOnlyList<ReadOnlyMemory<byte>> images = [];
+        if (canInterpret && _evidence != MathEvidence.Formula)
+        {
+            (images, string? cropProblem) = await CropsAsync(unit, ct).ConfigureAwait(false);
+            if (cropProblem is not null) warnings.Add(cropProblem);
+        }
+        if (warnings.Count > 0) segment = segment with { Warnings = segment.Warnings.Concat(warnings).Distinct().ToArray() };
+
         var request = new MathInterpretationRequest(kind, unit.OriginalText, images,
             ContextBefore(plan, unitIndex), ContextAfter(plan, lastIndex), segment.Language,
-            HasDisplayEquation: parts.Any(p => p.Kind == ReadingUnitKind.DisplayMath));
+            HasDisplayEquation: hasEquation, Formulas: formulas);
 
-        string key = CacheKey.Sha256Hex(string.Join("␟", "interpret/1", _interpreter.Revision, kind.ToString(),
+        // A request without a formula is keyed exactly as it was before formula models existed.
+        var keyParts = new List<string>
+        {
+            "interpret/1", _interpreter?.Revision ?? "no-interpreter", kind.ToString(),
             request.TextLayer, request.ContextBefore, request.ContextAfter, request.Language,
-            string.Join(",", images.Select(i => CacheKey.Sha256Hex(i.Span)))));
+            string.Join(",", images.Select(i => CacheKey.Sha256Hex(i.Span))),
+        };
+        if (formulas.Count > 0)
+        {
+            keyParts.Add(RecognisedFormula.EvidenceVersion);
+            keyParts.AddRange(formulas.Select(f => f.Latex + "␞" + string.Join("␞", f.Notes)));
+        }
+        string key = CacheKey.Sha256Hex(string.Join("␟", keyParts));
+
+        if (!canInterpret)
+            return await ReadFormulasAsync(segment, request, key, refresh, unavailable, ct).ConfigureAwait(false)
+                   ?? Fallback(segment, unit, unavailable);
 
         string? spoken = _cache is null || refresh ? null : await _cache.TryGetAsync(key, ct).ConfigureAwait(false);
-        var warnings = new List<string>();
-        if (cropProblem is not null) { warnings.Add(cropProblem); segment = segment with { Warnings = [.. segment.Warnings, cropProblem] }; }
         if (spoken is null)
         {
             MathInterpretationResult result;
-            try { result = await _interpreter.InterpretAsync(request, ct).ConfigureAwait(false); }
+            try { result = await _interpreter!.InterpretAsync(request, ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) { result = MathInterpretationResult.Reject($"request failed: {ex.Message}"); }
 
             if (!result.Succeeded)
             {
                 string reason = "The interpretation was rejected: " + string.Join("; ", result.Problems);
-                return await ReadMechanicallyAsync(segment, request, key, refresh, reason, ct).ConfigureAwait(false)
-                       ?? Fallback(segment, unit, reason);
+                // An equation alone is read from the formula model's transcription, which is already
+                // made. A sentence leading into one is better read whole from the interpreter's own
+                // transcription, which also reads the maths inside the sentence; the formula model
+                // can only supply the equation after the sentence as printed.
+                return kind == MathPassageKind.DisplayEquation
+                    ? await ReadFormulasAsync(segment, request, key, refresh, reason, ct).ConfigureAwait(false)
+                      ?? await ReadMechanicallyAsync(segment, request, key, refresh, reason, ct).ConfigureAwait(false)
+                      ?? Fallback(segment, unit, reason)
+                    : await ReadMechanicallyAsync(segment, request, key, refresh, reason, ct).ConfigureAwait(false)
+                      ?? await ReadFormulasAsync(segment, request, key, refresh, reason, ct).ConfigureAwait(false)
+                      ?? Fallback(segment, unit, reason);
             }
             spoken = result.Spoken!.Trim();
             warnings.AddRange(result.Warnings);
@@ -225,7 +298,11 @@ public sealed class MathInterpretationResolver : ISegmentResolver
             }
         }
 
-        warnings.Add("Interpreted by a language model from the page image and its context; check it against the original.");
+        warnings.Add(formulas.Count == 0
+            ? "Interpreted by a language model from the page image and its context; check it against the original."
+            : images.Count == 0
+                ? "Interpreted by a language model from a formula model's transcription of the equation and its context; check it against the original."
+                : "Interpreted by a language model from the page image, a formula model's transcription and the context; check it against the original.");
         // A paraphrase has no word-for-word correspondence with the glyphs, so the whole passage is
         // linked to the whole utterance (ADR-0004: no invented word timings).
         return segment with
@@ -240,15 +317,56 @@ public sealed class MathInterpretationResolver : ISegmentResolver
     }
 
     /// <summary>The <see cref="IMathReader"/>'s reading, cached like an interpretation; null when there is none.</summary>
-    private async Task<NarrationSegment?> ReadMechanicallyAsync(NarrationSegment segment, MathInterpretationRequest request,
+    private Task<NarrationSegment?> ReadMechanicallyAsync(NarrationSegment segment, MathInterpretationRequest request,
+        string interpretationKey, bool refresh, string reason, CancellationToken ct)
+        => ReadByRuleAsync(_reader, "mathspeak/1", segment, request, interpretationKey, refresh, reason,
+            "Read mechanically from a transcription of the page image: it says the notation, not its meaning. Check it against the original.", ct);
+
+    /// <summary>
+    /// The formula model's transcription read by rule; null when there is none or it cannot be read
+    /// reliably. For a sentence leading into its equation, the sentence keeps its printed reading
+    /// and the equation's announcement becomes the reading.
+    /// </summary>
+    private async Task<NarrationSegment?> ReadFormulasAsync(NarrationSegment segment, MathInterpretationRequest request,
         string interpretationKey, bool refresh, string reason, CancellationToken ct)
     {
-        if (_reader is null) return null;
-        string key = CacheKey.Sha256Hex(string.Join("␟", "mathspeak/1", _reader.Revision, interpretationKey));
+        if (_formulaReader is null || request.Formulas.Count == 0) return null;
+        // The reader is asked for the equations alone, whatever passage they came in.
+        var equations = request with
+        {
+            Kind = MathPassageKind.DisplayEquation, Images = [],
+            TextLayer = string.Join(" ", request.Formulas.Select(f => f.TextLayer)),
+        };
+        const string label = "Read mechanically from a formula model's transcription of the equation: it says the notation, not its meaning. Check it against the original.";
+        if (request.Kind == MathPassageKind.DisplayEquation)
+            return await ReadByRuleAsync(_formulaReader, "formulaspeak/1", segment, equations, interpretationKey, refresh, reason, label, ct).ConfigureAwait(false);
+
+        // The planner's lead-in: the sentence as printed, then the announcement linked to the equation.
+        string announcement = _options.AnnouncementTemplate;
+        int start = segment.SpokenText.Length - announcement.Length;
+        if (start <= 0 || !segment.SpokenText.EndsWith(announcement, StringComparison.Ordinal)
+            || segment.SourceLinks.LastOrDefault() is not { } equationLink || equationLink.SpokenRange.Start != start)
+            return null;
+        var read = await ReadByRuleAsync(_formulaReader, "formulaspeak/1", segment, equations, interpretationKey, refresh, reason, label, ct).ConfigureAwait(false);
+        if (read is null) return null;
+        string text = segment.SpokenText[..start] + read.SpokenText;
+        return read with
+        {
+            SpokenText = text,
+            SourceLinks = [.. segment.SourceLinks.Take(segment.SourceLinks.Count - 1), new SourceLink(new TextRange(start, read.SpokenText.Length), equationLink.AnchorIds)],
+            Warnings = read.Warnings.Append("The sentence before the equation is read as printed.").Distinct().ToArray(),
+        };
+    }
+
+    private async Task<NarrationSegment?> ReadByRuleAsync(IMathReader? reader, string keyPrefix, NarrationSegment segment,
+        MathInterpretationRequest request, string interpretationKey, bool refresh, string reason, string label, CancellationToken ct)
+    {
+        if (reader is null) return null;
+        string key = CacheKey.Sha256Hex(string.Join("␟", keyPrefix, reader.Revision, interpretationKey));
         string? spoken = _cache is null || refresh ? null : await _cache.TryGetAsync(key, ct).ConfigureAwait(false);
         if (spoken is null)
         {
-            try { spoken = (await _reader.ReadAsync(request, ct).ConfigureAwait(false))?.Trim(); }
+            try { spoken = (await reader.ReadAsync(request, ct).ConfigureAwait(false))?.Trim(); }
             catch (OperationCanceledException) { throw; }
             catch (Exception) { spoken = null; }
             if (string.IsNullOrEmpty(spoken)) return null;
@@ -264,11 +382,68 @@ public sealed class MathInterpretationResolver : ISegmentResolver
             Provenance = ScriptProvenance.LocalRule,
             ScriptRevision = segment.ScriptRevision + 1,
             SourceLinks = segment.AnchorIds.Count > 0 ? [new SourceLink(new TextRange(0, spoken.Length), segment.AnchorIds)] : [],
-            Warnings = segment.Warnings.Concat([reason,
-                "Read mechanically from a transcription of the page image: it says the notation, not its meaning. Check it against the original."])
-                .Distinct().ToArray(),
+            Warnings = segment.Warnings.Concat([reason, label]).Distinct().ToArray(),
         };
     }
+
+    /// <summary>
+    /// The passage's display equations as the formula model reads them, each from a tight crop of its
+    /// own and reconciled with its text layer. An equation the model cannot read is left out, with a
+    /// warning; a transcription is cached by its crop, so it is made once.
+    /// </summary>
+    private async Task<IReadOnlyList<RecognisedFormula>> FormulasAsync(IReadOnlyList<ReadingUnit> parts, bool refresh,
+        List<string> warnings, CancellationToken ct)
+    {
+        if (_formulas is null || _crops is null || (_evidence == MathEvidence.Image && _interpreter is not null)) return [];
+        var formulas = new List<RecognisedFormula>();
+        foreach (var equation in parts.Where(p => p.Kind == ReadingUnitKind.DisplayMath))
+        {
+            var pieces = new List<string>();
+            string? problem = null;
+            foreach (var page in equation.Anchors.GroupBy(a => a.PageIndex))
+            {
+                if (PageRect.UnionAll(page.SelectMany(a => a.Rects).Where(r => !r.IsEmpty).ToList()) is not { } bounds) continue;
+                try
+                {
+                    var png = await _crops.RenderCropPngAsync(page.First().Extraction, page.Key, FormulaCrop(bounds), FormulaCropPixelWidth, ct).ConfigureAwait(false);
+                    if (png is not { IsEmpty: false } bytes) { problem = "its image could not be rendered"; break; }
+                    string key = CacheKey.Sha256Hex(string.Join("␟", "formula/1", _formulas.Revision, CacheKey.Sha256Hex(bytes.Span)));
+                    string? latex = _cache is null || refresh ? null : await _cache.TryGetAsync(key, ct).ConfigureAwait(false);
+                    if (latex is null)
+                    {
+                        var read = await _formulas.RecogniseAsync(bytes, ct).ConfigureAwait(false);
+                        if (!read.Succeeded) { problem = read.Problem ?? "it returned nothing"; break; }
+                        latex = read.Latex!;
+                        if (_cache is not null)
+                        {
+                            try { await _cache.PutAsync(key, latex, ct).ConfigureAwait(false); }
+                            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+                        }
+                    }
+                    pieces.Add(latex);
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex) { problem = $"{ex.GetType().Name}: {ex.Message}"; break; }
+            }
+            if (problem is not null || pieces.Count == 0)
+            {
+                warnings.Add($"The formula model could not read the equation ({problem ?? "it has no region on the page"}).");
+                continue;
+            }
+            var formula = FormulaTextLayerCheck.Reconcile(string.Join(" ", pieces), equation.OriginalText);
+            warnings.AddRange(formula.Notes);
+            formulas.Add(formula);
+        }
+        return formulas;
+    }
+
+    /// <summary>
+    /// The crop a formula model reads: the equation's own bounds, a little wider and no taller. The
+    /// interpreter's crop is padded all round, which takes in the edge of the line above or below; a
+    /// formula model transcribes that ink too (on the GARCH paper it ran one equation on to its
+    /// 1,536-token limit).
+    /// </summary>
+    public static PageRect FormulaCrop(PageRect bounds) => new(bounds.Left - 2, bounds.Top, bounds.Right + 2, bounds.Bottom);
 
     private NarrationSegment Fallback(NarrationSegment segment, ReadingUnit? unit, string reason)
     {

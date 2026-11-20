@@ -14,6 +14,7 @@ half: running the real models, the real GUI and the real audio path. All the mea
 | PP-DocLayoutV3 layout model (`.onnx`) | RailReader2's model download (was at `~/.config/railreader2/models/PP-DocLayoutV3.onnx`) | `LayoutAnalyzer: "pp-doclayout-v3"`, `LayoutModelPath`; tests: `RAIL_NARRATOR_LAYOUT_MODEL` |
 | A multimodal LLM behind an OpenAI-compatible endpoint | llama.cpp `llama-server` (Vulkan build), loading `Ornith-1.5-35B-Q4_K_M.gguf` with `--mmproj mmproj-Ornith-1.5-35B-A3B-f16.gguf --jinja --parallel 1 --ctx-size 131072 --flash-attn on --cache-type-k q8_0 --cache-type-v q8_0 --alias ornith-1.5-35b-a3b --port 8088`. `--jinja` is needed for the thinking switch (`chat_template_kwargs.enable_thinking`) and `--mmproj` for page images | `MathLlmBaseUrl`, `MathLlmModel`, `MathLlmThinking` |
 | Claude, in place of that endpoint (optional; ADR-0010) | An Anthropic API key, or a profile from `ant auth login`. Each passage with maths is sent to Anthropic | `MathLlmProvider: "Anthropic"` (and `VlmProvider` for the vision model); `MathLlmModel` empty means `claude-opus-5-5`; `MathLlmBaseUrl` only for a gateway; tests: `RN_CLAUDE_INTEGRATION=1` (five tests, a few small paid requests), optionally `RN_CLAUDE_MODEL` |
+| The formula model, PP-FormulaNet_plus-M (optional; ADR-0011) | Models and endpoints ▸ Download formula model, or the two files from `opendatalab/MinerU-4_models_onnx` (`docs/model-manifest.json` has the pinned URLs and digests) put in `~/.local/share/rail-narrator/models` | `UseFormulaModel` (default on), `MathLlmEvidence: "Both"` (default), `"Image"` or `"Formula"`, `FormulaModelPath`, `FormulaModelConfigPath`; tests: `RAIL_NARRATOR_FORMULA_MODEL` |
 | MFA word alignment (optional, several GB) | `bash tools/setup-word-alignment.sh` | `MfaExecutable`, `MfaDictionaryPath`, `MfaAcousticModelPath`, `MfaG2pModelPath`; tests: `RN_MFA_*` including `RN_MFA_G2P` |
 | `libportaudio.so.2` | distro package | — |
 | WebGPU Kokoro model (optional) | `bash tools/kokoro-webgpu-model.sh` (downloads the fp32 export, converts it; ADR-0007) | `KokoroAcceleration: "Auto"` (default), `KokoroGpuModelPath`; tests: `RN_WEBGPU_INTEGRATION=1` with `RAIL_NARRATOR_KOKORO_MODEL` and `RAIL_NARRATOR_KOKORO_GPU_MODEL` |
@@ -47,7 +48,9 @@ that one.
 dotnet build tools/RailNarrator.MathBench -c Release
 tools/RailNarrator.MathBench/bin/Release/net10.0/rail-narrator-mathbench paper.pdf PP-DocLayoutV3.onnx \
     [--provider openai|claude] [--endpoint URL] [--model NAME] [--pages 2-8] [--only 12,24] \
-    [--thinking off|equations|always] [--max-tokens 4000] [--no-images] [--no-reader]
+    [--thinking off|equations|always] [--max-tokens 4000] [--no-images] [--no-reader] \
+    [--formula-model PP-FormulaNet_plus-M.onnx [--formula-config inference.yml] \
+     [--evidence image|latex|both] [--no-llm]]
 ```
 
 With `--provider claude` the passages go to Anthropic with the SDK's own credentials, `--model`
@@ -60,6 +63,13 @@ real model call. The whole GARCH paper takes about an hour on a single-slot loca
 run it in the background, redirected to a file, with `timeout`. `--only` takes the `#index`
 values from an earlier run, to repeat just the interesting passages. Answers vary from run to
 run, so compare tallies, not single passages.
+
+With `--formula-model` each display equation is also transcribed by the formula model, and
+`--evidence` chooses what the language model is given for it (the default is both). Each passage
+then prints the transcription and its time on a `TEX` line, and the tally ends with the formula
+model's own count and times. `--no-llm` leaves the language model out: display equations are read
+by rule from the transcription, which takes about a minute for the GARCH paper and needs no
+server. The model's `inference.yml` is looked for beside it as `<name>_inference.yml`.
 
 ## Driving the GUI without taking over the desktop
 

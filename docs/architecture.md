@@ -190,6 +190,16 @@ Claude (ADR-0010): Core's `AnthropicVlmClient` for transcription, and `ClaudeMat
 `ClaudeMathInterpreter` here. The prompts, the validators and the reading by rule are the same
 either way; only the transport differs.
 
+A third source of a transcription needs no endpoint: the formula model (ADR-0011).
+`PpFormulaNetRecogniser` runs PP-FormulaNet_plus-M in process on ONNX Runtime, on the CPU, behind
+`IFormulaRecogniser`, and reads a display equation from a tight crop of its own. Its LaTeX is
+compared with the equation's text layer (`FormulaTextLayerCheck`: Greek letters and decimal
+numbers) before anything is made of it. `MathInterpretationResolver` then gives the interpreter
+the page image, the LaTeX or both, as `MathLlmEvidence` says; reads the LaTeX by rule
+(`FormulaMathReader`, `LocalLatexSpeaker`) when an interpretation is refused or no language model
+is configured; and in the older reading modes `FormulaModelTranscriber` stands in for a vision
+model. A sentence with maths in its line has no formula to transcribe and is handled as before.
+
 Between them sits `MathResponseValidator`, the boundary between untrusted model
 output and the plan. It rejects LaTeX in the spoken text, invented source ids,
 coordinates and audio times, over-length output, malformed JSON; it drops an

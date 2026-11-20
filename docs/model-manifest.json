@@ -139,6 +139,37 @@
       "notes": "Used automatically once installed in the models directory (or set LayoutModelPath). Supplies block roles, so narration skips running headers, footers, page numbers, footnotes, references and figures, announces tables and algorithms instead of reading their cells, and takes display formulas from the model rather than geometry. Without it the model-free TextLayoutAnalyzer labels every block as text and those features fall back to geometric heuristics."
     },
     {
+      "id": "pp-formulanet-plus-m",
+      "component": "Formula model: display equations to LaTeX, on the CPU (optional)",
+      "file": "PP-FormulaNet_plus-M.onnx",
+      "source": "https://huggingface.co/opendatalab/MinerU-4_models_onnx/resolve/358310b4f64b95f9fefc372ad899356e4111f376/MFR/pp_formulanet_plus_m/PP-FormulaNet_plus-M.onnx",
+      "revision": "opendatalab/MinerU-4_models_onnx at commit 358310b4f64b95f9fefc372ad899356e4111f376: OpenDataLab's ONNX export (opset 17, the decoding loop inside the graph) of PaddlePaddle/PP-FormulaNet_plus-M",
+      "bytes": 591263297,
+      "sha256": "20a32595c2b30282dcd069e6295e9fad96115697beb66acb9b681b814006d193",
+      "licence": "Apache-2.0 (PaddlePaddle PP-FormulaNet_plus-M weights). OpenDataLab's repository carries no licence tag of its own and says 'Original model licenses and attribution remain applicable'.",
+      "required": false,
+      "optional": true,
+      "notes": "Downloaded with its vocabulary by Models and endpoints > Download formula model; used when both files are present and UseFormulaModel is on. Size and digest are of the file downloaded on the reference machine and equal those in OpenDataLab's manifest.json. Runs on the CPU only, one equation at a time. ADR-0011.",
+      "measured": {
+        "secondsPerEquation": "median 0.89, longest 2.0, over the 80 display equations of a 27-page econometrics paper (8 threads, 20 Nov 2026)",
+        "residentMemory": "1.14 GB peak for the recogniser reading those 80 crops",
+        "inputAndOutput": "float32 [batch, 1, 384, 384] in, int64 token ids out; end of sequence forced at 1,536 tokens"
+      }
+    },
+    {
+      "id": "pp-formulanet-plus-m-config",
+      "component": "Formula model: vocabulary",
+      "file": "PP-FormulaNet_plus-M_inference.yml",
+      "source": "https://huggingface.co/opendatalab/MinerU-4_models_onnx/resolve/358310b4f64b95f9fefc372ad899356e4111f376/MFR/pp_formulanet_plus_m/PP-FormulaNet_plus-M_inference.yml",
+      "revision": "opendatalab/MinerU-4_models_onnx at commit 358310b4f64b95f9fefc372ad899356e4111f376: PaddleX's inference.yml of PP-FormulaNet_plus-M",
+      "bytes": 2244564,
+      "sha256": "87b5f3d7f2b2fe553627d77b37f496608ca150ebd0ef62d362591edca47b5538",
+      "licence": "Apache-2.0 (PaddlePaddle)",
+      "required": false,
+      "optional": true,
+      "notes": "The tokeniser's 50,000-token vocabulary as YAML. Read by FormulaVocabulary, which needs only the vocab and added_tokens blocks. Needed beside pp-formulanet-plus-m. ADR-0011."
+    },
+    {
       "id": "mfa-english-acoustic",
       "component": "Word highlighting: forced-alignment acoustic model",
       "file": "alignment/models/acoustic/english_mfa.zip",

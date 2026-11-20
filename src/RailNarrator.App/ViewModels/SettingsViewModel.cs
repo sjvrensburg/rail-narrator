@@ -411,6 +411,40 @@ public sealed class SettingsViewModel : ViewModelBase
         new(MathThinkingPolicy.Off, "Never", "Answer directly: fastest. Endpoints without a thinking switch ignore this. Claude: low effort throughout."),
     ];
 
+    // The formula model (ADR-0011): what the language model is given for a display equation.
+    public IReadOnlyList<SettingOption<MathEvidence>> EvidenceOptions { get; } =
+    [
+        new(MathEvidence.Both, "The page image and the formula model's LaTeX", "The language model sees the equation and is given the transcription, and is told the image is right where they differ. Needs a model that accepts images."),
+        new(MathEvidence.Image, "The page image only", "As without the formula model, which is then used only when no language model is configured. Needs a model that accepts images."),
+        new(MathEvidence.Formula, "The formula model's LaTeX only", "No image is sent, so a model that cannot see will do and less goes to a hosted service. A sentence with maths in its line has no formula to transcribe and is interpreted from its text alone."),
+    ];
+
+    public SettingOption<MathEvidence>? Evidence
+    {
+        get => EvidenceOptions.First(o => o.Value == _s.MathLlmEvidence);
+        set { if (value is not null) Save(s => s with { MathLlmEvidence = value.Value }); }
+    }
+
+    public bool UseFormulaModel
+    {
+        get => _s.UseFormulaModel;
+        set => Save(s => s with { UseFormulaModel = value });
+    }
+
+    /// <summary>Whether the formula model's two files are where the application looks for them.</summary>
+    public string FormulaModelStatus
+    {
+        get
+        {
+            string model = _s.FormulaModelPath ?? Path.Combine(XdgPaths.Models, ModelManifest.FormulaModel.FileName);
+            string config = _s.FormulaModelConfigPath ?? Path.Combine(XdgPaths.Models, ModelManifest.FormulaModelConfig.FileName);
+            return File.Exists(model) && File.Exists(config)
+                ? $"Installed ({model}). It reads each display equation to LaTeX on this computer, in about a second, and its Greek letters and numbers are checked against the page's text."
+                : $"Not installed. Models and endpoints ▸ Download formula model fetches it ({ModelManifest.FormulaModel.HumanSize}, {ModelManifest.FormulaModel.Licence}). " +
+                  "Until then the language model is sent the page image.";
+        }
+    }
+
     public SettingOption<MathThinkingPolicy>? Thinking
     {
         get => ThinkingPolicies.First(o => o.Value == _s.EffectiveMathThinking);

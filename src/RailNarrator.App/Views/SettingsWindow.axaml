@@ -229,6 +229,17 @@
             <TextBlock Classes="hint" Text="A local server (llama.cpp, Ollama, LM Studio), a hosted OpenAI-compatible endpoint, or Claude. A model that accepts images reads the equation from the page as well as from its text." />
             <ContentControl Content="{Binding MathEndpoint}" ContentTemplate="{StaticResource EndpointEditor}" />
 
+            <TextBlock Classes="section" Text="Formula model" />
+            <TextBlock Classes="hint" Text="PP-FormulaNet_plus-M transcribes a display equation to LaTeX on this computer. The language model can be given that LaTeX with the page image or in place of it; with no language model, equations are read by rule from it." />
+            <Grid ColumnDefinitions="180,*" RowDefinitions="Auto,Auto,Auto,Auto" RowSpacing="6">
+              <TextBlock Classes="label" Text="Formula model" />
+              <CheckBox Grid.Column="1" IsChecked="{Binding UseFormulaModel}" Content="Use it when it is installed" />
+              <TextBlock Grid.Row="1" Grid.Column="1" Classes="hint" Text="{Binding FormulaModelStatus}" />
+              <TextBlock Grid.Row="2" Classes="label" Text="Give the language model" />
+              <ComboBox Grid.Row="2" Grid.Column="1" ItemsSource="{Binding EvidenceOptions}" SelectedItem="{Binding Evidence}" MinWidth="260" />
+              <TextBlock Grid.Row="3" Grid.Column="1" Classes="hint" Text="{Binding Evidence.Description}" />
+            </Grid>
+
             <Border Classes="advblock" IsVisible="{Binding Advanced}">
               <StackPanel Spacing="6">
                 <TextBlock Classes="section first" Text="Vision model for equation images (optional)" />
