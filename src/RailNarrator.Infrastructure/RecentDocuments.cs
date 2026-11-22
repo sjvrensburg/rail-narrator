@@ -78,8 +78,42 @@ public sealed class RecentDocumentsStore
     public IReadOnlyList<RecentDocument> Remove(string path)
     {
         var list = Update(path, _ => null, moveToFront: false);
-        try { File.Delete(ThumbnailPath(path)); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+        DeleteThumbnail(path);
         return list;
+    }
+
+    /// <summary>Forgets every document whose file is not there now (moved, renamed, or on a drive not mounted).</summary>
+    public IReadOnlyList<RecentDocument> RemoveMissing()
+    {
+        List<RecentDocument> missing;
+        IReadOnlyList<RecentDocument> kept;
+        lock (_gate)
+        {
+            var list = Load();
+            missing = list.Where(d => !d.Exists).ToList();
+            if (missing.Count == 0) return list;
+            kept = Save(list.Where(d => d.Exists).ToList());
+        }
+        foreach (var d in missing) DeleteThumbnail(d.Path);
+        return kept;
+    }
+
+    /// <summary>Forgets every document, and their thumbnails.</summary>
+    public IReadOnlyList<RecentDocument> Clear()
+    {
+        IReadOnlyList<RecentDocument> list;
+        lock (_gate)
+        {
+            list = Load();
+            Save([]);
+        }
+        foreach (var d in list) DeleteThumbnail(d.Path);
+        return [];
+    }
+
+    private void DeleteThumbnail(string path)
+    {
+        try { File.Delete(ThumbnailPath(path)); } catch (IOException) { } catch (UnauthorizedAccessException) { }
     }
 
     /// <summary>Where the first-page thumbnail of <paramref name="path"/> is kept (it may not exist yet).</summary>
@@ -106,16 +140,21 @@ public sealed class RecentDocumentsStore
                 if (moveToFront || index < 0) list.Insert(0, updated);
                 else list.Insert(index, updated);
             }
-            list = list.Take(Capacity).ToList();
-            try
-            {
-                Directory.CreateDirectory(System.IO.Path.GetDirectoryName(_file)!);
-                string temp = _file + ".tmp";
-                File.WriteAllText(temp, JsonSerializer.Serialize(list, Json));
-                File.Move(temp, _file, overwrite: true);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
-            return list;
+            return Save(list.Take(Capacity).ToList());
         }
+    }
+
+    /// <summary>Writes the list (the caller holds the gate).</summary>
+    private IReadOnlyList<RecentDocument> Save(List<RecentDocument> list)
+    {
+        try
+        {
+            Directory.CreateDirectory(System.IO.Path.GetDirectoryName(_file)!);
+            string temp = _file + ".tmp";
+            File.WriteAllText(temp, JsonSerializer.Serialize(list, Json));
+            File.Move(temp, _file, overwrite: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        return list;
     }
 }

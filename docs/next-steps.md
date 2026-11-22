@@ -53,6 +53,12 @@ Since PR #10:
 
 ## Recently landed
 
+- **Recent documents and model downloads** (`fix/ux-recent-and-downloads`, `status.md` item 86).
+  Recent documents can be removed (one at a time, the missing ones, or all), the Models menu
+  says which models are installed and asks before a download, File ▸ Reload applies maths
+  region corrections, and Escape and the page keys work wherever focus is. Seen in the headless
+  GUI; not yet tried by the maintainer.
+
 - **Page turns, page following and the loading card** (`fix/paging-stalls-follow-loading`,
   `status.md` items 63-65). Pages are rendered on a worker and the paint only draws what has
   arrived, so turning pages no longer stalls the window. A passage with no word timing that

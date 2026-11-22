@@ -165,7 +165,7 @@ public sealed class ServiceRegistry : IAsyncDisposable
         }
         else
         {
-            notes.Add($"Kokoro model not found at '{kokoroModel}'. Download it from the Models panel " +
+            notes.Add($"Kokoro model not found at '{kokoroModel}'. Download it from Models and endpoints " +
                       $"({ModelManifest.KokoroFp16.HumanSize}, {ModelManifest.KokoroFp16.Licence}).");
         }
 

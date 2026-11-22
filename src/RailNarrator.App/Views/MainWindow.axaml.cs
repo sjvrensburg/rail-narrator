@@ -96,6 +96,15 @@ public partial class MainWindow : Window
 
         _viewModel.RecentDocuments.CollectionChanged += (_, _) => RebuildRecentMenu();
         RebuildRecentMenu();
+        // A model may have been installed by hand or by the setup scripts since the last look.
+        ModelsMenu.SubmenuOpened += (_, _) => _viewModel.RefreshModelMenu();
+        _viewModel.RegionOverrideRequested += ApplyRegionOverride;
+        // While a correction is being typed, the review stays on its passage.
+        MathsEditBox.GotFocus += (_, _) => _viewModel.HoldMathsReview = true;
+        // Leaving the box with an unsaved change keeps the hold, or the change would be dropped at
+        // the next cue (and the Apply button, which takes the focus, would apply it to another passage).
+        MathsEditBox.LostFocus += (_, _) => _viewModel.HoldMathsReview =
+            _viewModel.MathsReview is { } review && MathsEditBox.Text != review.SpokenVersion;
         _viewModel.DocumentClosed += () =>
         {
             Surface.CloseDocument();
@@ -120,7 +129,10 @@ public partial class MainWindow : Window
         _ = dialog.ShowDialog(this);
     }
 
-    /// <summary>File ▸ Open recent: one item per recent document, missing files shown disabled.</summary>
+    /// <summary>
+    /// File ▸ Open recent: one item per recent document (a missing one marked, and choosing it offers
+    /// to remove it), then the list's own housekeeping.
+    /// </summary>
     private void RebuildRecentMenu()
     {
         var items = new List<object>();
@@ -128,15 +140,37 @@ public partial class MainWindow : Window
         {
             items.Add(new MenuItem
             {
-                Header = recent.Name,
+                // Escaped: a header string is access text, so "my_paper.pdf" would lose its underscore.
+                Header = (recent.Exists ? recent.Name : $"{recent.Name} (not found)").Replace("_", "__"),
                 Command = _viewModel.OpenRecent,
                 CommandParameter = recent,
-                IsEnabled = recent.Exists,
                 [ToolTip.TipProperty] = recent.Path,
             });
         }
+        if (items.Count > 0)
+        {
+            items.Add(new Separator());
+            items.Add(new MenuItem { Header = "Remove _missing documents", Command = _viewModel.RemoveMissingRecent });
+            items.Add(new MenuItem { Header = "_Clear recent documents", Command = _viewModel.ClearRecent });
+        }
         RecentMenu.ItemsSource = items;
     }
+
+    // The welcome screen's context menu on a recent document. Its items take the document from their
+    // own data context, which the menu inherits from the card it was opened on.
+    private void OnRecentOpenClicked(object? sender, RoutedEventArgs e)
+    {
+        if ((sender as Control)?.DataContext is RecentDocumentView recent) _viewModel.OpenRecent.Execute(recent);
+    }
+
+    private void OnRecentRemoveClicked(object? sender, RoutedEventArgs e)
+    {
+        if ((sender as Control)?.DataContext is RecentDocumentView recent) _viewModel.RemoveRecent.Execute(recent);
+    }
+
+    private void OnRecentRemoveMissingClicked(object? sender, RoutedEventArgs e) => _viewModel.RemoveMissingRecent.Execute(null);
+
+    private void OnRecentClearClicked(object? sender, RoutedEventArgs e) => _viewModel.ClearRecent.Execute(null);
 
     // ---- dropping a PDF onto the window -------------------------------------------------------
 
@@ -219,9 +253,16 @@ public partial class MainWindow : Window
             if (e.PropertyName == nameof(MainViewModel.DocumentName))
                 Title = _viewModel.DocumentName is { } name ? $"{name} — Rail Narrator" : "Rail Narrator";
             // A passage chosen for review opens its section, so the reader sees it.
-            if (e.PropertyName == nameof(MainViewModel.MathsReview) && _viewModel.MathsReview is not null
-                && _viewModel.SidebarVisible && !ScriptSection.IsExpanded)
-                MathsSection.IsExpanded = true;
+            // Only when the passage under review changes, not when the same one is refreshed: the
+            // reader who has opened another section meanwhile keeps it open.
+            if (e.PropertyName == nameof(MainViewModel.MathsReview))
+            {
+                string? segment = _viewModel.MathsReview?.SegmentId;
+                if (segment is not null && segment != _reviewedSegmentId
+                    && _viewModel.SidebarVisible && !ScriptSection.IsExpanded)
+                    MathsSection.IsExpanded = true;
+                _reviewedSegmentId = segment;
+            }
         };
         SidebarSplitter.DragCompleted += (_, _) =>
         {
@@ -231,6 +272,7 @@ public partial class MainWindow : Window
     }
 
     private const double SidebarMinWidth = 200, SidebarMaxWidth = 600;
+    private string? _reviewedSegmentId;
     private double _sidebarWidth = 300;
 
     private void ApplySidebarVisibility()
@@ -404,6 +446,7 @@ public partial class MainWindow : Window
         if (_viewModel.MathsReview is null) return;
         _viewModel.EditedSpokenText = MathsEditBox.Text;
         _viewModel.ApplyMathsEdit.Execute(null);
+        _viewModel.HoldMathsReview = false;
     }
 
     private void OnMathsRegenerateClicked(object? sender, RoutedEventArgs e) => _viewModel.RegenerateMaths.Execute(null);
@@ -413,21 +456,15 @@ public partial class MainWindow : Window
     /// heuristic and a model-free extraction has no semantic roles at all, so the reader must be able
     /// to correct it.
     /// </summary>
-    private void OnMarkAsMathsClicked(object? sender, RoutedEventArgs e) => ApplyRegionOverride(treatAsMaths: true);
-
-    private void OnRestoreAsProseClicked(object? sender, RoutedEventArgs e) => ApplyRegionOverride(treatAsMaths: false);
-
     private void ApplyRegionOverride(bool treatAsMaths)
     {
         var cue = _viewModel.Playback.ActiveCue;
         var map = _viewModel.Coordinator.Scheduler?.SourceMap;
-        if (cue is null || map is null) { _viewModel.Status("Select a passage first."); return; }
+        if (cue is null || map is null) { _viewModel.Status("Play or click a passage first: the passage being read is the one corrected."); return; }
         var pages = map.HighlightRectsByPage(cue.AnchorIds);
         foreach (var (page, rects) in pages)
             foreach (var rect in rects)
                 _viewModel.SetRegionMathsOverride(page, rect, treatAsMaths);
-        _viewModel.Status(treatAsMaths ? "Region marked as maths. Reopen the document to apply."
-                                       : "Region restored to prose. Reopen the document to apply.");
     }
 
     /// <summary>
@@ -461,14 +498,26 @@ public partial class MainWindow : Window
         }
         else if (e.Key == Key.Escape)
         {
-            if (MainMenu.IsOpen || IsInsideOpenDropDown(focused)) return;
-            // The PDF surface uses Escape to resume following; a text box uses it to give up focus.
-            if (focused is PdfSurface or TextBox) return;
-            if (_viewModel.Playback.State == PlaybackState.Playing && _viewModel.Pause.CanExecute(null))
+            // A text box uses Escape to give up focus; a menu or drop-down to close.
+            if (focused is TextBox || MainMenu.IsOpen || IsInsideOpenDropDown(focused)) return;
+            // The same wherever focus is: back to the reading after browsing, otherwise pause.
+            if (_viewModel.FollowSuspended && _viewModel.ResumeFollow.CanExecute(null))
+            {
+                _viewModel.ResumeFollow.Execute(null);
+                e.Handled = true;
+            }
+            else if (_viewModel.Playback.State == PlaybackState.Playing && _viewModel.Pause.CanExecute(null))
             {
                 _viewModel.Pause.Execute(null);
                 e.Handled = true;
             }
+        }
+        else if (e.Key is Key.PageUp or Key.PageDown or Key.Home or Key.End)
+        {
+            // Page keys turn pages wherever focus is, except where a control uses them itself.
+            if (focused is TextBox or ListBox or ListBoxItem or TreeView or TreeViewItem or Slider or ComboBox
+                || MainMenu.IsOpen || IsInsideOpenDropDown(focused)) return;
+            if (Surface.HandleNavigationKey(e.Key)) e.Handled = true;
         }
     }
 

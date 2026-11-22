@@ -6,9 +6,9 @@
   <StackPanel Margin="16" Spacing="8" MinWidth="280">
     <TextBlock Name="Prompt" Text="Page number" />
     <TextBox Name="PageBox" AutomationProperties.Name="Page number" />
-    <TextBlock Name="Error" Foreground="#C42B1C" TextWrapping="Wrap" IsVisible="False" />
+    <TextBlock Name="Error" Foreground="{DynamicResource ErrorTextBrush}" TextWrapping="Wrap" IsVisible="False" />
     <TextBlock Classes="secondary" FontSize="12" TextWrapping="Wrap" MaxWidth="320"
-               Text="Turns to the page; while reading, following pauses until you press Play or F9." />
+               Text="Turns to the page. While reading, following pauses as you browse and resumes on its own a few seconds later, or at once with F9 or Escape." />
     <StackPanel Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" Margin="0,12,0,0">
       <Button Content="Go" Classes="primary" MinWidth="80" Click="OnGo" IsDefault="True" />
       <Button Content="Cancel" MinWidth="80" Click="OnCancel" IsCancel="True" />

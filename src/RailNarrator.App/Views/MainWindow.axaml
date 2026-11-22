@@ -26,12 +26,19 @@
     <KeyBinding Gesture="F9" Command="{Binding ResumeFollow}" />
     <KeyBinding Gesture="F6" Command="{Binding ToggleSidebar}" />
     <KeyBinding Gesture="Ctrl+W" Command="{Binding CloseDocument}" />
+    <KeyBinding Gesture="Ctrl+Shift+R" Command="{Binding ReloadDocument}" />
+    <KeyBinding Gesture="Ctrl+Add" Command="{Binding ZoomIn}" />
+    <KeyBinding Gesture="Ctrl+Subtract" Command="{Binding ZoomOut}" />
     <KeyBinding Gesture="Ctrl+G" Command="{Binding GoToPage}" />
     <KeyBinding Gesture="F1" Command="{Binding ShowShortcuts}" />
   </Window.KeyBindings>
 
   <Window.Styles>
     <!-- RailReader2's accordion: full-width headers, the open section's content fills its row. -->
+    <!-- A recent document whose file is not there now. -->
+    <Style Selector="Button.missing">
+      <Setter Property="Opacity" Value="0.55" />
+    </Style>
     <Style Selector="Expander.accordion">
       <Setter Property="HorizontalAlignment" Value="Stretch" />
       <Setter Property="VerticalAlignment" Value="Stretch" />
@@ -50,6 +57,7 @@
         <MenuItem Header="_Open PDF…" Click="OnOpenClicked" InputGesture="Ctrl+O" />
         <!-- Filled in code-behind from the recent documents (MainWindow.RebuildRecentMenu). -->
         <MenuItem Name="RecentMenu" Header="Open _recent" IsEnabled="{Binding HasRecentDocuments}" />
+        <MenuItem Header="Re_load" Command="{Binding ReloadDocument}" InputGesture="Ctrl+Shift+R" />
         <MenuItem Header="_Close" Command="{Binding CloseDocument}" InputGesture="Ctrl+W" />
         <Separator />
         <MenuItem Header="_Settings…" Command="{Binding OpenSettings}" InputGesture="Ctrl+OemComma" />
@@ -57,9 +65,9 @@
         <MenuItem Header="E_xit" Click="OnCloseClicked" />
       </MenuItem>
       <MenuItem Header="_Playback">
-        <MenuItem Header="_Play / pause" Command="{Binding PlayPause}" InputGesture="Space" />
+        <MenuItem Header="_Play / pause" Command="{Binding PlayPause}" InputGesture="Space" ToolTip.Tip="Also Ctrl+P" />
         <Separator />
-        <MenuItem Header="_Previous passage" Command="{Binding Previous}" InputGesture="Ctrl+Left" />
+        <MenuItem Header="Pre_vious passage" Command="{Binding Previous}" InputGesture="Ctrl+Left" />
         <MenuItem Header="_Next passage" Command="{Binding Next}" InputGesture="Ctrl+Right" />
         <MenuItem Header="_Replay passage" Command="{Binding Replay}" InputGesture="Ctrl+R" />
       </MenuItem>
@@ -68,18 +76,19 @@
         <Separator />
         <MenuItem Header="Zoom _in" Command="{Binding ZoomIn}" InputGesture="Ctrl+OemPlus" />
         <MenuItem Header="Zoom _out" Command="{Binding ZoomOut}" InputGesture="Ctrl+OemMinus" />
-        <MenuItem Header="_Fit width" ToggleType="CheckBox" IsChecked="{Binding FitWidth, Mode=TwoWay}" />
-        <MenuItem Header="Zoom 200%" Command="{Binding Zoom200}" />
-        <MenuItem Header="Zoom 400%" Command="{Binding Zoom400}" />
-        <MenuItem Header="Zoom 800%" Command="{Binding Zoom800}" />
+        <MenuItem Header="Fit _width" ToggleType="CheckBox" IsChecked="{Binding FitWidth, Mode=TwoWay}" />
+        <MenuItem Header="Zoom _200%" Command="{Binding Zoom200}" />
+        <MenuItem Header="Zoom _400%" Command="{Binding Zoom400}" />
+        <MenuItem Header="Zoom _800%" Command="{Binding Zoom800}" />
         <Separator />
-        <MenuItem Header="_Follow the reading" Command="{Binding ToggleFollow}" InputGesture="Ctrl+F" />
+        <MenuItem Header="_Follow the reading" InputGesture="Ctrl+F"
+                  ToggleType="CheckBox" IsChecked="{Binding IsFollowing, Mode=TwoWay}" />
         <MenuItem Header="_Resume following" Command="{Binding ResumeFollow}" InputGesture="F9" />
         <Separator />
         <MenuItem Header="{Binding ColourFilterMenuHeader}">
           <MenuItem Header="_Next colour filter" Click="OnCycleColourFilterClicked" InputGesture="C" />
           <Separator />
-          <MenuItem Header="_None" Tag="None" Click="OnColourFilterClicked" />
+          <MenuItem Header="_Off" Tag="None" Click="OnColourFilterClicked" />
           <MenuItem Header="_High contrast (white on black)" Tag="HighContrast" Click="OnColourFilterClicked" />
           <MenuItem Header="High _visibility (yellow on black)" Tag="HighVisibility" Click="OnColourFilterClicked" />
           <MenuItem Header="_Amber" Tag="Amber" Click="OnColourFilterClicked" />
@@ -90,15 +99,18 @@
                   IsChecked="{Binding SidebarVisible, Mode=TwoWay}" InputGesture="F6" />
       </MenuItem>
       <MenuItem Header="_Maths">
-        <MenuItem Header="Mark region as _maths" Click="OnMarkAsMathsClicked" />
-        <MenuItem Header="Restore region as _prose" Click="OnRestoreAsProseClicked" />
+        <MenuItem Header="Mark this passage as _maths" Command="{Binding MarkAsMaths}" />
+        <MenuItem Header="Restore this passage as _prose" Command="{Binding RestoreAsProse}" />
         <MenuItem Header="_Regenerate narration" Command="{Binding RegenerateMaths}" />
       </MenuItem>
-      <MenuItem Header="_Models and endpoints">
-        <MenuItem Header="Download _Kokoro model…" Command="{Binding DownloadKokoroModel}" />
-        <MenuItem Header="Download _layout model (Docling Heron INT8, 69 MB)…" Command="{Binding DownloadLayoutModel}" />
-        <MenuItem Header="Download layout model for the _GPU (Docling Heron FP32, 171 MB)…" Command="{Binding DownloadLayoutModelGpu}" />
-        <MenuItem Header="Download _formula model (PP-FormulaNet_plus-M, 594 MB)…" Command="{Binding DownloadFormulaModel}" />
+      <!-- A model already installed is named as such and its download is disabled. The menu re-reads
+           the models directory each time it opens (MainWindow: RefreshModelMenu). -->
+      <MenuItem Name="ModelsMenu" Header="M_odels and endpoints">
+        <MenuItem Header="{Binding DownloadKokoroModelHeader}" Command="{Binding DownloadKokoroModel}" ToolTip.Tip="Kokoro-82M FP16: speech on this computer" />
+        <MenuItem Header="{Binding DownloadLayoutModelHeader}" Command="{Binding DownloadLayoutModel}" ToolTip.Tip="Docling Heron INT8: finds headings, figures, tables and equations (on the CPU)" />
+        <MenuItem Header="{Binding DownloadLayoutModelGpuHeader}" Command="{Binding DownloadLayoutModelGpu}" ToolTip.Tip="Docling Heron FP32: the layout model on a WebGPU-capable GPU" />
+        <MenuItem Header="{Binding DownloadFormulaModelHeader}" Command="{Binding DownloadFormulaModel}" ToolTip.Tip="PP-FormulaNet_plus-M: reads display equations to LaTeX on this computer" />
+        <Separator />
         <MenuItem Header="_Endpoints and API keys…" Command="{Binding OpenSettings}" />
         <MenuItem Header="_Test text LLM endpoint" Command="{Binding TestMathEndpoint}" />
         <MenuItem Header="Test _vision endpoint" Command="{Binding TestVisionEndpoint}" />
@@ -235,7 +247,7 @@
           </Button>
           <Button DockPanel.Dock="Right" Classes="toolBtn" Padding="8,2" Margin="10,0,0,0" Command="{Binding NoticeAction}"
                   IsVisible="{Binding Notice.HasAction}" Content="{Binding Notice.ActionLabel}" />
-          <TextBlock Text="{Binding Notice.Text}" Foreground="#C07800" FontWeight="SemiBold"
+          <TextBlock Text="{Binding Notice.Text}" Foreground="{DynamicResource WarningTextBrush}" FontWeight="SemiBold"
                      VerticalAlignment="Center" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Notice.Text}" />
         </DockPanel>
         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" Margin="12,0,0,0">
@@ -298,15 +310,15 @@
             </Panel>
           </Expander>
           <Expander Grid.Row="1" Name="ScriptSection" Classes="accordion" Header="Script">
-              <ListBox Name="TranscriptList" ItemsSource="{Binding Transcript}"
+              <ListBox Name="TranscriptList" ItemsSource="{Binding Transcript}" AutomationProperties.Name="Script"
                        SelectedIndex="{Binding SelectedTranscriptIndex}"
                        ScrollViewer.HorizontalScrollBarVisibility="Disabled">
                 <ListBox.ItemTemplate>
                   <DataTemplate x:DataType="vm:TranscriptEntry">
                     <DockPanel>
-                      <TextBlock DockPanel.Dock="Left" Margin="0,0,4,0" Text="∑" Foreground="#C07800" IsVisible="{Binding IsMaths}"
+                      <TextBlock DockPanel.Dock="Left" Margin="0,0,4,0" Text="∑" Foreground="{DynamicResource WarningTextBrush}" IsVisible="{Binding IsMaths}"
                                  ToolTip.Tip="Mathematical passage" />
-                      <TextBlock DockPanel.Dock="Left" Margin="0,0,4,0" Text="!" Foreground="#C07800" IsVisible="{Binding HasWarning}"
+                      <TextBlock DockPanel.Dock="Left" Margin="0,0,4,0" Text="!" Foreground="{DynamicResource WarningTextBrush}" IsVisible="{Binding HasWarning}"
                                  ToolTip.Tip="This passage has a warning; see Maths review" />
                       <TextBlock Text="{Binding Text}" TextWrapping="Wrap" />
                     </DockPanel>
@@ -325,14 +337,14 @@
                   <TextBox Name="MathsExpressionBox" Text="{Binding RecognisedExpression}" IsReadOnly="True"
                            FontFamily="monospace" TextWrapping="Wrap" MaxHeight="60" />
                   <TextBlock Text="Spoken version:" FontSize="11" Opacity="0.75" />
-                  <TextBox Name="MathsEditBox" Text="{Binding SpokenVersion}" AcceptsReturn="True"
+                  <TextBox Name="MathsEditBox" Text="{Binding SpokenVersion, Mode=OneWay}" AcceptsReturn="True"
                            TextWrapping="Wrap" MinHeight="60" MaxHeight="120"
                            PlaceholderText="Correct the spoken text; the previous audio for it is discarded" />
                   <TextBlock Text="{Binding Provenance, StringFormat=Source: {0}}" FontSize="11" Opacity="0.75" />
                   <ItemsControl ItemsSource="{Binding Warnings}">
                     <ItemsControl.ItemTemplate>
                       <DataTemplate x:DataType="x:String">
-                        <TextBlock Text="{Binding}" FontSize="11" Foreground="#C07800" TextWrapping="Wrap" />
+                        <TextBlock Text="{Binding}" FontSize="11" Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" />
                       </DataTemplate>
                     </ItemsControl.ItemTemplate>
                   </ItemsControl>
@@ -404,11 +416,17 @@
                 <DataTemplate x:DataType="vm:RecentDocumentView">
                   <Button Classes="toolBtn" Width="176" Padding="8" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Top"
                           Command="{Binding $parent[ItemsControl].((vm:MainViewModel)DataContext).OpenRecent}" CommandParameter="{Binding}"
-                          IsEnabled="{Binding Exists}" ToolTip.Tip="{Binding Path}" AutomationProperties.Name="{Binding Name}">
+                          Classes.missing="{Binding !Exists}" ToolTip.Tip="{Binding Path}" AutomationProperties.Name="{Binding Name}">
+                    <!-- A missing document stays enabled (dimmed): a disabled button takes no right-click,
+                         so it could never be removed. The items are handled in code-behind, as a binding
+                         to the window's view model does not resolve from the menu's popup. -->
                     <Button.ContextMenu>
                       <ContextMenu>
-                        <MenuItem Header="Remove from recent documents"
-                                  Command="{Binding $parent[ItemsControl].((vm:MainViewModel)DataContext).RemoveRecent}" CommandParameter="{Binding}" />
+                        <MenuItem Header="_Open" Click="OnRecentOpenClicked" IsEnabled="{Binding Exists}" />
+                        <MenuItem Header="_Remove from recent documents" Click="OnRecentRemoveClicked" />
+                        <Separator />
+                        <MenuItem Header="Remove _missing documents" Click="OnRecentRemoveMissingClicked" />
+                        <MenuItem Header="_Clear recent documents" Click="OnRecentClearClicked" />
                       </ContextMenu>
                     </Button.ContextMenu>
                     <StackPanel Spacing="6">

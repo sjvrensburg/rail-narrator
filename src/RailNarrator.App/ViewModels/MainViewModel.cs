@@ -56,6 +56,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     private NarrationPlan? _plan;
     private PlaybackSnapshot _playback = PlaybackSnapshot.Idle;
     private IReadOnlyList<MathsRegionOverride> _overrides = [];
+    private string? _overridesHash;   // the document the overrides were made in
     private string _statusMessage = "Open a PDF to begin.";
     private bool _busy;
     private int _selectedTranscriptIndex;
@@ -109,30 +110,36 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         Replay = new RelayCommand(() => { _pendingStartSegmentId = null; return _services.Coordinator.ReplaySegmentAsync(); }, CanRead, OnCommandError, allowWhileRunning: true);
         ToggleFollow = new RelayCommand(CycleFollowMode, null, OnCommandError);
         ResumeFollow = new RelayCommand(() => _services.Coordinator.ResumeFollow(), () => FollowSuspended, OnCommandError);
-        ZoomIn = new RelayCommand(() => ApplyZoom(Zoom * 1.25), null, OnCommandError);
-        ZoomOut = new RelayCommand(() => ApplyZoom(Zoom / 1.25), null, OnCommandError);
-        Zoom200 = new RelayCommand(() => ApplyZoom(2.0), null, OnCommandError);
-        Zoom400 = new RelayCommand(() => ApplyZoom(4.0), null, OnCommandError);
-        Zoom800 = new RelayCommand(() => ApplyZoom(8.0), null, OnCommandError);
+        ZoomIn = new RelayCommand(() => ApplyZoom(Zoom * 1.25), () => HasDocument, OnCommandError);
+        ZoomOut = new RelayCommand(() => ApplyZoom(Zoom / 1.25), () => HasDocument, OnCommandError);
+        Zoom200 = new RelayCommand(() => ApplyZoom(2.0), () => HasDocument, OnCommandError);
+        Zoom400 = new RelayCommand(() => ApplyZoom(4.0), () => HasDocument, OnCommandError);
+        Zoom800 = new RelayCommand(() => ApplyZoom(8.0), () => HasDocument, OnCommandError);
         OpenSettings = new RelayCommand(() => SettingsRequested?.Invoke());
         ToggleSidebar = new RelayCommand(() => SidebarVisible = !SidebarVisible);
         _recent = services.Recent;
         CloseDocument = new RelayCommand(CloseDocumentAsync, () => HasDocument && !IsLoading, OnCommandError);
-        OpenRecent = new RelayCommand<RecentDocumentView>(r => RunObserved(LoadDocumentAsync(r.Path), "Could not open that document"));
+        OpenRecent = new RelayCommand<RecentDocumentView>(OpenRecentDocument);
         RemoveRecent = new RelayCommand<RecentDocumentView>(r => { _recent.Remove(r.Path); RefreshRecent(); });
+        RemoveMissingRecent = new RelayCommand(() => { _recent.RemoveMissing(); RefreshRecent(); }, () => RecentDocuments.Any(r => !r.Exists));
+        ClearRecent = new RelayCommand(() => { _recent.Clear(); RefreshRecent(); }, () => HasRecentDocuments);
         ShowShortcuts = new RelayCommand(() => ShortcutsRequested?.Invoke());
         ShowAbout = new RelayCommand(() => AboutRequested?.Invoke());
         GoToPage = new RelayCommand(() => GoToPageRequested?.Invoke(), () => HasDocument);
+        ReloadDocument = new RelayCommand(() => _documentPath is { } open ? LoadDocumentAsync(open) : Task.CompletedTask,
+            () => HasDocument && !Busy, OnCommandError);
+        MarkAsMaths = new RelayCommand(() => RegionOverrideRequested?.Invoke(true), () => HasDocument && Playback.ActiveCue is not null);
+        RestoreAsProse = new RelayCommand(() => RegionOverrideRequested?.Invoke(false), () => HasDocument && Playback.ActiveCue is not null);
         RefreshRecent();
         NoticeAction = new RelayCommand(() => { var action = Notice?.Action; Notice = null; action?.Invoke(); });
         DismissNotice = new RelayCommand(() => Notice = null);
         TestMathEndpoint = new RelayCommand(() => TestMathEndpointAsync(), () => !Busy, OnCommandError);
         TestVisionEndpoint = new RelayCommand(() => TestVisionEndpointAsync(), () => !Busy, OnCommandError);
-        DownloadKokoroModel = new RelayCommand(() => DownloadModelAsync(ModelManifest.KokoroFp16), () => !Busy, OnCommandError);
-        DownloadLayoutModel = new RelayCommand(() => DownloadModelAsync(ModelManifest.LayoutHeronInt8), () => !Busy, OnCommandError);
-        DownloadLayoutModelGpu = new RelayCommand(() => DownloadModelAsync(ModelManifest.LayoutHeron), () => !Busy, OnCommandError);
+        DownloadKokoroModel = new RelayCommand(() => ConfirmDownload(ModelManifest.KokoroFp16), () => !Busy && !KokoroModelInstalled, OnCommandError);
+        DownloadLayoutModel = new RelayCommand(() => ConfirmDownload(ModelManifest.LayoutHeronInt8), () => !Busy && !LayoutModelInstalled, OnCommandError);
+        DownloadLayoutModelGpu = new RelayCommand(() => ConfirmDownload(ModelManifest.LayoutHeron), () => !Busy && !LayoutModelGpuInstalled, OnCommandError);
         // The vocabulary first: the model is of no use without it, and it is the small one.
-        DownloadFormulaModel = new RelayCommand(() => DownloadModelAsync(ModelManifest.FormulaModelConfig, ModelManifest.FormulaModel), () => !Busy, OnCommandError);
+        DownloadFormulaModel = new RelayCommand(() => ConfirmDownload(ModelManifest.FormulaModelConfig, ModelManifest.FormulaModel), () => !Busy && !FormulaModelInstalled, OnCommandError);
         RegenerateMaths = new RelayCommand(() => RegenerateMathsAsync(), () => MathsReview is { CanRegenerate: true }, OnCommandError);
         ApplyMathsEdit = new RelayCommand(() => ApplyMathsEditAsync(), () => !Busy, OnCommandError);
     }
@@ -207,6 +214,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             if (!Set(ref _documentPath, value)) return;
             OnPropertyChanged(nameof(HasDocument));
             OnPropertyChanged(nameof(DocumentName));
+            RefreshCommands();   // Close, Go to page, Reload and zoom depend on a document being open
         }
     }
     public bool HasDocument => _documentPath is not null;
@@ -408,7 +416,12 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public string FollowLabel => _followMode == FollowMode.Off ? "Follow: off" : "Follow: on";
 
     /// <summary>The view follows the reading: the follow button is shown on (accent).</summary>
-    public bool IsFollowing => _followMode != FollowMode.Off;
+    /// <summary>Following on or off; settable for View ▸ Follow the reading, a checkbox item.</summary>
+    public bool IsFollowing
+    {
+        get => _followMode != FollowMode.Off;
+        set { if (value != IsFollowing) CycleFollowMode(); }
+    }
 
     public bool FollowSuspended { get => _followSuspended; private set => Set(ref _followSuspended, value); }
 
@@ -581,11 +594,40 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     public RelayCommand<RecentDocumentView> RemoveRecent { get; }
 
+    /// <summary>Forgets the recent documents whose files are not there now.</summary>
+    public RelayCommand RemoveMissingRecent { get; }
+
+    /// <summary>Forgets every recent document.</summary>
+    public RelayCommand ClearRecent { get; }
+
     public void RefreshRecent()
     {
         RecentDocuments.Clear();
         foreach (var d in _recent.Load()) RecentDocuments.Add(new RecentDocumentView(d, _recent.ThumbnailPath(d.Path)));
         OnPropertyChanged(nameof(HasRecentDocuments));
+        // Null until the constructor has built them (the first refresh runs before).
+        RemoveMissingRecent?.RaiseCanExecuteChanged();
+        ClearRecent?.RaiseCanExecuteChanged();
+    }
+
+    /// <summary>
+    /// Opens a recent document; one not found (moved, renamed, on a drive not mounted) is not an
+    /// error to report but a question: the notice offers to take it off the list.
+    /// </summary>
+    private void OpenRecentDocument(RecentDocumentView recent)
+    {
+        if (!File.Exists(recent.Path))
+        {
+            RefreshRecent();   // it may have gone since the list was drawn
+            ShowNotice($"{recent.Name} was not found at {recent.Path}.", "Remove from list", () => RemoveRecent.Execute(recent));
+            return;
+        }
+        if (_documentPath is { } open && string.Equals(Path.GetFullPath(open), recent.Path, StringComparison.Ordinal))
+        {
+            StatusMessage = $"{recent.Name} is already open (File ▸ Reload opens it again).";
+            return;
+        }
+        RunObserved(LoadDocumentAsync(recent.Path), "Could not open that document");
     }
 
     /// <summary>Where the open document's first-page thumbnail goes; null when it already exists.</summary>
@@ -703,13 +745,19 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     /// <summary>Sets the status line. Available to the window for one-off messages.</summary>
     public void Status(string message) => StatusMessage = message;
 
-    public string MathEndpointSummary => _services.CurrentSettings.MathLlmBaseUrl is { } url
-        ? $"{url} / {_services.CurrentSettings.MathLlmModel}"
-        : "not configured";
+    public string MathEndpointSummary => EndpointSummary(_services.CurrentSettings.MathLlmProvider,
+        _services.CurrentSettings.MathLlmBaseUrl, _services.CurrentSettings.MathLlmModel);
 
-    public string VisionEndpointSummary => _services.CurrentSettings.VlmBaseUrl is { } url
-        ? $"{url} / {_services.CurrentSettings.VlmModel}"
-        : "not configured";
+    public string VisionEndpointSummary => EndpointSummary(_services.CurrentSettings.VlmProvider,
+        _services.CurrentSettings.VlmBaseUrl, _services.CurrentSettings.VlmModel);
+
+    /// <summary>Claude needs no address (ADR-0010), so choosing it is itself the configuration.</summary>
+    private static string EndpointSummary(LlmProvider provider, string? url, string? model) => provider switch
+    {
+        LlmProvider.Anthropic => $"Claude (Anthropic) / {(string.IsNullOrWhiteSpace(model) ? RailNarrator.Inference.ClaudeEndpointSettings.DefaultModel : model)}"
+                                 + (url is { Length: > 0 } ? $" at {url}" : ""),
+        _ => url is { Length: > 0 } ? $"{url} / {model}" : "not configured",
+    };
 
     /// <summary>Whether display equations are transcribed by the formula model (ADR-0011).</summary>
     public string FormulaModelSummary => _services.FormulaModel is not null
@@ -776,8 +824,73 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     /// <summary>PP-FormulaNet_plus-M and its vocabulary (ADR-0011).</summary>
     public RelayCommand DownloadFormulaModel { get; }
+
+    // Whether each model is already where the application looks for it. Only a file's presence is
+    // checked (hashing hundreds of MB on the UI thread is not acceptable); the download verifies it.
+    // A model downloaded in this session counts as installed although it is used after a restart.
+
+    private (bool, bool, bool, bool)? _modelsInstalled;
+
+    private bool KokoroModelInstalled
+        => File.Exists(_services.CurrentSettings.KokoroModelPath ?? _services.Models.PathFor(ModelManifest.KokoroFp16));
+
+    private bool LayoutModelInstalled => LayoutFileInstalled(ModelManifest.LayoutHeronInt8);
+
+    private bool LayoutModelGpuInstalled => LayoutFileInstalled(ModelManifest.LayoutHeron);
+
+    /// <summary>The layout resolver also reads RailReader2's models directory (ADR-0008).</summary>
+    private bool LayoutFileInstalled(ModelAsset asset)
+        => File.Exists(_services.Models.PathFor(asset)) || File.Exists(Path.Combine(XdgPaths.RailReader2Models, asset.FileName));
+
+    private bool FormulaModelInstalled
+        => File.Exists(_services.CurrentSettings.FormulaModelPath ?? _services.Models.PathFor(ModelManifest.FormulaModel))
+        && File.Exists(_services.CurrentSettings.FormulaModelConfigPath ?? _services.Models.PathFor(ModelManifest.FormulaModelConfig));
+
+    private static string ModelMenuHeader(bool installed, string download, string name)
+        => installed ? $"{name}: installed" : download;
+
+    // Short, as the menu has a maximum width and clips a longer header; the full name is in the tooltip.
+    public string DownloadKokoroModelHeader => ModelMenuHeader(KokoroModelInstalled,
+        $"Download _Kokoro speech model ({ModelManifest.KokoroFp16.HumanSize})…", "Kokoro speech model");
+
+    public string DownloadLayoutModelHeader => ModelMenuHeader(LayoutModelInstalled,
+        $"Download _layout model ({ModelManifest.LayoutHeronInt8.HumanSize})…", "Layout model");
+
+    public string DownloadLayoutModelGpuHeader => ModelMenuHeader(LayoutModelGpuInstalled,
+        $"Download layout model for the _GPU ({ModelManifest.LayoutHeron.HumanSize})…", "Layout model for the GPU");
+
+    public string DownloadFormulaModelHeader => ModelMenuHeader(FormulaModelInstalled,
+        $"Download _formula model ({ModelManifest.FormulaModel.HumanSize})…", "Formula model");
+
+    /// <summary>Re-reads which models are installed, for the Models menu (called as the menu opens and after a download).</summary>
+    public void RefreshModelMenu()
+    {
+        // Only on a change: a header notified while the menu opens is laid out again after the popup
+        // has taken its width, and comes out clipped.
+        var installed = (KokoroModelInstalled, LayoutModelInstalled, LayoutModelGpuInstalled, FormulaModelInstalled);
+        if (installed == _modelsInstalled) return;
+        _modelsInstalled = installed;
+        OnPropertyChanged(nameof(DownloadKokoroModelHeader));
+        OnPropertyChanged(nameof(DownloadLayoutModelHeader));
+        OnPropertyChanged(nameof(DownloadLayoutModelGpuHeader));
+        OnPropertyChanged(nameof(DownloadFormulaModelHeader));
+        DownloadKokoroModel.RaiseCanExecuteChanged();
+        DownloadLayoutModel.RaiseCanExecuteChanged();
+        DownloadLayoutModelGpu.RaiseCanExecuteChanged();
+        DownloadFormulaModel.RaiseCanExecuteChanged();
+    }
     public RelayCommand RegenerateMaths { get; }
     public RelayCommand ApplyMathsEdit { get; }
+
+    /// <summary>File ▸ Reload: opens the open document again, which applies maths region corrections.</summary>
+    public RelayCommand ReloadDocument { get; }
+
+    /// <summary>Maths ▸ Mark this passage as maths / as prose; the window resolves the passage's regions.</summary>
+    public RelayCommand MarkAsMaths { get; }
+    public RelayCommand RestoreAsProse { get; }
+
+    /// <summary>Raised with true to mark the passage being read as maths, false to restore it as prose.</summary>
+    public event Action<bool>? RegionOverrideRequested;
 
     /// <summary>Opens a file picker and loads the chosen PDF.</summary>
     public async Task OpenDocumentAsync(TopLevel? topLevel = null)
@@ -811,7 +924,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public async Task LoadDocumentAsync(string path)
     {
         if (!File.Exists(path)) { StatusMessage = $"No such file: {path}"; return; }
-        if (Busy) return;   // re-entrancy: argv/menu/keyboard can all call this directly
+        // Re-entrancy: argv/menu/keyboard/drop can all call this directly. Said, not swallowed: a
+        // dropped file or a recent document that silently does nothing looks broken.
+        if (Busy) { StatusMessage = $"Wait for the current task to finish, then open {Path.GetFileName(path)} again."; return; }
         _pendingStartSegmentId = null;
 
         // Build into locals and commit DocumentPath/_snapshot/Plan together only on success. A
@@ -860,7 +975,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             }
 
             ReportLoading("Finding the reading order");
-            var builder = _services.CreateUnitBuilder(_overrides);
+            // Region corrections belong to the document they were made in; reloading it applies them.
+            var overrides = hash == _overridesHash ? _overrides : [];
+            var builder = _services.CreateUnitBuilder(overrides);
             var (units, diagnostics) = await Task.Run(() =>
             {
                 var built = builder.Build(snapshot, out var notes);
@@ -915,6 +1032,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             Plan = plan;
             DocumentPath = path;
             _documentHash = hash;
+            _overrides = overrides;
+            _overridesHash = hash;
             committed = true;
 
             RebuildTranscript();
@@ -1207,6 +1326,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
                 : $"{cue.Granularity} highlighting" + (cue.Diagnostics.Count > 0 ? ": " + cue.Diagnostics[0] : "");
             InvalidateSurface?.Invoke();
             UpdateMathsReview(cue.SegmentId);
+            MarkAsMaths.RaiseCanExecuteChanged();
+            RestoreAsProse.RaiseCanExecuteChanged();
         }
         if (Dispatcher.UIThread.CheckAccess()) Apply(); else Dispatcher.UIThread.Post(Apply);
     }
@@ -1222,6 +1343,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     private void UpdateMathsReview(string segmentId)
     {
+        if (HoldMathsReview && MathsReview is { } held && held.SegmentId != segmentId) return;
         var segment = Plan?.Segment(segmentId);
         // Interpreted sentences are reviewable too: their words came from a model.
         bool reviewable = segment is { IsMaths: true }
@@ -1237,8 +1359,15 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             Warnings: segment.Warnings,
             Provenance: segment.Provenance,
             CanRegenerate: (_services.MathVerbaliser is not null || _services.ResolvesMathsLate) && unit is not null);
-        OnPropertyChanged(nameof(MathsReview));
+        // No forced notification: this runs on every cue, word cues included, and the review is a
+        // record, so an unchanged one raises nothing (the window reopens the section on a change).
     }
+
+    /// <summary>
+    /// Set by the window while the reader is typing a correction: the review then stays on the
+    /// passage being corrected instead of moving on with the reading and dropping what was typed.
+    /// </summary>
+    public bool HoldMathsReview { get; set; }
 
     private async Task RegenerateMathsAsync()
     {
@@ -1312,8 +1441,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     {
         _overrides = [.. _overrides.Where(o => !(o.PageIndex == pageIndex && o.Region == region)),
                       new MathsRegionOverride(pageIndex, region, treatAsMaths)];
-        StatusMessage = treatAsMaths ? "Region marked as maths. Reload the document to apply."
-                                     : "Region restored to prose. Reload the document to apply.";
+        ShowNotice(treatAsMaths ? "Passage marked as maths. It applies when the document is reloaded (File ▸ Reload)."
+                                : "Passage restored to prose. It applies when the document is reloaded (File ▸ Reload).",
+            "Reload now", () => ReloadDocument.Execute(null));
     }
 
     private async Task TestMathEndpointAsync()
@@ -1321,9 +1451,10 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         Busy = true;
         try
         {
-            if (_services.MathVerbaliser is null) { StatusMessage = "No text LLM is configured."; return; }
+            // The client in use was built at start-up; Settings ▸ Test checks what is entered there now.
+            if (_services.MathVerbaliser is null) { StatusMessage = "No text LLM was configured at start-up (Settings ▸ Test checks a new one)."; return; }
             bool ok = await _services.MathVerbaliser.IsAvailableAsync();
-            StatusMessage = ok ? "Text LLM endpoint responded." : "Text LLM endpoint is not reachable.";
+            StatusMessage = ok ? "The text LLM endpoint in use responded." : "The text LLM endpoint in use (as set at start-up) is not reachable.";
         }
         finally { Busy = false; }
     }
@@ -1333,13 +1464,28 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         Busy = true;
         try
         {
-            if (_services.MathTranscriber is null) { StatusMessage = "No vision model is configured."; return; }
+            if (_services.MathTranscriber is null) { StatusMessage = "No vision model was configured at start-up (Settings ▸ Test checks a new one)."; return; }
             bool ok = await _services.MathTranscriber.IsAvailableAsync();
             // A text-only endpoint must not be reported as vision-capable; the probe is the only
             // honest answer.
-            StatusMessage = ok ? "Vision endpoint responded." : "Vision endpoint is not reachable or is text-only.";
+            StatusMessage = ok ? "The vision endpoint in use responded." : "The vision endpoint in use (as set at start-up) is not reachable or is text-only.";
         }
         finally { Busy = false; }
+    }
+
+    /// <summary>
+    /// Asks before a download: the size, licence and source are stated and nothing is fetched until
+    /// the reader agrees (models are never fetched implicitly).
+    /// </summary>
+    private Task ConfirmDownload(params ModelAsset[] assets)
+    {
+        var asset = assets[^1];
+        long bytes = assets.Sum(a => a.Bytes);
+        string size = bytes >= 1_000_000 ? $"{bytes / 1_000_000.0:F0} MB" : asset.HumanSize;
+        string host = Uri.TryCreate(asset.Url, UriKind.Absolute, out var uri) ? uri.Host : asset.Url;
+        ShowNotice($"Download {asset.Id}: {size}, {asset.Licence}, from {host}?", "Download",
+            () => RunObserved(DownloadModelAsync(assets), "The download failed"));
+        return Task.CompletedTask;
     }
 
     /// <summary>Downloads a model's files in the order given; the last one names the model in the messages.</summary>
@@ -1368,7 +1514,11 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         {
             StatusMessage = $"Download failed: {ex.Message}";
         }
-        finally { Busy = false; }
+        finally
+        {
+            Busy = false;
+            RefreshModelMenu();
+        }
     }
 
     /// <summary>Persists a settings change: reads the file, applies <paramref name="update"/>, writes it back (owner-only).</summary>
@@ -1418,6 +1568,16 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         DownloadLayoutModelGpu.RaiseCanExecuteChanged();
         DownloadFormulaModel.RaiseCanExecuteChanged();
         ApplyMathsEdit.RaiseCanExecuteChanged();
+        CloseDocument.RaiseCanExecuteChanged();
+        ReloadDocument.RaiseCanExecuteChanged();
+        GoToPage.RaiseCanExecuteChanged();
+        ZoomIn.RaiseCanExecuteChanged();
+        ZoomOut.RaiseCanExecuteChanged();
+        Zoom200.RaiseCanExecuteChanged();
+        Zoom400.RaiseCanExecuteChanged();
+        Zoom800.RaiseCanExecuteChanged();
+        MarkAsMaths.RaiseCanExecuteChanged();
+        RestoreAsProse.RaiseCanExecuteChanged();
     }
 
     public async ValueTask DisposeAsync()
