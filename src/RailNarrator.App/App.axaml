@@ -15,11 +15,18 @@
           <Color x:Key="ReadingCanvasColor">#808080</Color>
           <SolidColorBrush x:Key="OverlayCardBrush" Color="#F7FFFFFF" />
           <SolidColorBrush x:Key="OverlayVeilBrush" Color="#66000000" />
+          <!-- Status colours for text, at least 4.5:1 on the window's background in each theme. -->
+          <SolidColorBrush x:Key="WarningTextBrush" Color="#8A5600" />
+          <SolidColorBrush x:Key="SuccessTextBrush" Color="#0E700E" />
+          <SolidColorBrush x:Key="ErrorTextBrush" Color="#C42B1C" />
         </ResourceDictionary>
         <ResourceDictionary x:Key="Dark">
           <Color x:Key="ReadingCanvasColor">#2B2B2B</Color>
           <SolidColorBrush x:Key="OverlayCardBrush" Color="#F21E2228" />
           <SolidColorBrush x:Key="OverlayVeilBrush" Color="#99000000" />
+          <SolidColorBrush x:Key="WarningTextBrush" Color="#FFB74D" />
+          <SolidColorBrush x:Key="SuccessTextBrush" Color="#7BD88F" />
+          <SolidColorBrush x:Key="ErrorTextBrush" Color="#FF8A80" />
         </ResourceDictionary>
       </ResourceDictionary.ThemeDictionaries>
     </ResourceDictionary>

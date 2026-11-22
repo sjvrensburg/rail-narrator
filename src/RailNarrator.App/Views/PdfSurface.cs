@@ -890,14 +890,38 @@ public sealed class PdfSurface : Control
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
-        switch (e.Key)
+        // Escape is the window's (resume following, else pause), wherever focus is.
+        if (e.KeyModifiers == KeyModifiers.None && HandleNavigationKey(e.Key)) e.Handled = true;
+    }
+
+    /// <summary>
+    /// The keyboard's way about the page: Page Up/Down turn pages, the arrows scroll (on to the next
+    /// page at a page's end, as the wheel does), Home and End go to the page's top and bottom. All of
+    /// it is browsing, so following pauses. False for any other key, or with no document.
+    /// </summary>
+    public bool HandleNavigationKey(Key key)
+    {
+        if (_source is null) return false;
+        switch (key)
         {
-            case Key.PageDown:
-                TurnPage(+1); e.Handled = true; break;
-            case Key.PageUp:
-                TurnPage(-1); e.Handled = true; break;
-            case Key.Escape:
-                _viewModel?.Coordinator.ResumeFollow(); e.Handled = true; break;
+            case Key.PageDown: TurnPage(+1); return true;
+            case Key.PageUp: TurnPage(-1); return true;
+            case Key.Down: ScrollBy(0, -0.5); return true;
+            case Key.Up: ScrollBy(0, +0.5); return true;
+            case Key.Right: ScrollBy(-0.5, 0); return true;
+            case Key.Left: ScrollBy(+0.5, 0); return true;
+            case Key.Home:
+            case Key.End:
+            {
+                CancelGlide();
+                _viewModel?.NotifyManualNavigation();
+                var (_, h) = _source.PageSize(CurrentPage);
+                _offsetY = key == Key.Home ? 0 : Bounds.Height - h * Zoom;
+                ClampOffsets();
+                InvalidateVisual();
+                return true;
+            }
+            default: return false;
         }
     }
 

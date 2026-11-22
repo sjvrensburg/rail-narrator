@@ -12,5 +12,7 @@ public partial class SettingsWindow : Window
     {
         DataContext = viewModel;
         InitializeComponent();
+        // Every change is saved as it is made, so Escape only closes. Not Enter: there are text boxes.
+        DialogKeyboard.EnableEscEnterClose<object?>(this, null, null);
     }
 }

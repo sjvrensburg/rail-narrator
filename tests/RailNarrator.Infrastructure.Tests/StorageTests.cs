@@ -349,4 +349,28 @@ public sealed class RecentDocumentsStoreTests : IDisposable
         Assert.Empty(store.Load());
         Assert.NotEqual(store.ThumbnailPath("/papers/a.pdf"), store.ThumbnailPath("/papers/b.pdf"));
     }
+
+    [Fact]
+    public void RemovingMissing_KeepsDocumentsThatExist_AndClearingForgetsEverything()
+    {
+        Directory.CreateDirectory(_dir);
+        string present = Path.Combine(_dir, "present.pdf");
+        File.WriteAllText(present, "%PDF-1.4");
+        string gone = Path.Combine(_dir, "gone.pdf");
+        var store = new RailNarrator.Infrastructure.RecentDocumentsStore(_dir);
+        var t = new DateTime(2026, 11, 19, 10, 0, 0, DateTimeKind.Utc);
+        store.Opened(present, 1, t);
+        store.Opened(gone, 1, t.AddMinutes(1));
+        string goneThumbnail = store.ThumbnailPath(gone);
+        Directory.CreateDirectory(Path.GetDirectoryName(goneThumbnail)!);
+        File.WriteAllText(goneThumbnail, "png");
+
+        var kept = store.RemoveMissing();
+        Assert.Equal([present], kept.Select(d => d.Path));
+        Assert.Equal([present], store.Load().Select(d => d.Path));
+        Assert.False(File.Exists(goneThumbnail));
+
+        Assert.Empty(store.Clear());
+        Assert.Empty(store.Load());
+    }
 }

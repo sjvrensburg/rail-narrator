@@ -44,10 +44,10 @@
       <Setter Property="Margin" Value="0,12,0,0" />
     </Style>
     <Style Selector="TextBlock.pass">
-      <Setter Property="Foreground" Value="#7BD88F" />
+      <Setter Property="Foreground" Value="{DynamicResource SuccessTextBrush}" />
     </Style>
     <Style Selector="TextBlock.fail">
-      <Setter Property="Foreground" Value="#FF8A80" />
+      <Setter Property="Foreground" Value="{DynamicResource ErrorTextBrush}" />
     </Style>
   </Window.Styles>
 

@@ -101,18 +101,37 @@ public sealed class RelayCommand : ICommand
 }
 
 /// <summary>A synchronous command with a typed parameter (a recent document in a list, say).</summary>
+/// <remarks>
+/// <see cref="CanExecute"/> answers true while the parameter is still unset. A control may ask
+/// before its <c>CommandParameter</c> binding has a value (a context menu's items are built when it
+/// first opens), and this command never raised <c>CanExecuteChanged</c> to be asked again, so the
+/// item stayed disabled for good. <see cref="Execute"/> still ignores anything that is not a
+/// <typeparamref name="T"/>.
+/// </remarks>
 public sealed class RelayCommand<T> : ICommand where T : class
 {
     private readonly Action<T> _execute;
+    private readonly Func<T, bool>? _canExecute;
 
-    public RelayCommand(Action<T> execute) => _execute = execute ?? throw new ArgumentNullException(nameof(execute));
+    public RelayCommand(Action<T> execute, Func<T, bool>? canExecute = null)
+    {
+        _execute = execute ?? throw new ArgumentNullException(nameof(execute));
+        _canExecute = canExecute;
+    }
 
-    public event EventHandler? CanExecuteChanged { add { } remove { } }
+    public event EventHandler? CanExecuteChanged;
 
-    public bool CanExecute(object? parameter) => parameter is T;
+    public void RaiseCanExecuteChanged() => CanExecuteChanged?.Invoke(this, EventArgs.Empty);
+
+    public bool CanExecute(object? parameter) => parameter switch
+    {
+        null => true,
+        T value => _canExecute?.Invoke(value) ?? true,
+        _ => false,
+    };
 
     public void Execute(object? parameter)
     {
-        if (parameter is T value) _execute(value);
+        if (parameter is T value && (_canExecute?.Invoke(value) ?? true)) _execute(value);
     }
 }
