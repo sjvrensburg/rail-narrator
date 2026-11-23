@@ -1,8 +1,8 @@
 # Next steps and open decisions
 
-Handover note, 23 November 2026, on the `feat/maths-endpoint-notice` branch (from `main`
-after PR #44). It builds with 0 warnings; the test runner reports 723 passed and 16 skipped.
-`status.md` gives 720 passing and 19 opt-in, because it
+Handover note, 23 November 2026, on the `fix/legacy-font-encoding` branch (from `main`
+after PR #45). It builds with 0 warnings; the test runner reports 730 passed and 16 skipped.
+`status.md` gives 727 passing and 19 opt-in, because it
 counts as opt-in the three Phonon tests that return early without an install and so report as
 passed. What is verified, and how it was measured, is in `status.md`. How to run the real models,
 the GUI and the audio path on a new machine is in `testing-real-world.md`.
@@ -53,6 +53,9 @@ Since PR #10:
 
 ## Recently landed
 
+- **Brackets and signs from older maths fonts** (`fix/legacy-font-encoding`, `status.md` item 93):
+  "ð", "Þ", "¼" and "þ" are read as "(", ")", "=" and "+" in documents that use that encoding.
+  The reader heard the letter names ("a lot better") and the Claude Test button passes.
 - **A notice when the maths endpoint cannot be asked** (`feat/maths-endpoint-notice`, `status.md`
   item 91): a refused key or an exhausted quota is said once in the status bar, with a button to
   Settings ▸ Maths, where before equations were quietly read by rule. The mark's track is unbroken.
@@ -123,12 +126,10 @@ In rough priority order:
   learning or applied physics. Still to do: a pure-mathematics and a physics paper, a text-only
   language model with `--evidence latex`, and the false disagreement when a text layer lacks a
   capital Greek letter that is on the page (2 of 27 equations in one paper).
-- **Legacy font encodings in prose read as printed.** Older Elsevier and OUP fonts give "=" as
-  "¼", "(" and ")" as "ð" and "Þ", "+" as "þ". A sentence with maths that is read as printed is
-  then noise ("ri;j;t ¼ ɛ tanhð…"). Mapping them back is cheap; it was only done for equation
-  labels.
-- **Listen to the letter names** (`status.md` item 90). They were checked with a speech
-  recogniser, not by ear. "aitch" and "eff" were each misheard once on Phonon.
+- **What is left of the older fonts' encoding** (`status.md` item 93). Brackets, "=" and "+" are
+  restored. "6¼" for "≠", "2" for "∈", "j" for "|" and "ffiffiffi" under a root are not: they
+  are ambiguous or change the text's length, so they need the mapping machinery, not a
+  character swap.
 - **Sentences with maths in the line** get nothing from the formula model: it reads a formula's
   crop, not a line of text. They are 135 of the GARCH paper's 224 maths passages, the cheap ones
   (about 3 s each on the local model). Reading them locally needs either the inline formulae's
@@ -184,6 +185,10 @@ In rough priority order:
   out of 40 on the reference machine with one and a half busy loops per core, so plain CPU
   starvation does not bring it out. Next time it fails, keep the test's name and message; if it
   must be hunted, try memory pressure or the LLM server running, which is what was different.
+  Also on 2026-11-23, `NarrationCoordinatorTests.APassageLongerThanTheProviderAccepts_IsSpokenInPieces_AsOneClip`
+  failed once in a full-solution run and passed in ten runs of its suite alone; its message was
+  not kept either. A guess to check: the load and the Play each prepare the passage under their
+  own generation, so the fake engine may record the pieces twice.
   A candidate since 2026-11-23: `EngineLockingTests.SeeksRacingClipTransitions_DoNotDeadlock` ran
   into its 60 s deadline once in a full-solution run with a load average of 11, then passed three
   isolated runs. The message was lost again, but reaching the deadline means the UI thread kept

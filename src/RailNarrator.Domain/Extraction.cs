@@ -219,8 +219,9 @@ public static class ExtractorVersions
     /// 2: analysis raster sized in pixels, not read as a DPI.
     /// 3: a model's blocks are sorted into its reading order before post-processing.
     /// 4: a page with little text is recognised only when it has ink outside that text.
+    /// 5: brackets, "=" and "+" restored on a page whose maths font hides them (LegacyMathsEncoding).
     /// </remarks>
-    public const string Current = "extraction/4";
+    public const string Current = "extraction/5";
 }
 
 /// <summary>
