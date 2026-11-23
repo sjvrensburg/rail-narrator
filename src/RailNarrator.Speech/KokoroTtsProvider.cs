@@ -164,7 +164,9 @@ public sealed class KokoroTtsProvider : ITtsProvider
             // resampling belongs to the audio engine, which tracks the mapping.
             [AudioFormat.Mono24000Float32, new AudioFormat(OutputSampleRate, 1, SampleFormat.Int16LittleEndian)],
             SupportsStreaming: false,
-            _observedTiming,
+            // The timing of the runner in use: the GPU path has its own model, which has no
+            // durations, whatever the CPU export beside it declares.
+            _chain?.Active is { Device: not "cpu" } ? TimingProvenance.None : _observedTiming,
             // Kokoro takes a speed input, but changing it re-renders the audio rather than stretching
             // it, and the resulting timing evidence would no longer match a cached clip. Rail
             // Narrator controls rate at playback instead, so this is reported as unsupported.

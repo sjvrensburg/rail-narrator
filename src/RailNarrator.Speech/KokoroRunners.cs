@@ -193,11 +193,14 @@ public sealed class KokoroSessionRunner : IKokoroRunner
         {
             using var results = _session.Run(inputs);
             float[]? durations = _hasDurations
-                ? [.. results.First(r => r.Name == KokoroTtsProvider.DurationsOutputName).AsTensor<float>()]
+                ? Copy(results.First(r => r.Name == KokoroTtsProvider.DurationsOutputName).AsTensor<float>())
                 : null;
             // The audio is the output that is not the durations, whatever the export calls it.
-            float[] audio = [.. results.First(r => r.Name != KokoroTtsProvider.DurationsOutputName).AsTensor<float>()];
+            float[] audio = Copy(results.First(r => r.Name != KokoroTtsProvider.DurationsOutputName).AsTensor<float>());
             return (audio, padded, durations);
+
+            // The tensor's memory in one copy; enumerating it is a virtual call for every sample.
+            static float[] Copy(Tensor<float> tensor) => tensor is DenseTensor<float> dense ? dense.Buffer.ToArray() : [.. tensor];
         }
     }
 

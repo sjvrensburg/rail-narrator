@@ -445,6 +445,56 @@ public sealed class NarrationCoordinatorTests
         Assert.Equal([1, 2, 3, 4, 5], reported);
     }
 
+    /// <summary>Interprets at once, and notes how far the narration had come when each passage was asked about.</summary>
+    private sealed class NotingResolver(Func<int> handedOver) : ISegmentResolver
+    {
+        public readonly List<(string Id, int HandedOver)> Asked = [];
+        public Task<NarrationSegment> RefreshAsync(NarrationPlan plan, NarrationSegment segment, CancellationToken ct = default)
+            => Task.FromResult(segment);
+        public Task<NarrationSegment> ResolveAsync(NarrationPlan plan, NarrationSegment segment, CancellationToken ct = default)
+        {
+            lock (Asked) Asked.Add((segment.Id, handedOver()));
+            return Task.FromResult(segment with
+            {
+                SpokenText = "An interpreted reading of passage " + segment.Id + ".",
+                Provenance = ScriptProvenance.ModelGenerated, ScriptRevision = segment.ScriptRevision + 1,
+            });
+        }
+    }
+
+    [Fact]
+    public async Task NarratingTheWholePlan_InterpretsMathsAheadAllTheWay_AndAsksAboutEachPassageOnce()
+    {
+        // Maths far past the first passages: left at the start, the interpret-ahead window never
+        // reached it, and each model call was then waited for with the engine idle. A passage
+        // interpreted ahead was also asked about a second time.
+        var plan = PlanWith(70);
+        int[] maths = [5, 20, 48, 55, 62, 69];
+        plan = plan with { Segments = plan.Segments.Select((s, i) => maths.Contains(i) ? s with { Provenance = ScriptProvenance.PendingInterpretation } : s).ToList() };
+        int handed = 0;
+        var resolver = new NotingResolver(() => Volatile.Read(ref handed));
+        await using var tts = new FakeTtsProvider(new FakeTtsOptions(Latency: TimeSpan.FromMilliseconds(15)));
+        await using var coordinator = new NarrationCoordinator(tts, new NullAudioTransport(), resolver: resolver);
+        await coordinator.LoadPlanAsync(plan);
+        var spoken = new List<NarrationSegment>();
+
+        await coordinator.NarrateAllAsync((segment, _, _, _) =>
+        {
+            spoken.Add(segment);
+            Interlocked.Increment(ref handed);
+            return Task.CompletedTask;
+        });
+
+        Assert.Equal(70, spoken.Count);
+        Assert.All(maths, i => Assert.Equal(ScriptProvenance.ModelGenerated, spoken[i].Provenance));
+        List<(string Id, int HandedOver)> asked;
+        lock (resolver.Asked) asked = resolver.Asked.ToList();
+        Assert.Equal(maths.Select(i => plan.Segments[i].Id).Order(), asked.Select(a => a.Id).Order());
+        // Each was asked about before the narration reached it (reached, i passages have been handed over).
+        Assert.All(asked, a => Assert.True(a.HandedOver < plan.Segments.ToList().FindIndex(s => s.Id == a.Id),
+            $"{a.Id} was interpreted only when the narration got to it ({a.HandedOver} handed over)."));
+    }
+
     private sealed class ImmediateProgress<T>(Action<T> report) : IProgress<T>
     {
         public void Report(T value) => report(value);

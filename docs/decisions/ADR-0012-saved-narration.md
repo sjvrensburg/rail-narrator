@@ -52,8 +52,11 @@ chapters, word timing when the aligner is installed.
   narrated in 9 min 35 s without a window, most of it alignment; the file is 2.7 MB, the M4B
   4.2 MB with four chapters at the right headings.
 - The audio is 40.2 kbit/s as stored (3.18 MB for 633 s in an earlier run).
-- The codec, on a 30 s tone: encoding takes 2.9 s and decoding 1.8 s. A long passage therefore
-  takes a second or two to decode, which the lookahead absorbs and a seek to it does not.
+- The codec, on a 30 s tone through its float entry points: encoding took 2.9 s and decoding
+  1.8 s. Given 16-bit samples instead (it works in fixed point), on 22 s of speech on a
+  power-limited machine, second pass: encoding 51× real time, decoding about 300× (`status.md`
+  item 96), which is 0.1 s for a 30 s passage once the codec's code is compiled. A seek in the
+  application was not timed, and the first decode of a session also pays for that compilation.
 - A clip decodes to its own length with a tone's onset within 5 ms of where it was (test).
 
 ## Not done

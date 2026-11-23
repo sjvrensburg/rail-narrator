@@ -24,6 +24,14 @@ public interface IRecordedNarration
 
     /// <summary>The passage's clip, or null when it is not recorded with this script.</summary>
     Task<RecordedClip?> TryGetAsync(NarrationSegment segment, CancellationToken ct = default);
+
+    /// <summary>
+    /// What is known about the passage's clip (its length, voice, timings) without its audio, or
+    /// null when it is not recorded with this script. For a caller that needs only lengths: the
+    /// audio of a whole document is minutes of decoding.
+    /// </summary>
+    async Task<SpeechAsset?> TryGetAssetAsync(NarrationSegment segment, CancellationToken ct = default)
+        => (await TryGetAsync(segment, ct).ConfigureAwait(false))?.Asset;
 }
 
 /// <summary>How far a whole-document narration has come.</summary>
@@ -31,7 +39,17 @@ public interface IRecordedNarration
 /// <param name="Total">Passages in the document.</param>
 /// <param name="Segment">The passage just finished, as it will be read.</param>
 /// <param name="AudioSeconds">Listening time narrated so far.</param>
-public sealed record NarrationProgress(int Done, int Total, NarrationSegment Segment, double AudioSeconds);
+public sealed record NarrationProgress(int Done, int Total, NarrationSegment Segment, double AudioSeconds)
+{
+    /// <summary>Time so far in interpreting and speaking (cache look-ups included).</summary>
+    public double PrepareSeconds { get; init; }
+
+    /// <summary>Time so far waiting for the aligner.</summary>
+    public double AlignSeconds { get; init; }
+
+    /// <summary>Time so far in what the passages were handed to (encoding and writing).</summary>
+    public double SinkSeconds { get; init; }
+}
 
 /// <summary>
 /// A transport that plays nothing: for a coordinator that narrates a document to a file instead of

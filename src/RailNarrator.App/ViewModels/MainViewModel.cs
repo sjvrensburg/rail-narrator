@@ -1007,11 +1007,14 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             // Region corrections belong to the document they were made in; reloading it applies them.
             var overrides = hash == _overridesHash ? _overrides : [];
             var builder = _services.CreateUnitBuilder(overrides);
-            var (units, diagnostics) = await Task.Run(() =>
-            {
-                var built = builder.Build(snapshot, out var notes);
-                return (built, notes);
-            });
+            // A saved narration brings its plan, units and all: nothing is built to be thrown away.
+            var (units, diagnostics) = saved is not null
+                ? (saved.Plan.Units, (IReadOnlyList<string>)[])
+                : await Task.Run(() =>
+                {
+                    var built = builder.Build(snapshot, out var notes);
+                    return (built, notes);
+                });
             foreach (string d in diagnostics) if (!Notes.Contains(d)) Notes.Add(d);
 
             if (units.Count == 0)

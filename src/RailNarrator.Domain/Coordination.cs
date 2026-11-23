@@ -351,21 +351,51 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         await Task.CompletedTask.ConfigureAwait(false);
     }
 
-    private int _alignerWarming;
+    // The aligner's start-up, once it has been asked for; null until then.
+    private Task? _alignerWarmUp;
+    private readonly object _alignerWarmUpGate = new();
 
     /// <summary>
-    /// Starts the word aligner while the reader is still looking at the page, once per session,
-    /// rather than leaving it to the first passage that needs fresh audio.
+    /// Starts the word aligner while the reader is still looking at the page, rather than leaving
+    /// it to the first passage that needs fresh audio. Not when the reader prefers the speech
+    /// engine's own word timing and the engine gives it: the aligner then has only the few passages
+    /// the engine declines, and its start-up (23 to 56 s of processor) would be taken from the
+    /// speech. It is started then by the first passage that needs it
+    /// (<see cref="EnsureAlignerStarting"/>), and neither the lookahead nor that passage's own
+    /// time limit waits on the start.
     /// </summary>
     private void WarmUpAligner()
     {
-        if (!_options.RequestTimings || _aligner is not { } aligner || Interlocked.Exchange(ref _alignerWarming, 1) == 1) return;
+        if (!_options.RequestTimings || _aligner is null || _alignerWarmUp is not null) return;
+        if (_options.WordTiming != WordTimingSource.Engine) { _ = EnsureAlignerStarting(); return; }
         _ = Task.Run(async () =>
         {
-            try { await aligner.WarmUpAsync(_lifetime.Token).ConfigureAwait(false); }
-            catch (Exception) { /* the first alignment reports what is wrong */ }
+            try
+            {
+                var timing = (await _tts.GetCapabilitiesAsync(_lifetime.Token).ConfigureAwait(false)).NativeTiming;
+                if (timing is TimingProvenance.ModelAttention or TimingProvenance.NativeDuration) return;
+            }
+            catch (Exception) { /* an engine that cannot say is not one to rely on for timing */ }
+            _ = EnsureAlignerStarting();
         });
     }
+
+    /// <summary>Begins the aligner's start-up if it has not begun, and returns it; never throws.</summary>
+    private Task EnsureAlignerStarting()
+    {
+        if (_aligner is not { } aligner) return Task.CompletedTask;
+        lock (_alignerWarmUpGate)
+        {
+            return _alignerWarmUp ??= Task.Run(async () =>
+            {
+                try { await aligner.WarmUpAsync(_lifetime.Token).ConfigureAwait(false); }
+                catch (Exception) { /* the first alignment reports what is wrong */ }
+            });
+        }
+    }
+
+    /// <summary>True once the aligner has been started and its start-up is over.</summary>
+    private bool AlignerIsWarm => _alignerWarmUp is { IsCompleted: true };
 
     /// <summary>Starts playback from the current segment.</summary>
     public async Task PlayAsync(CancellationToken ct = default)
@@ -801,7 +831,9 @@ public sealed class NarrationCoordinator : IAsyncDisposable
                     await PrepareSegmentAsync(segment, e.Caps, e.Format, e.Voice, generation, ct).ConfigureAwait(false);
                     // Its word timing is the next expensive job: wait for it here, so the bound holds,
                     // while playback (which does not wait for it) can already play the passage.
-                    if (_aligning.TryGetValue(segment.Id, out var aligning)) await aligning.ConfigureAwait(false);
+                    // Not while the aligner is still starting: that is half a minute in which
+                    // nothing ahead would be prepared, and the passages after this one are due sooner.
+                    if (AlignerIsWarm && _aligning.TryGetValue(segment.Id, out var aligning)) await aligning.ConfigureAwait(false);
                 }
             }
             finally { limiter.Release(); }
@@ -902,13 +934,28 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         long generation = Generation;
         var engine = await EngineAsync(ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException(Snapshot.Error?.Message ?? "No speech engine is available.");
-        double seconds = 0;
+        double seconds = 0, preparing = 0, aligned = 0, sunk = 0;
         for (int i = 0; i < plan.SegmentCount; i++)
         {
             ct.ThrowIfCancellationRequested();
             string id = plan.Segments[i].Id;
-            await PrepareSegmentAsync(plan.Segments[i], engine.Caps, engine.Format, engine.Voice, generation, ct).ConfigureAwait(false);
+            // The narration's position moves as playback's does, so that maths is interpreted ahead
+            // of it all the way through: left at the start, only the first passages were, and
+            // every model call after them was waited for with the engine idle.
+            NarrationSegment segment;
+            lock (_gate)
+            {
+                _segmentIndex = i;
+                // As the plan has it now: a passage interpreted ahead is not asked about again.
+                segment = (_plan ?? plan).Segments.Count > i && (_plan ?? plan).Segments[i].Id == id ? (_plan ?? plan).Segments[i] : plan.Segments[i];
+            }
+            InterpretAhead(generation);
+            long mark = System.Diagnostics.Stopwatch.GetTimestamp();
+            await PrepareSegmentAsync(segment, engine.Caps, engine.Format, engine.Voice, generation, ct).ConfigureAwait(false);
+            preparing += System.Diagnostics.Stopwatch.GetElapsedTime(mark).TotalSeconds;
+            mark = System.Diagnostics.Stopwatch.GetTimestamp();
             if (_aligning.TryGetValue(id, out var aligning)) await aligning.WaitAsync(ct).ConfigureAwait(false);
+            aligned += System.Diagnostics.Stopwatch.GetElapsedTime(mark).TotalSeconds;
             if (generation != Generation) throw new InvalidOperationException("The narration was interrupted by another request.");
 
             PreparedClip? clip;
@@ -922,10 +969,15 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             if (clip is null)
                 throw new InvalidOperationException(
                     $"Passage {i + 1} of {plan.SegmentCount} could not be spoken: {Snapshot.Error?.Message ?? "no audio was produced"}");
+            mark = System.Diagnostics.Stopwatch.GetTimestamp();
             await sink(resolved, clip.Asset, clip.Pcm, ct).ConfigureAwait(false);
+            sunk += System.Diagnostics.Stopwatch.GetElapsedTime(mark).TotalSeconds;
             lock (_gate) _prepared.Remove(id);
             seconds += clip.Asset.DurationSeconds;
-            progress?.Report(new NarrationProgress(i + 1, plan.SegmentCount, resolved, seconds));
+            progress?.Report(new NarrationProgress(i + 1, plan.SegmentCount, resolved, seconds)
+            {
+                PrepareSeconds = preparing, AlignSeconds = aligned, SinkSeconds = sunk,
+            });
         }
     }
 
@@ -933,6 +985,14 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     {
         var plan = _plan;
         if (plan is null || _resolver is null) return segment;
+        // A caller holding the plan as it was (the lookahead takes it once, for its whole pass) asks
+        // about a passage that has been interpreted since: it gets that answer, not a second request.
+        lock (_gate)
+        {
+            if (_plan?.Segments.FirstOrDefault(s => s.Id == segment.Id) is { } current
+                && current.Provenance != ScriptProvenance.PendingInterpretation && current.ScriptRevision > segment.ScriptRevision)
+                return current;
+        }
         string key = $"{plan.Header.PlanId}:{plan.Header.InputFingerprint}:{segment.Id}:{segment.ScriptRevision}";
         _stages[segment.Id] = PreparationStage.Interpreting;
         var lazy = _resolving.GetOrAdd(key, _ => new Lazy<Task<NarrationSegment>>(
@@ -1398,6 +1458,8 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             _stages[segment.Id] = PreparationStage.Aligning;
             if (!await _aligner.IsAvailableAsync(ct).ConfigureAwait(false))
                 return asset with { TimingWarnings = asset.TimingWarnings.Append("Local word aligner is unavailable.").Distinct().ToArray() };
+            // The start-up first, under its own limit: an alignment's time limit is for aligning.
+            await EnsureAlignerStarting().WaitAsync(ct).ConfigureAwait(false);
             string revision = CacheKey.ForAlignment(hash, "forced", _aligner.Revision, CacheKey.Sha256Hex(segment.SpokenText));
             if (asset.AlignmentRevision == revision && asset.PcmHash == hash && asset.HasTimings) return asset;
             var aligned = await _aligner.AlignAsync(pcm, asset.Format, segment.SpokenText, ct).ConfigureAwait(false);

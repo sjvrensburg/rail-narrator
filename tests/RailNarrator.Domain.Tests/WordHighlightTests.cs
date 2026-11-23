@@ -252,6 +252,8 @@ public sealed class WordHighlightTests
         Assert.All(asset.Timings, c => Assert.Equal(CueGranularity.Word, c.Granularity));
         Assert.All(asset.Timings, c => Assert.NotEmpty(c.AnchorIds));
         Assert.Equal(0, aligner.Calls);
+        // Nor is it started ahead of need: its start-up would compete with the speech.
+        Assert.Equal(0, aligner.WarmUps);
     }
 
     [Fact]
@@ -263,6 +265,54 @@ public sealed class WordHighlightTests
         Assert.Equal(TimingProvenance.NativeDuration, asset.TimingProvenance);
         Assert.Equal(8, asset.Timings.Count);
         Assert.Equal(1, aligner.Calls);
+        Assert.Equal(1, aligner.WarmUps);
+    }
+
+    [Fact]
+    public async Task WithTheEnginePreferred_APassageItCannotTime_StartsTheAligner_WithoutHoldingUpWhatFollows()
+    {
+        // The engine gives no timing here, so the aligner is needed after all; it is started for
+        // the load, and while it starts (half a minute for the real one) the passages ahead are
+        // still prepared and no alignment is asked of a worker that is not up.
+        var plan = await Plan("The first sentence is read aloud here.", "A second sentence follows it closely.", "And a third one ends the page.");
+        var tts = new FakeTtsProvider();
+        var transport = new FakeAudioTransport();
+        var aligner = new TestAligner { WarmUpHold = new TaskCompletionSource() };
+        await using var coordinator = new NarrationCoordinator(tts, transport,
+            options: NarrationCoordinatorOptions.Default with { WordTiming = WordTimingSource.Engine }, aligner: aligner);
+
+        await coordinator.LoadPlanAsync(plan);
+        for (int i = 0; i < 300 && tts.SynthesizeCount < plan.SegmentCount; i++) await Task.Delay(10);
+
+        Assert.Equal(plan.SegmentCount, tts.SynthesizeCount);
+        Assert.Equal(1, aligner.WarmUps);
+        Assert.Equal(0, aligner.Calls);
+
+        aligner.WarmUpHold.SetResult();
+        for (int i = 0; i < 300 && aligner.Calls < plan.SegmentCount; i++) await Task.Delay(10);
+        Assert.Equal(plan.SegmentCount, aligner.Calls);
+        Assert.True(aligner.WarmedBeforeFirstCall, "An alignment was asked of an aligner that had not finished starting.");
+    }
+
+    [Fact]
+    public async Task WithTheEnginePreferred_AndTimingGiven_ADeclinedPassageStartsTheAlignerThen()
+    {
+        // The engine times its words, except for one passage: the aligner is not started at load,
+        // and is started, and waited for, by the passage that needs it.
+        var plan = await Plan("The first sentence is read aloud here.", "A second sentence follows it closely.");
+        string declined = plan.Segments[1].SpokenText;
+        var tts = new FakeTtsProvider(new FakeTtsOptions(EmitTimings: true,
+            TimingFactory: (text, frames) => text == declined ? [] : EngineWords(text, frames)));
+        var aligner = new TestAligner();
+        await using var coordinator = new NarrationCoordinator(tts, new FakeAudioTransport(),
+            options: NarrationCoordinatorOptions.Default with { WordTiming = WordTimingSource.Engine }, aligner: aligner);
+
+        await coordinator.LoadPlanAsync(plan);
+        for (int i = 0; i < 300 && aligner.Calls == 0; i++) await Task.Delay(10);
+
+        Assert.Equal(1, aligner.Calls);
+        Assert.Equal(1, aligner.WarmUps);
+        Assert.True(aligner.WarmedBeforeFirstCall);
     }
 
     [Fact]
@@ -302,10 +352,19 @@ public sealed class WordHighlightTests
         public int WarmUps;
         public Task<bool> IsAvailableAsync(CancellationToken ct = default)
             => FailProbe ? throw new IOException("test unavailable") : Task.FromResult(true);
-        public Task WarmUpAsync(CancellationToken ct = default) { Interlocked.Increment(ref WarmUps); return Task.CompletedTask; }
+        /// <summary>Set to make the start-up last until it is released, as the real worker's does for half a minute.</summary>
+        public TaskCompletionSource? WarmUpHold;
+        public bool WarmedBeforeFirstCall = true;
+        private volatile bool _warm;
+        public async Task WarmUpAsync(CancellationToken ct = default)
+        {
+            Interlocked.Increment(ref WarmUps);
+            if (WarmUpHold is { } hold) await hold.Task.WaitAsync(ct);
+            _warm = true;
+        }
         public async Task<WordAlignment> AlignAsync(ReadOnlyMemory<byte> pcm, AudioFormat format, string script, CancellationToken ct = default)
         {
-            Interlocked.Increment(ref Calls);
+            if (Interlocked.Increment(ref Calls) == 1) WarmedBeforeFirstCall = _warm;
             if (Hold is { } hold) await hold.Task.WaitAsync(ct);
             if (Fail) throw new InvalidDataException("test mismatch");
             return new WordAlignment(SpokenWord.Tokenize(script).Select((w, i) => new AlignedWord(w.Range, i * 12000, i * 12000 + 3000)).ToArray(), []);
