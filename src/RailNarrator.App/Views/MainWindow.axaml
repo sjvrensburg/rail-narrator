@@ -114,6 +114,7 @@
            the models directory each time it opens (MainWindow: RefreshModelMenu). -->
       <MenuItem Name="ModelsMenu" Header="M_odels and endpoints">
         <MenuItem Header="{Binding DownloadKokoroModelHeader}" Command="{Binding DownloadKokoroModel}" ToolTip.Tip="Kokoro-82M FP16: speech on this computer" />
+        <MenuItem Header="{Binding DownloadKokoroTimedModelHeader}" Command="{Binding DownloadKokoroTimedModel}" ToolTip.Tip="Kokoro-82M FP16 with phoneme durations: word timing from the model itself, with no aligner. Used when Settings ▸ Reading ▸ Word timing is set to the speech engine's own" />
         <MenuItem Header="{Binding DownloadLayoutModelHeader}" Command="{Binding DownloadLayoutModel}" ToolTip.Tip="Docling Heron INT8: finds headings, figures, tables and equations (on the CPU)" />
         <MenuItem Header="{Binding DownloadLayoutModelGpuHeader}" Command="{Binding DownloadLayoutModelGpu}" ToolTip.Tip="Docling Heron FP32: the layout model on a WebGPU-capable GPU" />
         <MenuItem Header="{Binding DownloadFormulaModelHeader}" Command="{Binding DownloadFormulaModel}" ToolTip.Tip="PP-FormulaNet_plus-M: reads display equations to LaTeX on this computer" />

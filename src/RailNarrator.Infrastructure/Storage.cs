@@ -126,6 +126,13 @@ public sealed record RailNarratorSettings
     public string? ZonosExecutable { get; init; }
     public string? ZonosModelDirectory { get; init; }
     public bool WordHighlighting { get; init; } = true;
+
+    /// <summary>
+    /// Whose word timing is used when the speech engine reports its own (Phonon from its
+    /// attention, Kokoro from its durations): the aligner's when installed, or the engine's, which
+    /// needs nothing installed and comes with the audio but is coarser.
+    /// </summary>
+    public WordTimingSource WordTiming { get; init; } = WordTimingSource.Aligner;
     public string? MfaExecutable { get; init; }
     public string? MfaDictionaryPath { get; init; }
     public string? MfaAcousticModelPath { get; init; }

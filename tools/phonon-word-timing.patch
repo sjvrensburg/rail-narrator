@@ -1,0 +1,401 @@
+diff --git a/ptts-ffi/include/ptts.h b/ptts-ffi/include/ptts.h
+index 66ed6aa..48a85cc 100644
+--- a/ptts-ffi/include/ptts.h
++++ b/ptts-ffi/include/ptts.h
+@@ -34,6 +34,15 @@ typedef bool (*PttsFrameFn)(const float *pcm, size_t n, void *user);
+ /// voice.
+ PttsHandle *ptts_new(const char *dir, uint32_t unit, const char *lang);
+ bool ptts_speak(PttsHandle *h, const char *text, PttsFrameFn cb, void *user, PttsResult *out);
++/// Word timing (not part of upstream Phonon; the CPU engine only). `chunk` is called once for
++/// each chunk of the text before its frames: the text as the model was given it, and for each of
++/// its n tokens the byte offset in it where the token ends. `align` is called once for each
++/// generated frame (80 ms) of the current chunk: the attention of head `head` of layer `layer`
++/// (both from 0) over the chunk's n tokens.
++typedef void (*PttsChunkFn)(const char *text, const uint32_t *token_ends, size_t n, void *user);
++typedef void (*PttsAlignFn)(const float *scores, size_t n, void *user);
++bool ptts_speak_aligned(PttsHandle *h, const char *text, PttsFrameFn cb, uint32_t layer, uint32_t head,
++                        PttsChunkFn chunk, PttsAlignFn align, void *user, PttsResult *out);
+ /// NUL-separated voice names, ending in a second NUL. Borrowed.
+ const char *ptts_voices(const PttsHandle *h);
+ bool ptts_set_voice(PttsHandle *h, const char *name);
+diff --git a/ptts-ffi/src/cpu.rs b/ptts-ffi/src/cpu.rs
+index d250337..2ed8afd 100644
+--- a/ptts-ffi/src/cpu.rs
++++ b/ptts-ffi/src/cpu.rs
+@@ -28,6 +28,8 @@ pub struct Engine {
+     normalize: Normalize,
+     /// Samples per frame, to count frames in what the stream hands back.
+     frame_size: usize,
++    /// For `speak_aligned`: turns a chunk's token ids back into its text.
++    tokenizer: Option<ptts::tok::Tok>,
+ }
+ 
+ impl Engine {
+@@ -65,6 +67,7 @@ impl Engine {
+             normalize,
+             synth,
+             frame_size,
++            tokenizer: ptts::tok::Tok::open(&dir.join("tokenizer.json")).ok(),
+         })
+     }
+ 
+@@ -134,6 +137,64 @@ impl Engine {
+     }
+ }
+ 
++impl Engine {
++    /// [`Self::speak`], also reporting what word timing is made from (see `ptts::align`): for
++    /// each chunk of text, the text as the model was given it with the byte offset at which each
++    /// of its tokens ends, then for each frame of that chunk the attention of `head` in `layer`
++    /// over those tokens. Chunks and frames are reported in order, on the calling thread, some
++    /// of them only after the audio they belong to.
++    pub fn speak_aligned(
++        &mut self,
++        text: &str,
++        layer: usize,
++        head: usize,
++        sink: &mut dyn FnMut(&[f32]) -> bool,
++        on_chunk: &mut dyn FnMut(&str, &[u32]),
++        on_frame: &mut dyn FnMut(&[f32]),
++    ) -> Result<PttsResult, String> {
++        use ptts::Tokenizer as _;
++        if self.tokenizer.is_none() {
++            return Err("word timing needs the checkpoint's tokenizer.json".to_string());
++        }
++        ptts::align::install(layer, head);
++        let mut report = |tokenizer: &ptts::tok::Tok| {
++            for event in ptts::align::drain() {
++                match event {
++                    ptts::align::Event::Chunk(ids) => {
++                        let text = tokenizer.decode(&ids).unwrap_or_default();
++                        let mut ends = Vec::with_capacity(ids.len());
++                        let mut last = 0u32;
++                        for k in 0..ids.len() {
++                            let upto = tokenizer.decode(&ids[..=k]).map(|s| s.len()).unwrap_or(0);
++                            last = last.max(upto.min(text.len()) as u32);
++                            ends.push(last);
++                        }
++                        if let Some(end) = ends.last_mut() {
++                            *end = text.len() as u32;
++                        }
++                        on_chunk(&text, &ends);
++                    }
++                    ptts::align::Event::Frame(scores) => on_frame(&scores),
++                }
++            }
++        };
++        let tokenizer = self.tokenizer.take();
++        let result = self.speak(text, &mut |pcm: &[f32]| {
++            if let Some(t) = tokenizer.as_ref() {
++                report(t);
++            }
++            sink(pcm)
++        });
++        // The stream has ended and its threads are joined: everything is recorded.
++        if let Some(t) = tokenizer.as_ref() {
++            report(t);
++        }
++        self.tokenizer = tokenizer;
++        ptts::align::remove();
++        result
++    }
++}
++
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+diff --git a/ptts-ffi/src/lib.rs b/ptts-ffi/src/lib.rs
+index ab05b91..94e3702 100644
+--- a/ptts-ffi/src/lib.rs
++++ b/ptts-ffi/src/lib.rs
+@@ -151,6 +151,60 @@ pub unsafe extern "C" fn ptts_speak(
+     }
+ }
+ 
++/// Called once for each chunk of text before its frames: the text as the model was given it
++/// (NUL-terminated UTF-8) and, for each of its `n` tokens, the byte offset in it where the token ends.
++pub type PttsChunkFn = extern "C" fn(*const c_char, *const u32, usize, *mut c_void);
++
++/// Called once for each generated frame (80 ms of audio) of the current chunk, in order: the
++/// attention of the chosen head over the chunk's `n` tokens.
++pub type PttsAlignFn = extern "C" fn(*const f32, usize, *mut c_void);
++
++/// `ptts_speak`, also reporting what word timing can be made from: `chunk_cb` for each chunk of
++/// the text and `align_cb` for each frame, with the attention of head `head` of layer `layer`
++/// (both from 0) of the language model. The CPU engine only. Not part of upstream Phonon.
++///
++/// # Safety
++/// As `ptts_speak`; `chunk_cb` and `align_cb` must be valid for the duration of the call.
++#[cfg(not(target_vendor = "apple"))]
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn ptts_speak_aligned(
++    h: *mut PttsHandle,
++    text: *const c_char,
++    cb: PttsFrameFn,
++    layer: u32,
++    head: u32,
++    chunk_cb: PttsChunkFn,
++    align_cb: PttsAlignFn,
++    user: *mut c_void,
++    out: *mut PttsResult,
++) -> bool {
++    let h = unsafe { &mut *h };
++    let text = unsafe { CStr::from_ptr(text) }.to_string_lossy().to_string();
++    let r = guarded(|| {
++        h.engine.speak_aligned(
++            &text,
++            layer as usize,
++            head as usize,
++            &mut |pcm: &[f32]| cb(pcm.as_ptr(), pcm.len(), user),
++            &mut |chunk: &str, ends: &[u32]| {
++                let chunk = c_string(chunk);
++                chunk_cb(chunk.as_ptr(), ends.as_ptr(), ends.len(), user)
++            },
++            &mut |scores: &[f32]| align_cb(scores.as_ptr(), scores.len(), user),
++        )
++    });
++    match r {
++        Ok(r) => {
++            unsafe { *out = r };
++            true
++        }
++        Err(e) => {
++            h.last_error = Some(c_string(&e));
++            false
++        }
++    }
++}
++
+ /// Voice names, sorted, as one NUL-separated block ending in a second NUL. Borrowed.
+ ///
+ /// # Safety
+diff --git a/ptts/src/align.rs b/ptts/src/align.rs
+new file mode 100644
+index 0000000..06a6e8a
+--- /dev/null
++++ b/ptts/src/align.rs
+@@ -0,0 +1,113 @@
++//! A tap on one attention head of the flow LM, for word timing (not part of upstream Phonon).
++//!
++//! One head of one layer follows the text as the audio is generated: at each 80 ms frame nearly
++//! all of its attention sits on the text token being spoken. A caller that wants word times
++//! installs the tap, speaks, and drains what it recorded: for each chunk of text its token ids,
++//! and for each frame that head's attention over those tokens.
++//!
++//! The tap is one per process. Generation is one utterance at a time for a caller of the C
++//! interface, which is the only user; two utterances at once would mix their rows.
++
++use std::sync::Mutex;
++
++/// What the tap recorded, in order.
++pub enum Event {
++    /// A chunk of text starts: its token ids, as the model was given them.
++    Chunk(Vec<u32>),
++    /// One generated frame: the head's attention over the chunk's tokens.
++    Frame(Vec<f32>),
++}
++
++struct Tap {
++    layer: usize,
++    head: usize,
++    /// The thread generating frames; other threads (the codec's) run attention too.
++    thread: Option<std::thread::ThreadId>,
++    /// Attention calls seen since the step began: the flow LM's layers, in order.
++    calls: usize,
++    /// This step's row over every key, once the layer has run.
++    row: Option<Vec<f32>>,
++    tokens: usize,
++    /// Where the chunk's text tokens start among the keys, known from its first frame.
++    text_start: Option<usize>,
++    events: Vec<Event>,
++}
++
++static TAP: Mutex<Option<Tap>> = Mutex::new(None);
++
++fn with<R>(f: impl FnOnce(&mut Tap) -> R) -> Option<R> {
++    TAP.lock().ok()?.as_mut().map(f)
++}
++
++/// Record `head` of layer `layer` (both from 0) from now on.
++pub fn install(layer: usize, head: usize) {
++    if let Ok(mut tap) = TAP.lock() {
++        *tap = Some(Tap {
++            layer,
++            head,
++            thread: None,
++            calls: 0,
++            row: None,
++            tokens: 0,
++            text_start: None,
++            events: Vec::new(),
++        });
++    }
++}
++
++/// Stop recording and drop what was not drained.
++pub fn remove() {
++    if let Ok(mut tap) = TAP.lock() {
++        *tap = None;
++    }
++}
++
++/// Take what was recorded since the last call.
++pub fn drain() -> Vec<Event> {
++    with(|t| std::mem::take(&mut t.events)).unwrap_or_default()
++}
++
++pub(crate) fn begin_chunk(tokens: &[u32]) {
++    with(|t| {
++        t.tokens = tokens.len();
++        t.text_start = None;
++        t.events.push(Event::Chunk(tokens.to_vec()));
++    });
++}
++
++pub(crate) fn begin_step() {
++    with(|t| {
++        t.thread = Some(std::thread::current().id());
++        t.calls = 0;
++        t.row = None;
++    });
++}
++
++/// Whether the attention call now running is the one to record, and which head. Counts the call.
++pub(crate) fn wants() -> Option<usize> {
++    with(|t| {
++        if t.thread != Some(std::thread::current().id()) {
++            return None;
++        }
++        let call = t.calls;
++        t.calls += 1;
++        (call == t.layer).then_some(t.head)
++    })
++    .flatten()
++}
++
++/// The recorded head's attention over the keys filled so far.
++pub(crate) fn record(row: Vec<f32>) {
++    with(|t| t.row = Some(row));
++}
++
++pub(crate) fn end_step() {
++    with(|t| {
++        let Some(row) = t.row.take() else { return };
++        // The keys are the voice, then the text, then one row per frame so far and the row of
++        // this step: at a chunk's first frame the text ends one key before the end.
++        let start = *t.text_start.get_or_insert(row.len().saturating_sub(1 + t.tokens));
++        let end = (start + t.tokens).min(row.len());
++        t.events.push(Event::Frame(row[start.min(end)..end].to_vec()));
++    });
++}
+diff --git a/ptts/src/lib.rs b/ptts/src/lib.rs
+index c8b9774..98535c8 100644
+--- a/ptts/src/lib.rs
++++ b/ptts/src/lib.rs
+@@ -75,6 +75,7 @@
+ 
+ #![cfg_attr(docsrs, feature(doc_cfg))]
+ 
++pub mod align;
+ #[cfg(feature = "audio")]
+ pub mod audio;
+ #[cfg(not(target_arch = "wasm32"))]
+diff --git a/ptts/src/synth.rs b/ptts/src/synth.rs
+index 80a3c42..9b2fefe 100644
+--- a/ptts/src/synth.rs
++++ b/ptts/src/synth.rs
+@@ -1337,9 +1337,12 @@ fn run_backbone<Q: BackendQ>(
+             Flow::start(model, base_state, cfg_base, graph.as_deref_mut(), &chunk.tokens)?;
+         let mut prev: Option<Tensor<Q::T, Q::B>> = None;
+         let mut eos = EosPolicy::new(chunk.frames_after_eos);
++        crate::align::begin_chunk(&chunk.tokens);
+ 
+         for _ in 0..chunk.frame_budget {
++            crate::align::begin_step();
+             let (next, frame_eos) = flow.step(model, prev.as_ref(), &mut rng)?;
++            crate::align::end_step();
+             let is_eos = frame_eos.resolve(model)?;
+             // A closed channel means the consumer went away; stop quietly and
+             // let the decoder thread report any error of its own.
+diff --git a/ptts/src/transformer.rs b/ptts/src/transformer.rs
+index c32e372..24c30b2 100644
+--- a/ptts/src/transformer.rs
++++ b/ptts/src/transformer.rs
+@@ -172,12 +172,77 @@ impl<Q: BackendQ> StreamingMultiheadAttention<Q> {
+             let kv = state.k_cache.dim(1usize)?;
+             let keys = state.k_cache.narrow(1, 0..kv)?;
+             let values = state.v_cache.narrow(1, 0..kv)?;
++
++            // Word timing (see `crate::align`): this layer's attention for one head, if asked for.
++            if let Some(head) = crate::align::wants() {
++                let recorded: Result<()> = (|| {
++                    let scores = q
++                        .transpose(1, 2)?
++                        .matmul_t(&keys.transpose(1, 2)?)?
++                        .scale(Q::T::from_f32(inv_sqrt_d))?;
++                    let scores = match Some(&step.mask) {
++                        Some(m) => scores.broadcast_add(m)?,
++                        None => scores,
++                    };
++                    let dims = scores.dims().to_vec();
++                    let all: Vec<f32> =
++                        scores.softmax()?.to_vec()?.iter().map(|x| x.to_f32()).collect();
++                    let keys = *dims.last().unwrap_or(&0);
++                    let heads = if dims.len() >= 3 { dims[dims.len() - 3] } else { 1 };
++                    if keys == 0 || head >= heads || all.len() < heads * keys {
++                        return Ok(());
++                    }
++                    // The first query row's scores for this head; unfilled keys are masked to zero.
++                    let mut row = all[head * (all.len() / heads)..][..keys].to_vec();
++                    while row.last() == Some(&0.0) {
++                        row.pop();
++                    }
++                    crate::align::record(row);
++                    Ok(())
++                })();
++                if let Err(e) = recorded {
++                    tracing::warn!(error = %e, "the alignment tap could not read the attention");
++                }
++            }
+             let x = q.sdpa_decode(&keys, &values, Some(&step.mask), inv_sqrt_d)?;
+             return self.out_proj.forward(&x);
+         }
+ 
+         let (k, v) = state.complete_kv(&k, &v)?;
+ 
++        if t == 1 {
++            // Word timing (see `crate::align`): this layer's attention for one head, if asked for.
++            if let Some(head) = crate::align::wants() {
++                let recorded: Result<()> = (|| {
++                    let scores = q
++                        .transpose(1, 2)?
++                        .matmul_t(&k.transpose(1, 2)?)?
++                        .scale(Q::T::from_f32(inv_sqrt_d))?;
++                    let scores = match mask {
++                        Some(m) => scores.broadcast_add(m)?,
++                        None => scores,
++                    };
++                    let dims = scores.dims().to_vec();
++                    let all: Vec<f32> =
++                        scores.softmax()?.to_vec()?.iter().map(|x| x.to_f32()).collect();
++                    let keys = *dims.last().unwrap_or(&0);
++                    let heads = if dims.len() >= 3 { dims[dims.len() - 3] } else { 1 };
++                    if keys == 0 || head >= heads || all.len() < heads * keys {
++                        return Ok(());
++                    }
++                    // The first query row's scores for this head; unfilled keys are masked to zero.
++                    let mut row = all[head * (all.len() / heads)..][..keys].to_vec();
++                    while row.last() == Some(&0.0) {
++                        row.pop();
++                    }
++                    crate::align::record(row);
++                    Ok(())
++                })();
++                if let Err(e) = recorded {
++                    tracing::warn!(error = %e, "the alignment tap could not read the attention");
++                }
++            }
++        }
+         let x = if t == 1 {
+             q.sdpa_decode(&k, &v, mask, inv_sqrt_d)?
+         } else {

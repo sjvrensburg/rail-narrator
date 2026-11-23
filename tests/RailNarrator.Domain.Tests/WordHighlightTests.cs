@@ -219,6 +219,79 @@ public sealed class WordHighlightTests
         }
     }
 
+    // ---- the speech engine's own word timing ---------------------------------------------
+
+    /// <summary>A word cue for every word of the text the engine was given, half a second each.</summary>
+    private static IReadOnlyList<TimedCue> EngineWords(string text, long frames)
+        => SpokenWord.Tokenize(text).Select((w, i) => new TimedCue(i * 2000L, i * 2000L + 1800, w.Range, [], CueGranularity.Word, null, [])).ToArray();
+
+    private static async Task<(SpeechAsset Asset, TestAligner Aligner)> SpeakWith(WordTimingSource source, bool alignerFails = false)
+    {
+        var plan = await Plan("The small dog saw the small dog today.");
+        var tts = new FakeTtsProvider(new FakeTtsOptions(EmitTimings: true, TimingFactory: EngineWords));
+        var transport = new FakeAudioTransport();
+        var aligner = new TestAligner { Fail = alignerFails };
+        await using var coordinator = new NarrationCoordinator(tts, transport,
+            options: NarrationCoordinatorOptions.Default with { WordTiming = source }, aligner: aligner);
+        await coordinator.LoadPlanAsync(plan);
+        await coordinator.PlayAsync();
+        for (int i = 0; i < 300 && transport.Loaded.Count == 0; i++) await Task.Delay(10);
+        // The aligner, when it runs, runs after the passage can be played.
+        for (int i = 0; i < 100 && source == WordTimingSource.Aligner && aligner.Calls == 0; i++) await Task.Delay(10);
+        await Task.Delay(100);
+        return (Assert.Single(transport.Loaded).Asset, aligner);
+    }
+
+    [Fact]
+    public async Task WithTheEnginePreferred_ItsWordTimingStands_AndTheAlignerIsNotRun()
+    {
+        var (asset, aligner) = await SpeakWith(WordTimingSource.Engine);
+
+        Assert.Equal(TimingProvenance.NativeDuration, asset.TimingProvenance);
+        Assert.Equal(8, asset.Timings.Count);
+        Assert.All(asset.Timings, c => Assert.Equal(CueGranularity.Word, c.Granularity));
+        Assert.All(asset.Timings, c => Assert.NotEmpty(c.AnchorIds));
+        Assert.Equal(0, aligner.Calls);
+    }
+
+    [Fact]
+    public async Task WithTheAlignerPreferred_TheEnginesTimingIsThereAtOnce_AndTheAlignerStillRuns()
+    {
+        var (asset, aligner) = await SpeakWith(WordTimingSource.Aligner);
+
+        // What the transport was given when the passage became playable: the engine's words.
+        Assert.Equal(TimingProvenance.NativeDuration, asset.TimingProvenance);
+        Assert.Equal(8, asset.Timings.Count);
+        Assert.Equal(1, aligner.Calls);
+    }
+
+    [Fact]
+    public void EngineWordCues_TakeTheScriptsWords_AndTwoNamesOfOneLetterBecomeOneCue()
+    {
+        // The engine was given "double you sub tee"; mapped back, both names fall in "w".
+        const string script = "w sub t";
+        TimedCue[] cues =
+        [
+            new(0, 900, new TextRange(0, 1), [], CueGranularity.Word, null, []),
+            new(900, 2000, new TextRange(0, 1), [], CueGranularity.Word, null, []),
+            new(2000, 3000, new TextRange(2, 3), [], CueGranularity.Word, null, []),
+            new(3000, 4000, new TextRange(6, 1), [], CueGranularity.Word, null, []),
+        ];
+
+        var placed = NarrationCoordinator.ToScriptWords(cues, script);
+
+        Assert.Equal([new TextRange(0, 1), new TextRange(2, 3), new TextRange(6, 1)], placed.Select(c => c.SpokenRange!.Value));
+        Assert.Equal((0L, 2000L), (placed[0].StartSample, placed[0].EndSample));
+    }
+
+    [Fact]
+    public void AnEngineCueThatFallsInNoWordOfTheScript_LeavesNoWordTiming()
+    {
+        TimedCue[] cues = [new(0, 900, new TextRange(1, 1), [], CueGranularity.Word, null, [])];   // the space in "a b"
+
+        Assert.Empty(NarrationCoordinator.ToScriptWords(cues, "a b"));
+    }
+
     private sealed class TestAligner : IForcedAligner
     {
         public string Revision { get; set; } = "test/1";

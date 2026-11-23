@@ -64,6 +64,21 @@ public sealed class PhononTtsProvider : ITtsProvider
     private string? _currentVoice;
     private string _revision = "phonon";
     private bool _disposed;
+    // The attention head that follows the text in the installed model, when it is one whose head is
+    // known and the library can report it (tools/phonon-word-timing.patch); null otherwise.
+    private (uint Layer, uint Head)? _alignmentHead;
+
+    /// <summary>
+    /// The head that follows the text, by the model's signature in its config.json. Found by
+    /// scoring every head (ADR-0013); another model, or another revision of this one, has its own.
+    /// </summary>
+    private static readonly Dictionary<string, (uint Layer, uint Head)> AlignmentHeads = new(StringComparer.Ordinal)
+    {
+        ["5f0a2aab"] = (3, 0),   // phonon-31m-en
+    };
+
+    /// <summary>Samples of audio in one frame the model generates: 80 ms at 24 kHz.</summary>
+    public const int FrameSamples = 1920;
 
     public PhononTtsProvider(PhononProviderSettings settings)
         => _settings = settings ?? throw new ArgumentNullException(nameof(settings));
@@ -81,7 +96,7 @@ public sealed class PhononTtsProvider : ITtsProvider
             Id, _revision,
             [AudioFormat.Mono24000Float32, new AudioFormat(OutputSampleRate, 1, SampleFormat.Int16LittleEndian)],
             SupportsStreaming: false,
-            TimingProvenance.None,
+            _alignmentHead is null ? TimingProvenance.None : TimingProvenance.ModelAttention,
             // Rate is the playback engine's (WSOLA), as for Kokoro: the C library has no rate control.
             SupportsSynthesisRate: false,
             MaxRequestChars,
@@ -115,31 +130,62 @@ public sealed class PhononTtsProvider : ITtsProvider
         if (voice != request.VoiceId) warnings.Add($"Phonon has no voice '{request.VoiceId}'; spoke in {voice}.");
 
         float[] samples;
+        List<AttentionWordTiming.Chunk>? attention;
+        bool timed = request.RequestTimings && _alignmentHead is not null;
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            samples = await Task.Run(() => Speak(text, voice, ct), ct).ConfigureAwait(false);
+            (samples, attention) = await Task.Run(() => Speak(text, voice, timed, ct), ct).ConfigureAwait(false);
         }
         finally { _gate.Release(); }
         ct.ThrowIfCancellationRequested();
         if (samples.Length == 0)
             throw new InvalidOperationException("Phonon returned no samples for this text.");
 
+        // Word times from the model's own attention, in the clip as it was generated.
+        IReadOnlyList<TimedCue> cues = [];
+        if (attention is not null)
+        {
+            var words = AttentionWordTiming.Words(text, attention, AttentionWordTiming.Envelope(samples, OutputSampleRate),
+                OutputSampleRate, FrameSamples, samples.LongLength, out string? problem);
+            if (words is null) warnings.Add($"No word timing from the model's attention: {problem}.");
+            else cues = words;
+        }
+
+        int trimmed = 0;
         if (_settings.TrimLeadingSilence)
         {
             // As for Kokoro: the clip's first frame is the start of speech, so a whole-clip cue lines
             // up with what is heard. Never the whole clip: a quiet passage must not vanish.
             int first = 0;
             while (first < samples.Length && Math.Abs(samples[first]) < _settings.SilenceThreshold) first++;
-            if (first > 0 && first < samples.Length * 0.9) samples = samples[first..];
+            if (first > 0 && first < samples.Length * 0.9) { samples = samples[first..]; trimmed = first; }
+        }
+        if (cues.Count > 0)
+        {
+            // The cues move with the audio, and their ranges are in the caller's text, not the trimmed copy.
+            int lead = request.Text.Length - request.Text.TrimStart().Length;
+            cues = cues.Select(c => c with
+            {
+                StartSample = Math.Max(0, c.StartSample - trimmed),
+                EndSample = Math.Max(0, c.EndSample - trimmed),
+                SpokenRange = c.SpokenRange is { } r ? new TextRange(r.Start + lead, r.Length) : null,
+            }).ToArray();
+            // A first word that began inside what was trimmed keeps a time of its own.
+            if (cues[0].EndSample - cues[0].StartSample < TimedCueValidator.MinimumCueSamples)
+            {
+                warnings.Add("No word timing from the model's attention: the first word fell in the silence that was trimmed.");
+                cues = [];
+            }
         }
 
         var format = new AudioFormat(OutputSampleRate, 1, request.Format.SampleFormat);
         int stride = Pcm.BytesPerSample(format.SampleFormat);
         var pcm = new byte[samples.Length * stride];
         for (int i = 0; i < samples.Length; i++) Pcm.WriteSample(pcm, i * stride, format.SampleFormat, samples[i]);
-        return new TtsSynthesisResult(pcm, format, samples.LongLength, [], TimingProvenance.None, (long)_settings.Seed, "phonon-ptts", warnings);
+        return new TtsSynthesisResult(pcm, format, samples.LongLength, cues,
+            cues.Count > 0 ? TimingProvenance.ModelAttention : TimingProvenance.None, (long)_settings.Seed, "phonon-ptts", warnings);
     }
 
     public async Task<ProviderSelfTestResult> SelfTestAsync(string voiceId, CancellationToken ct = default)
@@ -215,6 +261,10 @@ public sealed class PhononTtsProvider : ITtsProvider
                 .OrderBy(v => v.Language == "en-GB" ? 0 : 1).ThenBy(v => v.Id, StringComparer.Ordinal)
                 .ToList();
             _revision = $"phonon/{Fingerprint(_settings.LibraryPath)}/{Fingerprint(Path.Combine(_settings.ModelDirectory, "model.q8.gguf"))}";
+            _alignmentHead = native.CanReportAttention && ModelSignature(Path.Combine(_settings.ModelDirectory, "config.json")) is { } signature
+                && AlignmentHeads.TryGetValue(signature, out var head) ? head : null;
+            // Timings are stored with the audio: a change to how they are made is a new revision.
+            if (_alignmentHead is not null) _revision += "/" + AttentionWordTiming.Version;
             _native = native;
             _handle = handle;
             return null;
@@ -223,6 +273,17 @@ public sealed class PhononTtsProvider : ITtsProvider
         {
             return $"Phonon's runtime could not be loaded: {ex.Message}";
         }
+    }
+
+    /// <summary>The model's signature, "model_id.sig" in its config.json; null when it has none.</summary>
+    private static string? ModelSignature(string configPath)
+    {
+        try
+        {
+            using var config = System.Text.Json.JsonDocument.Parse(File.ReadAllText(configPath));
+            return config.RootElement.TryGetProperty("model_id", out var id) && id.TryGetProperty("sig", out var sig) ? sig.GetString() : null;
+        }
+        catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException) { return null; }
     }
 
     /// <summary>The audio-identifying part of the cache key: what produced it, by content.</summary>
@@ -243,7 +304,7 @@ public sealed class PhononTtsProvider : ITtsProvider
 
     // ---- speaking ----------------------------------------------------------------------------------
 
-    private float[] Speak(string text, string voice, CancellationToken ct)
+    private (float[] Samples, List<AttentionWordTiming.Chunk>? Attention) Speak(string text, string voice, bool timed, CancellationToken ct)
     {
         var native = _native!;
         if (_currentVoice != voice)
@@ -256,12 +317,17 @@ public sealed class PhononTtsProvider : ITtsProvider
         var handle = GCHandle.Alloc(sink);
         try
         {
-            if (!native.Speak(_handle, text, GCHandle.ToIntPtr(handle)) && !ct.IsCancellationRequested)
+            bool spoke = timed && _alignmentHead is { } head
+                ? native.SpeakAligned(_handle, text, head.Layer, head.Head, GCHandle.ToIntPtr(handle))
+                : native.Speak(_handle, text, GCHandle.ToIntPtr(handle));
+            if (!spoke && !ct.IsCancellationRequested)
                 throw new InvalidOperationException($"Phonon could not speak this passage: {native.LastError(_handle)}");
         }
         finally { handle.Free(); }
         ct.ThrowIfCancellationRequested();
-        return sink.Samples.ToArray();
+        return (sink.Samples.ToArray(), timed && !sink.Failed
+            ? sink.Chunks.Select(c => new AttentionWordTiming.Chunk(c.Text, c.TokenEnds, c.Frames)).ToList()
+            : null);
     }
 
     /// <summary>Collects one utterance's audio; asks the runtime to stop when cancelled.</summary>
@@ -269,6 +335,47 @@ public sealed class PhononTtsProvider : ITtsProvider
     {
         public readonly List<float> Samples = new(OutputSampleRate * 10);
         public readonly CancellationToken Cancellation = ct;
+        /// <summary>Each chunk of the text with the alignment head's attention for each of its frames.</summary>
+        public readonly List<(string Text, int[] TokenEnds, List<float[]> Frames)> Chunks = [];
+        /// <summary>A report could not be taken: the audio stands, the timing does not.</summary>
+        public bool Failed;
+    }
+
+    /// <summary>Called by the runtime before a chunk's frames: its text and where each token ends in it.</summary>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static unsafe void OnChunk(byte* text, uint* tokenEnds, nuint count, nint user)
+    {
+        Sink? sink = null;
+        try
+        {
+            sink = GCHandle.FromIntPtr(user).Target as Sink;
+            if (sink is null) return;
+            var ends = new int[checked((int)count)];
+            for (int i = 0; i < ends.Length; i++) ends[i] = checked((int)tokenEnds[i]);
+            sink.Chunks.Add((Marshal.PtrToStringUTF8((nint)text) ?? "", ends, []));
+        }
+        catch (Exception)
+        {
+            if (sink is not null) sink.Failed = true;   // nothing may unwind into native code
+        }
+    }
+
+    /// <summary>Called by the runtime for each generated frame: the head's attention over the chunk's tokens.</summary>
+    [UnmanagedCallersOnly(CallConvs = [typeof(CallConvCdecl)])]
+    private static unsafe void OnAttention(float* scores, nuint count, nint user)
+    {
+        Sink? sink = null;
+        try
+        {
+            sink = GCHandle.FromIntPtr(user).Target as Sink;
+            if (sink is null) return;
+            if (sink.Chunks.Count == 0) { sink.Failed = true; return; }
+            sink.Chunks[^1].Frames.Add(new ReadOnlySpan<float>(scores, checked((int)count)).ToArray());
+        }
+        catch (Exception)
+        {
+            if (sink is not null) sink.Failed = true;
+        }
     }
 
     /// <summary>Called by the runtime, on the thread that called ptts_speak, with each frame's audio.</summary>
@@ -307,10 +414,19 @@ public sealed class PhononTtsProvider : ITtsProvider
         private readonly delegate* unmanaged[Cdecl]<nint, ulong, void> _setSeed;
         private readonly delegate* unmanaged[Cdecl]<nint, byte*> _lastError;
         private readonly delegate* unmanaged[Cdecl]<nint, void> _free;
+        // Rail Narrator's addition to the library (tools/phonon-word-timing.patch); absent from a
+        // library built without it, which then speaks without word timing.
+        private readonly delegate* unmanaged[Cdecl]<nint, byte*, delegate* unmanaged[Cdecl]<float*, nuint, nint, byte>, uint, uint,
+            delegate* unmanaged[Cdecl]<byte*, uint*, nuint, nint, void>, delegate* unmanaged[Cdecl]<float*, nuint, nint, void>, nint, PttsResult*, byte> _speakAligned;
+
+        public bool CanReportAttention => _speakAligned is not null;
 
         public Native(string path)
         {
             nint lib = NativeLibrary.Load(path);
+            if (NativeLibrary.TryGetExport(lib, "ptts_speak_aligned", out nint aligned))
+                _speakAligned = (delegate* unmanaged[Cdecl]<nint, byte*, delegate* unmanaged[Cdecl]<float*, nuint, nint, byte>, uint, uint,
+                    delegate* unmanaged[Cdecl]<byte*, uint*, nuint, nint, void>, delegate* unmanaged[Cdecl]<float*, nuint, nint, void>, nint, PttsResult*, byte>)aligned;
             _new = (delegate* unmanaged[Cdecl]<byte*, uint, byte*, nint>)NativeLibrary.GetExport(lib, "ptts_new");
             _speak = (delegate* unmanaged[Cdecl]<nint, byte*, delegate* unmanaged[Cdecl]<float*, nuint, nint, byte>, nint, PttsResult*, byte>)NativeLibrary.GetExport(lib, "ptts_speak");
             _voices = (delegate* unmanaged[Cdecl]<nint, byte*>)NativeLibrary.GetExport(lib, "ptts_voices");
@@ -329,6 +445,12 @@ public sealed class PhononTtsProvider : ITtsProvider
         {
             PttsResult result;
             fixed (byte* t = Utf8(text)) return _speak(h, t, &OnAudio, user, &result) != 0;
+        }
+
+        public bool SpeakAligned(nint h, string text, uint layer, uint head, nint user)
+        {
+            PttsResult result;
+            fixed (byte* t = Utf8(text)) return _speakAligned(h, t, &OnAudio, layer, head, &OnChunk, &OnAttention, user, &result) != 0;
         }
 
         public bool SetVoice(nint h, string name)

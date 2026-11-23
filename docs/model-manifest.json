@@ -30,6 +30,24 @@
       }
     },
     {
+      "id": "kokoro-timed-fp16",
+      "component": "Kokoro with phoneme durations: word timing without an aligner (optional)",
+      "file": "kokoro-timed-fp16.onnx",
+      "source": "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX-timestamped/resolve/dd4401a9add81ac692d20e240d22ec9dda82cc29/onnx/model_fp16.onnx",
+      "revision": "onnx-community/Kokoro-82M-v1.0-ONNX-timestamped at commit dd4401a9add81ac692d20e240d22ec9dda82cc29",
+      "bytes": 163232776,
+      "sha256": "220724d5c5e0cc01be30f38faa6cf0c895a7cde6e7773e91db2973c8c7e5123c",
+      "licence": "Apache-2.0 (Kokoro-82M weights)",
+      "required": false,
+      "optional": true,
+      "notes": "Kokoro-82M v1.0 with a second output, 'durations': the frames the model gave each phoneme (max(1, round(d)) frames of 600 samples add up to the clip to the sample). Word times are read from it with no aligner (ADR-0013). It names its phoneme ids 'input_ids', which KokoroSharp's engine cannot feed, so it runs in the application's own ONNX Runtime session on the CPU. Downloaded by Models and endpoints > Download Kokoro with word timing; used when Settings > Reading > Word timing is the speech engine's own and no other Kokoro model path is set.",
+      "measured": {
+        "wordStartsVsMfa": "376 words in 29 passages, bf_isabella: mean 16 ms, median 13 ms, 100 % within 105 ms, no bias, after taking three frames off the leading pad as Kokoro's reference code does",
+        "wordEndsVsMfa": "median 17 ms, 90th percentile 212 ms (a word before a pause)",
+        "synthesisSeconds": "52 s of audio in 58 s on the i7-12700H laptop, the same as kokoro-fp16 through KokoroSharp's engine in the same run"
+      }
+    },
+    {
       "id": "kokoro-fp32",
       "component": "Source of the WebGPU Kokoro model",
       "file": "kokoro.onnx",

@@ -6,6 +6,18 @@ that is cached and played. It works with the existing Kokoro audio-only model.
 Equations retain whole-equation highlighting because their spoken paraphrases do
 not correspond one to one to the printed symbols.
 
+## Without the aligner
+
+Two engines can time their own words, with nothing else installed (ADR-0013): Phonon, once its
+library is built by `tools/setup-phonon.sh` (which applies `tools/phonon-word-timing.patch`), and
+Kokoro with the export that has a durations output (Models and endpoints ▸ Download Kokoro with
+word timing). Settings ▸ Reading ▸ Word timing from chooses whose timing is shown: the aligner's
+when it is installed (the default; the engine's is shown until the aligner's arrives), or the
+engine's own, in which case the aligner is not run for a passage the engine timed. Against the
+aligner, Phonon's word starts are a mean 30 ms away and Kokoro's 16 ms. The rest of this
+document is about the aligner.
+
+
 ## Setup on Linux
 
 Install micromamba, then run from the repository:

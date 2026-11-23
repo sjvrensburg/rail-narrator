@@ -1,10 +1,10 @@
 # Next steps and open decisions
 
-Handover note, 23 November 2026, on the `feat/saved-narration` branch (from `main`
-after PR #46). It builds with 0 warnings; the test runner reports 747 passed and 16 skipped.
-`status.md` gives 744 passing and 19 opt-in, because it
-counts as opt-in the three Phonon tests that return early without an install and so report as
-passed. What is verified, and how it was measured, is in `status.md`. How to run the real models,
+Handover note, 23 November 2026, on the `feat/engine-word-timing` branch (from `main`
+after PR #47). It builds with 0 warnings; the test runner reports 767 passed and 16 skipped.
+`status.md` gives 762 passing and 21 opt-in, because it
+counts as opt-in the five tests (four of Phonon, one of Kokoro with durations) that return early
+without an install and so report as passed. What is verified, and how it was measured, is in `status.md`. How to run the real models,
 the GUI and the audio path on a new machine is in `testing-real-world.md`.
 
 ## Where things stand
@@ -53,6 +53,11 @@ Since PR #10:
 
 ## Recently landed
 
+- **Word timing from the speech engine itself** (ADR-0013, `feat/engine-word-timing`, `status.md`
+  item 95): Phonon from the attention head that follows its text (a patch to Gradium's library),
+  Kokoro from the durations of its timestamped export, each as an alternative to the aligner
+  (Settings ▸ Reading ▸ Word timing from). Against MFA: 30 ms and 16 ms mean. A two-page narration
+  with Phonon took 4 min instead of 9 min 35 s. Not yet watched in the window.
 - **A narration saved with the document** (ADR-0012, `feat/saved-narration`, `status.md` item 94):
   the whole document narrated once to `paper.narration` beside the PDF, from the File menu or
   with `rail-narrator narrate`, then played with no language model and no speech engine; and an
@@ -122,6 +127,14 @@ Since PR #10:
 
 In rough priority order:
 
+- **Watch the engine's word timing in the window** (`status.md` item 95). Run
+  `tools/setup-phonon.sh` again (it rebuilds the library with the timing patch), choose the
+  speech engine's own timing in Settings ▸ Reading, restart, and read a page: does the highlight
+  sit on the word being said? Then the same with Kokoro and its timestamped model. If Phonon's
+  80 ms frames show, the fitted two-head combination (ADR-0013) is the next thing to try.
+- **Offer the Phonon patch upstream** (gradium-ai/xn-ptts): `tools/phonon-word-timing.patch`
+  adds `ptts_speak_aligned`. Accepted, the application would stop carrying a patch against a
+  pinned commit.
 - **A whole paper narrated and listened to** (`status.md` item 94). Narrate `nbag025.pdf` with the
   maths model working, play it from the file, and listen to the M4B on another device. Things
   to watch: the time (alignment was most of it on two pages), a seek to a long passage (decoding

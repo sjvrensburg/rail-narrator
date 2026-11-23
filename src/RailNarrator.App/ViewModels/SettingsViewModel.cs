@@ -343,6 +343,20 @@ public sealed class SettingsViewModel : ViewModelBase
         set => Save(s => s with { WordHighlighting = value });
     }
 
+    public IReadOnlyList<SettingOption<WordTimingSource>> WordTimingOptions { get; } =
+    [
+        new(WordTimingSource.Aligner, "The aligner, when it is installed",
+            "Each passage is timed against its audio by the local aligner (tools/setup-word-alignment.sh), to about 20 ms. Until that arrives, and where no aligner is installed, the speech engine's own timing is shown if it has one."),
+        new(WordTimingSource.Engine, "The speech engine's own timing",
+            "Phonon reports where it is in the text as it speaks, and Kokoro, with its word-timing model (Models and endpoints), how long each sound lasts. Words are timed the moment the audio exists and nothing else is installed or run. Against the aligner: about 30 ms on average for Phonon, which works in 80 ms steps, and 16 ms for Kokoro. A passage the engine cannot time still goes to the aligner if there is one."),
+    ];
+
+    public SettingOption<WordTimingSource>? WordTiming
+    {
+        get => WordTimingOptions.First(o => o.Value == _s.WordTiming);
+        set { if (value is not null) Save(s => s with { WordTiming = value.Value }); }
+    }
+
     // ---- Speech: after a restart -------------------------------------------------------------
 
     public IReadOnlyList<SettingOption<string>> SpeechProviders { get; } =
