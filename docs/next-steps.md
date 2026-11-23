@@ -1,8 +1,8 @@
 # Next steps and open decisions
 
-Handover note, 23 November 2026, on the `feat/engine-word-timing` branch (from `main`
-after PR #47). It builds with 0 warnings; the test runner reports 767 passed and 16 skipped.
-`status.md` gives 762 passing and 21 opt-in, because it
+Handover note, 23 November 2026, on the `fix/narration-performance` branch (from `main`
+after PR #48). It builds with 0 warnings; the test runner reports 770 passed and 16 skipped.
+`status.md` gives 765 passing and 21 opt-in, because it
 counts as opt-in the five tests (four of Phonon, one of Kokoro with durations) that return early
 without an install and so report as passed. What is verified, and how it was measured, is in `status.md`. How to run the real models,
 the GUI and the audio path on a new machine is in `testing-real-world.md`.
@@ -132,6 +132,19 @@ In rough priority order:
   speech engine's own timing in Settings ▸ Reading, restart, and read a page: does the highlight
   sit on the word being said? Then the same with Kokoro and its timestamped model. If Phonon's
   80 ms frames show, the fitted two-head combination (ADR-0013) is the next thing to try.
+- **Measure on a machine that is not power-limited** (`status.md` item 96). The laptop was
+  capped at about a third of its clock when narration was profiled, so the day's absolute times
+  are suspect and one question could not be asked at all: whether speaking several passages at
+  once (several model instances) shortens a whole-document narration. It would need the alignment
+  tap in the Phonon patch made per utterance instead of per process.
+- **A whole narration with a working maths model, timed** (`status.md` item 96). Maths is now
+  interpreted ahead of a narration all the way through, one passage at a time. Check with
+  `rail-narrator narrate` and its time report that model time and speaking time overlap; if the
+  model is then what a narration waits for, several interpretations at once is the next step
+  for an endpoint that allows it.
+- **Extraction when a saved narration is opened.** It still runs (cached after the first time),
+  layout model and all, although the narration brings its own plan. What the window needs from
+  it (hit-testing, region corrections) could be made on demand.
 - **Offer the Phonon patch upstream** (gradium-ai/xn-ptts): `tools/phonon-word-timing.patch`
   adds `ptts_speak_aligned`. Accepted, the application would stop carrying a patch against a
   pinned commit.

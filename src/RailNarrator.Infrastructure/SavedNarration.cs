@@ -94,17 +94,19 @@ public static class NarrationAudio
         BinaryPrimitives.WriteInt32LittleEndian(header[24..], frameSize);
         output.Write(header);
 
-        // Enough whole packets to carry the clip and the codec's delay after it.
+        // Enough whole packets to carry the clip and the codec's delay after it. The codec is given
+        // 16-bit samples: it works in fixed point, and its float entry points convert on the way in
+        // and out, which measured three to four times slower for the same packets.
         long packets = (frames + delay + frameSize - 1) / frameSize;
-        var frame = new float[frameSize * channels];
+        var frame = new short[frameSize * channels];
         var packet = new byte[4000];
         Span<byte> length = stackalloc byte[2];
         for (long p = 0; p < packets; p++)
         {
             long from = p * frameSize * channels;
             Array.Clear(frame);
-            if (from < samples.Length)
-                samples.AsSpan((int)from, (int)Math.Min(frame.Length, samples.Length - from)).CopyTo(frame);
+            for (int i = 0; i < frame.Length && from + i < samples.Length; i++)
+                frame[i] = (short)Math.Round(samples[from + i] * 32767f);
             int written = encoder.Encode(frame, frameSize, packet, packet.Length);
             BinaryPrimitives.WriteUInt16LittleEndian(length, (ushort)written);
             output.Write(length);
@@ -138,7 +140,7 @@ public static class NarrationAudio
         if (delay < 0 || frameSize <= 0 || frameSize > rate) return null;
 
         var decoder = OpusCodecFactory.CreateDecoder(rate, channels);
-        var frame = new float[frameSize * channels];
+        var frame = new short[frameSize * channels];
         long position = -delay;   // in frames of the clip; the first samples out are the codec's delay
         int at = 28;
         while (at + 2 <= data.Length && position < frames)
@@ -152,7 +154,7 @@ public static class NarrationAudio
             {
                 if (position < 0 || position >= frames) continue;
                 for (int c = 0; c < channels; c++)
-                    BinaryPrimitives.WriteSingleLittleEndian(pcm.AsSpan((int)(position * channels + c) * 4), frame[i * channels + c]);
+                    BinaryPrimitives.WriteSingleLittleEndian(pcm.AsSpan((int)(position * channels + c) * 4), frame[i * channels + c] / 32768f);
             }
         }
         return position >= frames ? (pcm, format) : null;
@@ -349,6 +351,23 @@ public sealed class SavedNarration : IRecordedNarration, IDisposable
         if (!_scriptHashes.TryGetValue(segment.Id, out string? hash) || hash != SavedNarrationJson.ScriptHash(segment))
             return Task.FromResult<RecordedClip?>(null);
         return Task.Run(() => Load(segment.Id, hash), ct);
+    }
+
+    public Task<SpeechAsset?> TryGetAssetAsync(NarrationSegment segment, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(segment);
+        if (!_scriptHashes.TryGetValue(segment.Id, out string? hash) || hash != SavedNarrationJson.ScriptHash(segment))
+            return Task.FromResult<SpeechAsset?>(null);
+        return Task.Run(() =>
+        {
+            lock (_gate)
+            {
+                var clip = Read<SavedClip>(_zip, $"clips/{SavedNarrationJson.EntryName(segment.Id)}.json");
+                return clip is not null && clip.ScriptHash == hash
+                    ? clip.Asset with { Format = clip.Asset.Format with { SampleFormat = SampleFormat.Float32LittleEndian }, PcmHash = null }
+                    : null;
+            }
+        }, ct);
     }
 
     private RecordedClip? Load(string segmentId, string scriptHash)

@@ -73,11 +73,34 @@ public static class NarrationJob
         await using var coordinator = new NarrationCoordinator(
             engines.Speech, new NullAudioTransport(), engines.Assets, options: options, aligner: engines.Aligner, resolver: engines.Resolver);
         await coordinator.LoadPlanAsync(plan, ct: ct).ConfigureAwait(false);
-        await coordinator.NarrateAllAsync((segment, asset, pcm, _) =>
+
+        // Encoding and writing go on beside the speaking of the next passage, in order, a few
+        // passages deep at most: the engine does not wait for the file, nor memory for the engine.
+        var pending = System.Threading.Channels.Channel.CreateBounded<(NarrationSegment Segment, SpeechAsset Asset, byte[] Pcm)>(
+            new System.Threading.Channels.BoundedChannelOptions(4) { SingleReader = true, SingleWriter = true });
+        var writing = Task.Run(async () =>
         {
-            writer.Add(segment, asset, pcm.Span);
-            return Task.CompletedTask;
-        }, progress, ct).ConfigureAwait(false);
+            await foreach (var (segment, asset, pcm) in pending.Reader.ReadAllAsync(ct).ConfigureAwait(false))
+                writer.Add(segment, asset, pcm);
+        }, ct);
+        try
+        {
+            await coordinator.NarrateAllAsync(async (segment, asset, pcm, token) =>
+            {
+                // A copy: the coordinator lets go of the clip once it is handed over.
+                await pending.Writer.WriteAsync((segment, asset, pcm.ToArray()), token).ConfigureAwait(false);
+                // A failure in the writing ends the narration at the next passage, not at the end.
+                if (writing.IsFaulted) await writing.ConfigureAwait(false);
+            }, progress, ct).ConfigureAwait(false);
+            pending.Writer.Complete();
+        }
+        catch (Exception ex)
+        {
+            pending.Writer.TryComplete(ex);
+            try { await writing.ConfigureAwait(false); } catch (Exception) { /* the narration's own failure is the one to report */ }
+            throw;
+        }
+        await writing.ConfigureAwait(false);
         // The plan as it was given: what it left for a model is counted against what was spoken.
         return writer.Complete(plan, documentName);
     }
@@ -165,19 +188,20 @@ public static class AudiobookExporter
             ?? throw new InvalidOperationException("Exporting an audiobook needs ffmpeg, which was not found on the PATH. Install it (for example 'sudo apt install ffmpeg') and try again.");
         var plan = recording.Plan;
 
-        // First pass: lengths, for the chapters, which ffmpeg wants before the audio.
+        // First pass: lengths, for the chapters, which ffmpeg wants before the audio. From what
+        // is recorded about each clip, not from its audio, which would be decoded twice.
         var starts = new Dictionary<string, double>(StringComparer.Ordinal);
         AudioFormat? format = null;
         double total = 0;
         foreach (var segment in plan.Segments)
         {
-            var clip = await recording.TryGetAsync(segment, ct).ConfigureAwait(false)
+            var asset = await recording.TryGetAssetAsync(segment, ct).ConfigureAwait(false)
                 ?? throw new InvalidOperationException($"The saved narration is missing the passage '{segment.Id}'.");
-            if (format is { } f && (f.SampleRate != clip.Asset.Format.SampleRate || f.Channels != clip.Asset.Format.Channels))
+            if (format is { } f && (f.SampleRate != asset.Format.SampleRate || f.Channels != asset.Format.Channels))
                 throw new InvalidOperationException("The saved narration's passages are not all in one audio format.");
-            format ??= clip.Asset.Format;
+            format ??= asset.Format;
             starts[segment.Id] = total;
-            total += clip.Asset.DurationSeconds;
+            total += asset.DurationSeconds;
         }
         if (format is not { } audio) throw new InvalidOperationException("The saved narration has no passages.");
         var chapters = Chapters(plan, starts, title);
@@ -206,7 +230,8 @@ public static class AudiobookExporter
                 foreach (var segment in plan.Segments)
                 {
                     ct.ThrowIfCancellationRequested();
-                    var clip = (await recording.TryGetAsync(segment, ct).ConfigureAwait(false))!;
+                    var clip = await recording.TryGetAsync(segment, ct).ConfigureAwait(false)
+                        ?? throw new InvalidOperationException($"The saved narration's audio for the passage '{segment.Id}' could not be read.");
                     await process.StandardInput.BaseStream.WriteAsync(ToFloat32(clip), ct).ConfigureAwait(false);
                     progress?.Report((++done, plan.SegmentCount));
                 }

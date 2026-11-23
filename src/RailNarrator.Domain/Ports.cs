@@ -400,7 +400,10 @@ public interface IForcedAligner
 
     /// <summary>
     /// Gets ready to align, so the first passage does not pay for it. Called when a document is
-    /// loaded. The local aligner's worker takes 23 to 56 s to start (measured); paid by the first
+    /// loaded, or, when the reader prefers the speech engine's own word timing and the engine gives
+    /// it, before the first alignment that is needed after all; always before any
+    /// <see cref="AlignAsync"/>, whose time limit is therefore for aligning alone.
+    /// The local aligner's worker takes 23 to 56 s to start (measured); paid by the first
     /// passage that needed fresh audio, that was a silence in the middle of a paragraph. Failure
     /// is not reported here: the alignment that needs it reports it.
     /// </summary>

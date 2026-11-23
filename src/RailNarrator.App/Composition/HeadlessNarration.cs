@@ -68,9 +68,11 @@ public static class HeadlessNarration
 
                 var clock = System.Diagnostics.Stopwatch.StartNew();
                 long lastReport = -10_000;
+                NarrationProgress? last = null;
                 var manifest = await NarrationJob.RunAsync(plan, Path.GetFileName(document), narrationPath, services.NarrationEngines(Option("--voice")),
                     new Immediate<NarrationProgress>(p =>
                     {
+                        last = p;
                         if (p.Done != p.Total && clock.ElapsedMilliseconds - lastReport < 5000) return;
                         lastReport = clock.ElapsedMilliseconds;
                         output.WriteLine(string.Create(CultureInfo.InvariantCulture,
@@ -78,6 +80,9 @@ public static class HeadlessNarration
                     }), ct, allowUninterpreted: args.Contains("--allow-uninterpreted")).ConfigureAwait(false);
 
                 output.WriteLine(Summary(manifest, narrationPath));
+                if (last is not null)
+                    output.WriteLine(string.Create(CultureInfo.InvariantCulture,
+                        $"  time: {clock.Elapsed.TotalSeconds:F0} s in all; interpreting and speaking {last.PrepareSeconds:F0} s, waiting for the aligner {last.AlignSeconds:F0} s, encoding and writing {last.SinkSeconds:F0} s"));
             }
 
             if (wantBook)
