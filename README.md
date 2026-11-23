@@ -65,6 +65,18 @@ curl -L -o ~/.local/share/rail-narrator/models/kokoro-fp16.onnx \
 dotnet run --project src/RailNarrator.App -c Release -- path/to/document.pdf
 ```
 
+To narrate a whole document once and keep the result with it, use File ▸ Save narration with
+document…, or without a window:
+
+```bash
+rail-narrator narrate paper.pdf            # writes paper.narration beside the PDF
+rail-narrator export paper.pdf             # writes paper.m4b, an audiobook with chapters (needs ffmpeg)
+```
+
+A document with a `.narration` beside it is played from that file: the maths is already
+interpreted and every passage already spoken, so no language model and no speech engine is used
+([ADR-0012](docs/decisions/ADR-0012-saved-narration.md)).
+
 For word-by-word English prose highlighting, run `bash tools/setup-word-alignment.sh`
 after installing micromamba. See [setup and timing verification](docs/word-highlighting.md).
 
@@ -121,6 +133,7 @@ Recorded in `docs/decisions/`, each with the measurement that drove it:
 - **[ADR-0009](docs/decisions/ADR-0009-phonon-speech-engine.md)** — Phonon (Gradium, Apache 2.0) as a second speech engine through Gradium's C library: real-time factor 0.061 against Kokoro's 0.224 on the same CPU, word alignment 34/40 passages against 35/40; Maeve by default
 - **[ADR-0010](docs/decisions/ADR-0010-claude-for-maths.md)** — Claude as an option for both maths endpoints, beside any OpenAI-compatible one: Core's client for the vision model, Anthropic's .NET SDK for interpretation; tested against a stubbed transport and, on one drawn equation, the real API
 - **[ADR-0011](docs/decisions/ADR-0011-formula-model.md)** — PP-FormulaNet_plus-M as a formula model for display equations, in-process on the CPU: its LaTeX given to the language model with or in place of the page image, read by rule when there is no interpretation, and checked against the page's text layer; 80 equations of one paper in 72 s, 15 of them compared with the page
+- **[ADR-0012](docs/decisions/ADR-0012-saved-narration.md)** — a whole document narrated once to a file beside the PDF (script, Opus audio, timings) and played from it with no model and no engine; an M4B audiobook with chapters from it
 
 ## Guarantees worth stating plainly
 

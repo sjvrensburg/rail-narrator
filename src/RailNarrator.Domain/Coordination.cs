@@ -211,6 +211,13 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     private int _seekIndex = -1;
     private long _seekGeneration = -1;
 
+    // A narration made earlier for the plan now loaded; null when there is none or the reader chose
+    // another voice.
+    private volatile IRecordedNarration? _recording;
+
+    /// <summary>True while passages are played from a saved narration rather than spoken afresh.</summary>
+    public bool PlaysFromRecording => _recording is not null;
+
     public NarrationCoordinator(
         ITtsProvider tts,
         IAudioTransport audio,
@@ -272,7 +279,12 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     /// Loads a plan and positions the reader at <paramref name="resume"/> if supplied. Does not
     /// start playback: a document must never begin reading itself on open.
     /// </summary>
-    public async Task LoadPlanAsync(NarrationPlan plan, ReaderPosition? resume = null, CancellationToken ct = default)
+    /// <param name="recording">
+    /// A narration of this plan made earlier: its passages are played from it, with no engine and
+    /// no model asked, for as long as the reader keeps its voice.
+    /// </param>
+    public async Task LoadPlanAsync(NarrationPlan plan, ReaderPosition? resume = null, CancellationToken ct = default,
+        IRecordedNarration? recording = null)
     {
         ArgumentNullException.ThrowIfNull(plan);
         ThrowIfDisposed();
@@ -291,6 +303,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             // document before, and must neither prepare for it nor cancel this plan's lookahead.
             gen = AdvanceGeneration();
             _plan = plan;
+            _recording = recording;
             _scheduler = new CueScheduler(plan);
             _prepared.Clear();
             _stages.Clear();
@@ -562,6 +575,8 @@ public sealed class NarrationCoordinator : IAsyncDisposable
 
         bool wasPlaying = _audio.State == PlaybackState.Playing;
         _options = _options with { VoiceId = voiceId };
+        // Another voice was asked for: the recording is in its own, so the engine speaks from here.
+        _recording = null;
         long generation = AdvanceGeneration();
         // Discarded now, with the change, not once the transport has stopped: a seek that finishes
         // while it is stopping would otherwise find the old voice's clip ready and play it.
@@ -740,26 +755,9 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     {
         var plan = _plan;
         if (plan is null || plan.SegmentCount == 0) return;
-        var caps = await _tts.GetCapabilitiesAsync(ct).ConfigureAwait(false);
-        if (!caps.IsAvailable)
-        {
-            Publish(PlaybackState.Error, null, NarrationError.ProviderUnavailable(caps.Unavailable ?? "Unknown reason."));
-            return;
-        }
-
-        var format = _options.Format ?? caps.PreferredFormat ?? AudioFormat.Mono44100Float32;
-        var voice = _options.VoiceId;
-        if (voice is null)
-        {
-            var voices = await _tts.ListVoicesAsync(ct).ConfigureAwait(false);
-            voice = voices.FirstOrDefault(v => v.IsDefault)?.Id ?? voices.FirstOrDefault()?.Id;
-            if (voice is null)
-            {
-                Publish(PlaybackState.Error, null, NarrationError.ProviderUnavailable("The speech provider has no voices installed."));
-                return;
-            }
-            _options = _options with { VoiceId = voice };
-        }
+        // Asked for only when a passage has to be spoken: a document with a saved narration is
+        // read with no speech engine installed at all.
+        (TtsCapabilities Caps, AudioFormat Format, string Voice)? engine = null;
 
         int start;
         lock (_gate) start = Math.Max(0, _segmentIndex);
@@ -778,10 +776,15 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             await limiter.WaitAsync(ct).ConfigureAwait(false);
             try
             {
-                await PrepareSegmentAsync(segment, caps, format, voice, generation, ct).ConfigureAwait(false);
-                // Its word timing is the next expensive job: wait for it here, so the bound holds,
-                // while playback (which does not wait for it) can already play the passage.
-                if (_aligning.TryGetValue(segment.Id, out var aligning)) await aligning.ConfigureAwait(false);
+                if (!await PrepareFromRecordingAsync(segment, generation, ct).ConfigureAwait(false))
+                {
+                    engine ??= await EngineAsync(ct).ConfigureAwait(false);
+                    if (engine is not { } e) return;   // said by EngineAsync
+                    await PrepareSegmentAsync(segment, e.Caps, e.Format, e.Voice, generation, ct).ConfigureAwait(false);
+                    // Its word timing is the next expensive job: wait for it here, so the bound holds,
+                    // while playback (which does not wait for it) can already play the passage.
+                    if (_aligning.TryGetValue(segment.Id, out var aligning)) await aligning.ConfigureAwait(false);
+                }
             }
             finally { limiter.Release(); }
             if (i > start) ready += PreparedListeningSeconds(segment.Id);
@@ -810,6 +813,104 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     /// nor start a second one for the same passage. It runs on the coordinator's lifetime token and
     /// is accepted whenever the same plan is still loaded.
     /// </remarks>
+
+    /// <summary>
+    /// The engine, the format and the voice to speak with, or null when there is no usable engine or
+    /// voice, which is then published as the error.
+    /// </summary>
+    private async Task<(TtsCapabilities Caps, AudioFormat Format, string Voice)?> EngineAsync(CancellationToken ct)
+    {
+        var caps = await _tts.GetCapabilitiesAsync(ct).ConfigureAwait(false);
+        if (!caps.IsAvailable)
+        {
+            Publish(PlaybackState.Error, null, NarrationError.ProviderUnavailable(caps.Unavailable ?? "Unknown reason."));
+            return null;
+        }
+        var format = _options.Format ?? caps.PreferredFormat ?? AudioFormat.Mono44100Float32;
+        string? voice;
+        lock (_gate) voice = _options.VoiceId;
+        if (string.IsNullOrEmpty(voice))
+        {
+            var voices = await _tts.ListVoicesAsync(ct).ConfigureAwait(false);
+            voice = voices.FirstOrDefault(v => v.IsDefault)?.Id ?? voices.FirstOrDefault()?.Id;
+            if (string.IsNullOrEmpty(voice))
+            {
+                Publish(PlaybackState.Error, null, NarrationError.ProviderUnavailable("The speech provider has no voices installed."));
+                return null;
+            }
+            _options = _options with { VoiceId = voice };
+        }
+        return (caps, format, voice);
+    }
+
+    /// <summary>
+    /// Takes the passage from the saved narration when it is there as scripted. False when there is
+    /// no recording or it does not hold this passage; the engine then speaks it.
+    /// </summary>
+    private async Task<bool> PrepareFromRecordingAsync(NarrationSegment segment, long generation, CancellationToken ct)
+    {
+        var recording = _recording;
+        if (recording is null) return false;
+        lock (_gate) if (_prepared.ContainsKey(segment.Id)) return true;
+        RecordedClip? clip;
+        try { clip = await recording.TryGetAsync(segment, ct).ConfigureAwait(false); }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception) { clip = null; }   // a damaged file is a passage not recorded, not a stop
+        if (clip is null) return false;
+        lock (_gate)
+        {
+            if (generation != Generation || !ReferenceEquals(recording, _recording)) return true;
+            _prepared[segment.Id] = new PreparedClip(clip.Asset, clip.Pcm.ToArray());
+            AttachTimings(segment, clip.Asset);
+        }
+        await TryQueueNextAsync(generation).ConfigureAwait(false);
+        return true;
+    }
+
+    /// <summary>
+    /// Narrates the whole plan, first passage to last: each is interpreted if it is maths, spoken,
+    /// and its words timed when an aligner is installed, then handed to <paramref name="sink"/>
+    /// with its final script. For a coordinator of its own (see <see cref="NullAudioTransport"/>):
+    /// passages are released as they are handed over, and a seek or a voice change ends it.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">No engine, or a passage could not be spoken; the message says which.</exception>
+    public async Task NarrateAllAsync(
+        Func<NarrationSegment, SpeechAsset, ReadOnlyMemory<byte>, CancellationToken, Task> sink,
+        IProgress<NarrationProgress>? progress = null, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(sink);
+        ThrowIfDisposed();
+        var plan = _plan ?? throw new InvalidOperationException("No document is loaded.");
+        long generation = Generation;
+        var engine = await EngineAsync(ct).ConfigureAwait(false)
+            ?? throw new InvalidOperationException(Snapshot.Error?.Message ?? "No speech engine is available.");
+        double seconds = 0;
+        for (int i = 0; i < plan.SegmentCount; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            string id = plan.Segments[i].Id;
+            await PrepareSegmentAsync(plan.Segments[i], engine.Caps, engine.Format, engine.Voice, generation, ct).ConfigureAwait(false);
+            if (_aligning.TryGetValue(id, out var aligning)) await aligning.WaitAsync(ct).ConfigureAwait(false);
+            if (generation != Generation) throw new InvalidOperationException("The narration was interrupted by another request.");
+
+            PreparedClip? clip;
+            NarrationSegment resolved;
+            lock (_gate)
+            {
+                _prepared.TryGetValue(id, out clip);
+                // Interpretation replaced the passage in the plan: that is the script that was spoken.
+                resolved = (_plan ?? plan).Segments.FirstOrDefault(s => s.Id == id) ?? plan.Segments[i];
+            }
+            if (clip is null)
+                throw new InvalidOperationException(
+                    $"Passage {i + 1} of {plan.SegmentCount} could not be spoken: {Snapshot.Error?.Message ?? "no audio was produced"}");
+            await sink(resolved, clip.Asset, clip.Pcm, ct).ConfigureAwait(false);
+            lock (_gate) _prepared.Remove(id);
+            seconds += clip.Asset.DurationSeconds;
+            progress?.Report(new NarrationProgress(i + 1, plan.SegmentCount, resolved, seconds));
+        }
+    }
+
     private async Task<NarrationSegment> ResolveSegmentAsync(NarrationSegment segment, CancellationToken ct)
     {
         var plan = _plan;
@@ -1334,27 +1435,9 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             lock (_gate) if (_prepared.ContainsKey(plan.Segments[index].Id)) return true;
             if (generation != Generation) return false;
 
-            var caps = await _tts.GetCapabilitiesAsync(ct).ConfigureAwait(false);
-            if (!caps.IsAvailable)
-            {
-                Publish(PlaybackState.Error, null, NarrationError.ProviderUnavailable(caps.Unavailable ?? "Unknown reason."));
-                return false;
-            }
-            var format = _options.Format ?? caps.PreferredFormat ?? AudioFormat.Mono44100Float32;
-            string voice;
-            lock (_gate) voice = _options.VoiceId ?? "";
-            if (voice.Length == 0)
-            {
-                var voices = await _tts.ListVoicesAsync(ct).ConfigureAwait(false);
-                voice = voices.FirstOrDefault(v => v.IsDefault)?.Id ?? voices.FirstOrDefault()?.Id ?? "";
-                if (voice.Length == 0)
-                {
-                    Publish(PlaybackState.Error, null, NarrationError.ProviderUnavailable("The speech provider has no voices installed."));
-                    return false;
-                }
-                _options = _options with { VoiceId = voice };
-            }
-            await PrepareSegmentAsync(plan.Segments[index], caps, format, voice, generation, ct).ConfigureAwait(false);
+            if (await PrepareFromRecordingAsync(plan.Segments[index], generation, ct).ConfigureAwait(false)) continue;
+            if (await EngineAsync(ct).ConfigureAwait(false) is not { } engine) return false;
+            await PrepareSegmentAsync(plan.Segments[index], engine.Caps, engine.Format, engine.Voice, generation, ct).ConfigureAwait(false);
         }
         lock (_gate) return _prepared.ContainsKey(plan.Segments[index].Id);
     }

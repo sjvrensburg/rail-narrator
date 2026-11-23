@@ -36,6 +36,11 @@
          which Rail Narrator never calls - playback goes through RailNarrator.Audio. ADR-0002. -->
     <PackageVersion Include="KokoroSharp.CPU" Version="0.8.4" />
 
+    <!-- The saved narration's audio (a .narration file beside the PDF): Opus, encoded and decoded by a
+         pure C# port of the reference codec, so neither saving nor offline playback needs a native
+         library or ffmpeg. MIT/BSD. -->
+    <PackageVersion Include="Concentus" Version="2.2.3" />
+
     <!-- Desktop. -->
     <PackageVersion Include="Avalonia" Version="12.1.6" />
     <PackageVersion Include="Avalonia.Desktop" Version="12.1.6" />

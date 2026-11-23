@@ -384,6 +384,72 @@ public sealed class NarrationCoordinatorTests
         Assert.Equal("Here y sub t plus h is the forecast.", coordinator.Plan!.Segments[0].SpokenText);
     }
 
+    // ---- a narration made earlier ------------------------------------------------------
+
+    private sealed class MemoryRecording(NarrationPlan plan) : IRecordedNarration
+    {
+        public int Served;
+        public NarrationPlan Plan => plan;
+        public string VoiceDescription => "recorded voice";
+        public Task<RecordedClip?> TryGetAsync(NarrationSegment segment, CancellationToken ct = default)
+        {
+            var scripted = plan.Segment(segment.Id);
+            if (scripted is null || scripted.SpokenText != segment.SpokenText) return Task.FromResult<RecordedClip?>(null);
+            Interlocked.Increment(ref Served);
+            return Task.FromResult<RecordedClip?>(new RecordedClip(SyntheticNarration.Clip(segment.Id, 24000), SyntheticNarration.TonePcm(24000)));
+        }
+    }
+
+    [Fact]
+    public async Task ARecording_IsPlayedWithoutAskingTheEngine_UntilAnotherVoiceIsChosen()
+    {
+        var plan = PlanWith(3);
+        var recording = new MemoryRecording(plan);
+        var tts = new RecordingProvider();
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(tts, transport);
+
+        await coordinator.LoadPlanAsync(plan, recording: recording);
+        await coordinator.PlayAsync();
+        await WaitUntil(() => transport.PlayCount > 0, what: "playback to start");
+
+        Assert.True(coordinator.PlaysFromRecording);
+        Assert.True(recording.Served > 0);
+        lock (tts.Spoken) Assert.Empty(tts.Spoken);
+        Assert.Equal("asset-s00000", transport.Loaded[0].Asset.Id);
+
+        // The recording is in its own voice: asking for another is asking the engine.
+        await coordinator.SetVoiceAsync("another-voice");
+        await WaitUntil(() => { lock (tts.Spoken) return tts.Spoken.Count > 0; }, what: "the engine to be asked");
+        Assert.False(coordinator.PlaysFromRecording);
+    }
+
+    [Fact]
+    public async Task NarratingTheWholePlan_HandsOverEveryPassageInOrder_WithNoDevice()
+    {
+        var plan = PlanWith(5);
+        await using var tts = new FakeTtsProvider();
+        await using var coordinator = new NarrationCoordinator(tts, new NullAudioTransport());
+        await coordinator.LoadPlanAsync(plan);
+        var handed = new List<(string Id, long Frames, int Bytes)>();
+        var reported = new List<int>();
+
+        await coordinator.NarrateAllAsync((segment, asset, pcm, _) =>
+        {
+            handed.Add((segment.Id, asset.FrameCount, pcm.Length));
+            return Task.CompletedTask;
+        }, new ImmediateProgress<NarrationProgress>(p => reported.Add(p.Done)));
+
+        Assert.Equal(plan.Segments.Select(s => s.Id), handed.Select(h => h.Id));
+        Assert.All(handed, h => Assert.True(h.Frames > 0 && h.Bytes == h.Frames * 4));
+        Assert.Equal([1, 2, 3, 4, 5], reported);
+    }
+
+    private sealed class ImmediateProgress<T>(Action<T> report) : IProgress<T>
+    {
+        public void Report(T value) => report(value);
+    }
+
     [Fact]
     public async Task SilentAudio_IsTreatedAsAFailureNotAsSomethingToPlay()
     {

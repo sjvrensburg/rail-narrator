@@ -121,6 +121,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         ToggleSidebar = new RelayCommand(() => SidebarVisible = !SidebarVisible);
         _recent = services.Recent;
         CloseDocument = new RelayCommand(CloseDocumentAsync, () => HasDocument && !IsLoading, OnCommandError);
+        NarrateDocument = new RelayCommand(AskToNarrateDocument, () => HasDocument && !IsLoading && _narration is null, OnCommandError);
+        StopNarration = new RelayCommand(() => _narration?.Cancel(), () => _narration is not null);
+        ExportAudiobook = new RelayCommand(StartAudiobookExport, () => HasDocument && !IsLoading && !_exporting, OnCommandError);
         OpenRecent = new RelayCommand<RecentDocumentView>(OpenRecentDocument);
         RemoveRecent = new RelayCommand<RecentDocumentView>(r => { _recent.Remove(r.Path); RefreshRecent(); });
         RemoveMissingRecent = new RelayCommand(() => { _recent.RemoveMissing(); RefreshRecent(); }, () => RecentDocuments.Any(r => !r.Exists));
@@ -940,6 +943,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         // also corrupted the saved reading position on exit.
         string? previousPath = DocumentPath;
         bool committed = false;
+        SavedNarration? pendingNarration = null;   // disposed in finally unless the load commits it
         Busy = true;
         BeginLoading(path);
         try
@@ -956,6 +960,16 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
             string hash = await Task.Run(() => CacheKey.Sha256HexOfFile(path));
             var cachedPlan = await _services.PlanStore.TryGetPlanAsync(hash);
+            // A narration saved beside the document is the script and the audio already made: it is
+            // read from, and neither the maths model nor the speech engine is asked.
+            var (saved, savedProblem) = await Task.Run(() =>
+            {
+                var opened = SavedNarration.TryOpen(SavedNarration.PathFor(path), hash, out string? problem);
+                return (opened, problem);
+            });
+            pendingNarration = saved;
+            if (savedProblem is not null)
+                Notes.Add($"The saved narration beside this document was not used: {savedProblem}.");
 
             await Task.Run(() => _services.Extraction.AttachDocument(path));
             var request = _services.CreateExtractionRequest(path);
@@ -1012,6 +1026,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             {
                 // A cached plan is reusable only if it was built from the inputs in force now, not
                 // merely from the same file: changed filters, maths mode or region overrides rebuild.
+                if (saved is not null) return (saved.Plan, true);
                 string fingerprint = NarrationPlanner.ComputeInputFingerprint(planner.Options, filters, units);
                 if (cachedPlan is { } c && c.Matches(snapshot.Identity, fingerprint)) return (c, true);
                 var built = await planner.BuildPlanAsync(snapshot, units, filters, progress: planProgress).ConfigureAwait(false);
@@ -1039,7 +1054,11 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             _documentHash = hash;
             _overrides = overrides;
             _overridesHash = hash;
+            var replaced = _savedNarration;
+            _savedNarration = saved;
+            pendingNarration = null;
             committed = true;
+            OnPropertyChanged(nameof(PlaysSavedNarration));
 
             RebuildTranscript();
             ShowVoices(available);
@@ -1050,7 +1069,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
                 && available.Voices.All(v => v.Id != savedVoice))
                 position = position with { VoiceId = null };
 
-            await Coordinator.LoadPlanAsync(plan, position);
+            await Coordinator.LoadPlanAsync(plan, position, recording: saved);
+            // Only now: the coordinator has let go of the narration of the document before.
+            replaced?.Dispose();
             if (position is not null) ShowRestoredPreferences(position);
             // The starting passage is where the reader already is; only a move is worth saving.
             _lastSavedSegmentId = Coordinator.Snapshot.SegmentId;
@@ -1060,6 +1081,13 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             StatusMessage = position is { SegmentId: not null }
                 ? $"Ready. Restored your position ({plan.SegmentCount} passages)."
                 : $"Ready. {plan.SegmentCount} passages to read.";
+            if (saved is not null)
+            {
+                StatusMessage += $" Playing the narration saved with the document ({saved.VoiceDescription}).";
+                Notes.Add($"Playing the narration saved with the document: {saved.Manifest.Passages} passages, " +
+                          $"{HeadlessNarration.Minutes(saved.Manifest.Seconds)}, voice {saved.VoiceDescription}. " +
+                          "No language model or speech engine is used; choosing another voice goes back to live speech.");
+            }
             OnPropertyChanged(nameof(MathEndpointSummary));
             OnPropertyChanged(nameof(CacheBytes));
             _recent.Opened(path, snapshot.Pages.Count);
@@ -1082,9 +1110,153 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
                 try { _services.Extraction.AttachDocument(previousPath); }
                 catch (Exception ex) { Notes.Add($"Could not restore the previous document for display: {ex.Message}"); }
             }
+            pendingNarration?.Dispose();
             EndLoading();
             Busy = false;
             InvalidateSurface?.Invoke();
+        }
+    }
+
+    // ---- a narration saved with the document, and an audiobook from it ----------------------
+
+    private SavedNarration? _savedNarration;
+    private CancellationTokenSource? _narration;
+    private bool _exporting;
+
+    /// <summary>True when the open document is read from a narration saved beside it.</summary>
+    public bool PlaysSavedNarration => _savedNarration is not null;
+
+    /// <summary>File ▸ Save narration with document…</summary>
+    public RelayCommand NarrateDocument { get; }
+
+    public RelayCommand StopNarration { get; }
+
+    /// <summary>File ▸ Export audiobook…</summary>
+    public RelayCommand ExportAudiobook { get; }
+
+    /// <summary>
+    /// Says what narrating the whole document will do and waits for the reader to start it: it
+    /// takes as long as listening would on a slow engine, and every maths passage is sent to the
+    /// maths model.
+    /// </summary>
+    private void AskToNarrateDocument()
+    {
+        if (Plan is not { } plan || DocumentPath is null) return;
+        int maths = plan.Segments.Count(s => s.Provenance == ScriptProvenance.PendingInterpretation);
+        string mathsNote = maths == 0 ? "" : _services.MathInterpreter is null
+            ? $" {maths} maths passages will be read as notation: no maths model is set up."
+            : $" {maths} maths passages go to the maths model.";
+        ShowNotice($"Narrate all {plan.SegmentCount} passages and save them beside the document?{mathsNote}",
+            "Narrate", () => _ = NarrateDocumentAsync(plan, DocumentPath));
+    }
+
+    private async Task NarrateDocumentAsync(NarrationPlan plan, string documentPath, bool allowUninterpreted = false)
+    {
+        if (_narration is not null) return;
+        using var cts = new CancellationTokenSource();
+        _narration = cts;
+        NarrateDocument.RaiseCanExecuteChanged();
+        StopNarration.RaiseCanExecuteChanged();
+        string target = SavedNarration.PathFor(documentPath);
+        long lastShown = 0;
+        ShowNotice($"Narrating the document: starting ({plan.SegmentCount} passages).", "Stop", () => cts.Cancel());
+        try
+        {
+            var progress = new Progress<NarrationProgress>(p =>
+            {
+                // Once a second at most: a notice for every passage would flicker.
+                if (cts.IsCancellationRequested || (p.Done != p.Total && Environment.TickCount64 - lastShown < 1000)) return;
+                lastShown = Environment.TickCount64;
+                ShowNotice($"Narrating the document: {p.Done} of {p.Total} passages, {HeadlessNarration.Minutes(p.AudioSeconds)} of audio.",
+                    "Stop", () => cts.Cancel());
+            });
+            var engines = _services.NarrationEngines(Coordinator.Options.VoiceId);
+            var manifest = await Task.Run(() => NarrationJob.RunAsync(plan, Path.GetFileName(documentPath), target, engines, progress, cts.Token, allowUninterpreted));
+
+            int uninterpreted = manifest.ByRule + manifest.Unread + manifest.AsPrinted;
+            string maths = uninterpreted == 0 ? "" : $" {uninterpreted} maths passages were not interpreted (see Notes).";
+            Notes.Add(HeadlessNarration.Summary(manifest, target));
+            if (DocumentPath == documentPath)
+                ShowNotice($"Narration saved beside the document ({HeadlessNarration.Minutes(manifest.Seconds)}, {HeadlessNarration.Megabytes(target)}).{maths}",
+                    "Reload to play from it", () => ReloadDocument.Execute(null));
+            else
+                ShowNotice($"Narration saved beside {Path.GetFileName(documentPath)}.{maths}");
+        }
+        catch (OperationCanceledException)
+        {
+            ShowNotice("Narration stopped. Nothing was saved; what was spoken so far is cached and will not be spoken again.");
+        }
+        catch (MathsNotInterpretedException ex)
+        {
+            // The reader decides: a narration with its maths as notation is still a narration.
+            Notes.Add($"Narrating '{documentPath}' stopped: {ex.Message}");
+            ShowNotice(ex.Message, "Narrate anyway", () => _ = NarrateDocumentAsync(plan, documentPath, allowUninterpreted: true));
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
+        {
+            Notes.Add($"Narrating '{documentPath}' failed: {ex.Message}");
+            ShowNotice($"The document could not be narrated: {ex.Message}");
+        }
+        finally
+        {
+            _narration = null;
+            NarrateDocument.RaiseCanExecuteChanged();
+            StopNarration.RaiseCanExecuteChanged();
+        }
+    }
+
+    /// <summary>Writes the saved narration as an M4B beside the document, or says what is missing.</summary>
+    private void StartAudiobookExport()
+    {
+        if (DocumentPath is not { } documentPath || _documentHash is not { } hash) return;
+        _ = ExportAudiobookAsync(documentPath, hash);
+    }
+
+    private async Task ExportAudiobookAsync(string documentPath, string hash)
+    {
+        if (_exporting) return;
+        string book = Path.ChangeExtension(documentPath, ".m4b");
+        var (saved, problem) = await Task.Run(() =>
+        {
+            var opened = SavedNarration.TryOpen(SavedNarration.PathFor(documentPath), hash, out string? p);
+            return (opened, p);
+        });
+        if (saved is null)
+        {
+            ShowNotice(problem is null
+                    ? "An audiobook is made from a narration saved with the document, and there is none yet."
+                    : $"The saved narration cannot be used: {problem}.",
+                "Narrate the document…", AskToNarrateDocument);
+            return;
+        }
+        _exporting = true;
+        ExportAudiobook.RaiseCanExecuteChanged();
+        try
+        {
+            using (saved)
+            {
+                long lastShown = 0;
+                ShowNotice("Exporting the audiobook…");
+                var progress = new Progress<(int Done, int Total)>(p =>
+                {
+                    if (p.Done != p.Total && Environment.TickCount64 - lastShown < 1000) return;
+                    lastShown = Environment.TickCount64;
+                    ShowNotice($"Exporting the audiobook: {p.Done} of {p.Total} passages.");
+                });
+                var chapters = await Task.Run(() => AudiobookExporter.ExportAsync(saved, Path.GetFileNameWithoutExtension(documentPath), null, book, progress));
+                Notes.Add($"Audiobook written to {book} ({HeadlessNarration.Megabytes(book)}, {chapters.Count} chapters).");
+                ShowNotice($"Audiobook saved as {Path.GetFileName(book)} beside the document ({HeadlessNarration.Megabytes(book)}, {chapters.Count} chapters).");
+            }
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or IOException or UnauthorizedAccessException)
+        {
+            Notes.Add($"Exporting an audiobook of '{documentPath}' failed: {ex.Message}");
+            ShowNotice(ex.Message);
+        }
+        finally
+        {
+            _exporting = false;
+            ExportAudiobook.RaiseCanExecuteChanged();
         }
     }
 
@@ -1593,6 +1765,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         DownloadFormulaModel.RaiseCanExecuteChanged();
         ApplyMathsEdit.RaiseCanExecuteChanged();
         CloseDocument.RaiseCanExecuteChanged();
+        NarrateDocument.RaiseCanExecuteChanged();
+        ExportAudiobook.RaiseCanExecuteChanged();
         ReloadDocument.RaiseCanExecuteChanged();
         GoToPage.RaiseCanExecuteChanged();
         ZoomIn.RaiseCanExecuteChanged();
@@ -1610,6 +1784,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         _services.Coordinator.SnapshotChanged -= OnSnapshotChanged;
         _services.Coordinator.SegmentResolved -= OnSegmentResolved;
         if (_services.MathResolver is { } maths) maths.EndpointProblem -= OnMathsEndpointProblem;
+        _narration?.Cancel();
+        _savedNarration?.Dispose();
         _services.Coordinator.ActiveCueChanged -= OnActiveCueChanged;
         _services.Coordinator.FollowRequested -= OnFollowRequested;
         if (_services.Kokoro is { } kokoro)
