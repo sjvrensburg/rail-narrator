@@ -4,6 +4,9 @@
     <Description>XDG settings, caches, model manifest and downloads, sidecar lifecycle, diagnostics.</Description>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Concentus" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../RailNarrator.Domain/RailNarrator.Domain.csproj" />
   </ItemGroup>
 </Project>

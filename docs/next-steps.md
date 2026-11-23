@@ -1,8 +1,8 @@
 # Next steps and open decisions
 
-Handover note, 23 November 2026, on the `fix/legacy-font-encoding` branch (from `main`
-after PR #45). It builds with 0 warnings; the test runner reports 730 passed and 16 skipped.
-`status.md` gives 727 passing and 19 opt-in, because it
+Handover note, 23 November 2026, on the `feat/saved-narration` branch (from `main`
+after PR #46). It builds with 0 warnings; the test runner reports 747 passed and 16 skipped.
+`status.md` gives 744 passing and 19 opt-in, because it
 counts as opt-in the three Phonon tests that return early without an install and so report as
 passed. What is verified, and how it was measured, is in `status.md`. How to run the real models,
 the GUI and the audio path on a new machine is in `testing-real-world.md`.
@@ -53,6 +53,11 @@ Since PR #10:
 
 ## Recently landed
 
+- **A narration saved with the document** (ADR-0012, `feat/saved-narration`, `status.md` item 94):
+  the whole document narrated once to `paper.narration` beside the PDF, from the File menu or
+  with `rail-narrator narrate`, then played with no language model and no speech engine; and an
+  M4B audiobook with chapters from it. Run on two pages; not yet on a whole paper, and not
+  listened to.
 - **Brackets and signs from older maths fonts** (`fix/legacy-font-encoding`, `status.md` item 93):
   "ð", "Þ", "¼" and "þ" are read as "(", ")", "=" and "+" in documents that use that encoding.
   The reader heard the letter names ("a lot better") and the Claude Test button passes.
@@ -117,6 +122,11 @@ Since PR #10:
 
 In rough priority order:
 
+- **A whole paper narrated and listened to** (`status.md` item 94). Narrate `nbag025.pdf` with the
+  maths model working, play it from the file, and listen to the M4B on another device. Things
+  to watch: the time (alignment was most of it on two pages), a seek to a long passage (decoding
+  takes about a sixteenth of its length), and whether Stop and a second start pick up from the
+  cache as intended.
 - **An equation block too tall for the formula model** (`status.md` item 89). Heron groups
   stacked equations into one block; one of 21 on `nbag025.pdf` ran past the 1,536-token limit and
   is announced when no language model is configured. Cutting such a block into its rows before

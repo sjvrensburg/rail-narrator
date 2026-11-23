@@ -94,6 +94,20 @@ public sealed class ServiceRegistry : IAsyncDisposable
     /// </summary>
     public required bool ResolvesMathsLate { get; init; }
 
+    /// <summary>The word aligner, when word highlighting is on and its runtime is installed.</summary>
+    public IForcedAligner? Aligner { get; init; }
+
+    /// <summary>What resolves a maths passage just before it is spoken, when maths is interpreted during playback.</summary>
+    public ISegmentResolver? SegmentResolver { get; init; }
+
+    /// <summary>
+    /// The engines for narrating a whole document to a file: the ones the reader hears, in the
+    /// voice now chosen. They take one job at a time, so a narration and a reading share them.
+    /// </summary>
+    public NarrationEngines NarrationEngines(string? voiceId = null)
+        => new(SpeechProvider, AssetStore, Aligner, SegmentResolver,
+            Coordinator.Options with { VoiceId = voiceId ?? Coordinator.Options.VoiceId, PlaybackRate = 1.0 });
+
     /// <summary>The resolver that interprets maths during playback; it reports an endpoint that cannot be asked.</summary>
     public MathInterpretationResolver? MathResolver { get; init; }
     public required IReadOnlyList<string> StartupNotes { get; init; }
@@ -368,6 +382,8 @@ public sealed class ServiceRegistry : IAsyncDisposable
             FormulaModel = formulas,
             ResolvesMathsLate = segmentResolver is not null,
             MathResolver = segmentResolver as MathInterpretationResolver,
+            Aligner = aligner,
+            SegmentResolver = segmentResolver,
             StartupNotes = notes,
             Kokoro = kokoro,
             LayoutSummary = backend.Capabilities.Classes.Count > 0

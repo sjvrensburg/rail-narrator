@@ -60,6 +60,13 @@
         <MenuItem Header="Re_load" Command="{Binding ReloadDocument}" InputGesture="Ctrl+Shift+R" />
         <MenuItem Header="_Close" Command="{Binding CloseDocument}" InputGesture="Ctrl+W" />
         <Separator />
+        <!-- The whole document narrated once and kept beside it, then played with no model or engine. -->
+        <MenuItem Header="Save _narration with document…" Command="{Binding NarrateDocument}"
+                  ToolTip.Tip="Interprets the maths and speaks every passage now, and saves the result beside the PDF for playback without a language model or a speech engine" />
+        <MenuItem Header="Stop narra_ting" Command="{Binding StopNarration}" />
+        <MenuItem Header="Export _audiobook (M4B)…" Command="{Binding ExportAudiobook}"
+                  ToolTip.Tip="Writes the saved narration as one audiobook file with a chapter at each heading, beside the PDF (needs ffmpeg)" />
+        <Separator />
         <MenuItem Header="_Settings…" Command="{Binding OpenSettings}" InputGesture="Ctrl+OemComma" />
         <Separator />
         <MenuItem Header="E_xit" Click="OnCloseClicked" InputGesture="Ctrl+Q" />
