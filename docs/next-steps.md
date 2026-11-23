@@ -1,8 +1,8 @@
 # Next steps and open decisions
 
-Handover note, 20 November 2026, on the `feat/formula-model` branch (from `main` after PR #39).
-It builds with 0 warnings; the test runner reports 655 passed and 16 skipped.
-`status.md` gives 652 passing and 19 opt-in, because it
+Handover note, 23 November 2026, on the `fix/sparse-page-ocr-ink-outside-text` branch (from `main`
+after PR #41). It builds with 0 warnings; the test runner reports 662 passed and 16 skipped.
+`status.md` gives 659 passing and 19 opt-in, because it
 counts as opt-in the three Phonon tests that return early without an install and so report as
 passed. What is verified, and how it was measured, is in `status.md`. How to run the real models,
 the GUI and the audio path on a new machine is in `testing-real-world.md`.
@@ -52,6 +52,12 @@ Since PR #10:
   hidden by default, and RailReader's colour filters on the toolbar, in View and on the C key.
 
 ## Recently landed
+
+- **A nearly empty page is not OCR'd** (`fix/sparse-page-ocr-ink-outside-text`, `status.md` item
+  87; was open decision 0). A page with little text is recognised only when it has ink outside
+  that text, so a scan with a stray text layer still is and a page holding one line no longer
+  costs about 20 s. Tested with a stand-in for recognition; not run with the real OCR engine or
+  on a real scan, and a figure page with a short caption is still recognised.
 
 - **Recent documents and model downloads** (`fix/ux-recent-and-downloads`, `status.md` item 86).
   Recent documents can be removed (one at a time, the missing ones, or all), the Models menu
@@ -161,6 +167,11 @@ In rough priority order:
   out of 40 on the reference machine with one and a half busy loops per core, so plain CPU
   starvation does not bring it out. Next time it fails, keep the test's name and message; if it
   must be hunted, try memory pressure or the LLM server running, which is what was different.
+  A candidate since 2026-11-23: `EngineLockingTests.SeeksRacingClipTransitions_DoNotDeadlock` ran
+  into its 60 s deadline once in a full-solution run with a load average of 11, then passed three
+  isolated runs. The message was lost again, but reaching the deadline means the UI thread kept
+  ticking and the transitions fell short: the reading stopped advancing, or was slowed more than
+  eightfold. Run it in a loop under that load and keep the count of transitions it reports.
 - **More documents.** Everything about maths was measured on one paper. Try a physics paper,
   a pure-maths paper and an ML paper.
 
@@ -168,10 +179,6 @@ Considered and not built: a banner saying whether the passages on a page being b
 ready. The preparing card covers the case that mattered (a start that has to wait).
 
 ## Decisions needed from you
-
-0. **Sparse pages and OCR.** A page with under 0.5 % ink and under 60 characters is OCR'd as well, at
-   562 DPI on the CPU, about 20 s a page here, to catch scans with a stray text layer. Keep it, lower
-   the DPI, or OCR only when the page has ink outside its text?
 
 1. **Spoken maths, after the prompt change** (`status.md` item 82). The reader chose plain
    language first, with notation spoken as words where the model is unsure or where a symbol

@@ -263,6 +263,11 @@ public sealed class RailReaderExtractionSource : IExtractionSource, IDisposable
         var warnings = new List<string>();
         if (analyzer.TakePendingNote() is { } switched) warnings.Add(switched);
 
+        // Rendered first: the layout pass needs it on every page, and the text-layer decision
+        // below reads it to tell a nearly empty page from a scan.
+        int targetSize = AnalysisRasterSize(request.Options);
+        var (rgb, pxW, pxH) = pdf.RenderPagePixmap(pageIndex, targetSize, viewRotation);
+
         // --- text layer ---------------------------------------------------------------
         PageText native = _textService.ExtractPageText(pdf.PdfBytes, pageIndex, viewRotation, request.Password);
         bool nativeUsable = CountMeaningfulChars(native) >= 8;
@@ -298,10 +303,12 @@ public sealed class RailReaderExtractionSource : IExtractionSource, IDisposable
                 warnings.Add("This page has no usable text layer and recognition is turned off.");
             }
         }
-        else if (request.Options.Ocr == OcrPolicy.Full && CoverageLooksSparse(native, pageW, pageH) && getOcr() is { } ocr)
+        else if (request.Options.Ocr == OcrPolicy.Full && CoverageLooksSparse(native, pageW, pageH)
+            && HasInkOutsideText(rgb, pxW, pxH, native, pageW, pageH) && getOcr() is { } ocr)
         {
             // A page can carry a few real characters and still be a scan. Sparse native text must not
-            // suppress the recognition the page needs.
+            // suppress the recognition the page needs. A page whose only ink is those characters is
+            // simply nearly empty, and recognising it costs about 20 s to find nothing.
             warnings.Add("The text layer on this page is sparse; recognition was run as well. Check the result before trusting it.");
             var ocrPage = OcrRecognizer.RecognizePage(pdf, ocr, pageIndex, OcrMode.Full, OcrDpiFor(request.Options));
             if (ocrPage.HasText)
@@ -317,8 +324,6 @@ public sealed class RailReaderExtractionSource : IExtractionSource, IDisposable
         }
 
         // --- layout ---------------------------------------------------------------------
-        int targetSize = AnalysisRasterSize(request.Options);
-        var (rgb, pxW, pxH) = pdf.RenderPagePixmap(pageIndex, targetSize, viewRotation);
         float scaleX = pxW > 0 ? (float)(pageW / pxW) : 1f;
         float scaleY = pxH > 0 ? (float)(pageH / pxH) : 1f;
 
@@ -410,6 +415,9 @@ public sealed class RailReaderExtractionSource : IExtractionSource, IDisposable
         // handful of characters is the signature of a scan that carries a stray text layer.
         return glyphArea / (pageW * pageH) < 0.005 && CountMeaningfulChars(text) < 60;
     }
+
+    private static bool HasInkOutsideText(byte[] rgb, int pxW, int pxH, PageText text, double pageW, double pageH)
+        => PageInk.FractionOutsideText(rgb, pxW, pxH, text.CharBoxes, pageW, pageH) >= PageInk.WorthRecognising;
 
     /// <summary>
     /// Builds a <see cref="PageText"/> from recognised lines, in page points.

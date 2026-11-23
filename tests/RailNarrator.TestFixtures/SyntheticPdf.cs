@@ -121,6 +121,26 @@ public static class SyntheticPdf
     }
 
     /// <summary>
+    /// Writes a page that looks like a scan carrying a stray text layer: bars drawn where its lines
+    /// of print would be, which no text accounts for, and one short line of real text below them.
+    /// </summary>
+    public static string WriteScanWithStrayText(string path, string strayText)
+    {
+        using var stream = new FileStream(path, FileMode.Create, FileAccess.Write);
+        using var document = SKDocument.CreatePdf(stream);
+        var canvas = document.BeginPage(PageWidth, PageHeight);
+        using (var paint = new SKPaint { Color = SKColors.DarkGray, IsAntialias = true })
+        {
+            for (int i = 0; i < 12; i++)
+                canvas.DrawRect(Margin, Margin + i * LinePitch, PageWidth - 2 * Margin, 6f, paint);
+        }
+        DrawLine(canvas, new FixtureLine(strayText, Margin, PageHeight - Margin));
+        document.EndPage();
+        document.Close();
+        return path;
+    }
+
+    /// <summary>
     /// Writes a sentence that ends one page and continues on the next, so a unit must carry anchors on
     /// two pages. The two halves are separate lines with a deliberate hyphen-free break.
     /// </summary>
