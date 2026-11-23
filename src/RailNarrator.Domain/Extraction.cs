@@ -218,8 +218,9 @@ public static class ExtractorVersions
     /// <remarks>
     /// 2: analysis raster sized in pixels, not read as a DPI.
     /// 3: a model's blocks are sorted into its reading order before post-processing.
+    /// 4: a page with little text is recognised only when it has ink outside that text.
     /// </remarks>
-    public const string Current = "extraction/3";
+    public const string Current = "extraction/4";
 }
 
 /// <summary>
