@@ -90,7 +90,19 @@ public sealed record PlaybackSnapshot(
     NarrationError? Error)
 {
     public long Generation { get; init; }
-    public bool IsAudible => State is PlaybackState.Playing;
+    /// <summary>
+    /// The transport itself is playing, whatever <see cref="State"/> says. The state is the last
+    /// thing reported, and a report about a passage ahead (its speech failed) replaces "Playing"
+    /// while the current passage is still being read.
+    /// </summary>
+    public bool TransportPlaying { get; init; }
+
+    /// <summary>
+    /// Audio is being heard. What a play/pause control must go by: one that went by
+    /// <see cref="State"/> offered Play during such a report, and Play is ignored while audio
+    /// plays, so the reading could not be paused.
+    /// </summary>
+    public bool IsAudible => State is PlaybackState.Playing || TransportPlaying;
 
     public bool IsBusy => State is PlaybackState.Preparing or PlaybackState.Buffering or PlaybackState.Seeking;
 

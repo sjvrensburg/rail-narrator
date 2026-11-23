@@ -62,7 +62,7 @@
         <Separator />
         <MenuItem Header="_Settings…" Command="{Binding OpenSettings}" InputGesture="Ctrl+OemComma" />
         <Separator />
-        <MenuItem Header="E_xit" Click="OnCloseClicked" />
+        <MenuItem Header="E_xit" Click="OnCloseClicked" InputGesture="Ctrl+Q" />
       </MenuItem>
       <MenuItem Header="_Playback">
         <MenuItem Header="_Play / pause" Command="{Binding PlayPause}" InputGesture="Space" ToolTip.Tip="Also Ctrl+P" />
@@ -111,7 +111,7 @@
         <MenuItem Header="{Binding DownloadLayoutModelGpuHeader}" Command="{Binding DownloadLayoutModelGpu}" ToolTip.Tip="Docling Heron FP32: the layout model on a WebGPU-capable GPU" />
         <MenuItem Header="{Binding DownloadFormulaModelHeader}" Command="{Binding DownloadFormulaModel}" ToolTip.Tip="PP-FormulaNet_plus-M: reads display equations to LaTeX on this computer" />
         <Separator />
-        <MenuItem Header="_Endpoints and API keys…" Command="{Binding OpenSettings}" />
+        <MenuItem Header="_Endpoints and API keys…" Command="{Binding OpenMathsSettings}" />
         <MenuItem Header="_Test text LLM endpoint" Command="{Binding TestMathEndpoint}" />
         <MenuItem Header="Test _vision endpoint" Command="{Binding TestVisionEndpoint}" />
       </MenuItem>

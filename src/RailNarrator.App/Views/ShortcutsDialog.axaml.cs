@@ -37,6 +37,7 @@ public partial class ShortcutsDialog : Window
             ("F6", "Sidebar: outline, script, maths review, notes"),
             ("Ctrl+,", "Settings"),
             ("F1", "This list"),
+            ("Ctrl+Q", "Quit"),
         ]),
     ];
 

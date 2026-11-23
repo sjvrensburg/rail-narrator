@@ -98,12 +98,12 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
         OpenDocument = new RelayCommand(() => OpenDocumentAsync(TopLevelProvider?.Invoke()), () => !Busy, OnCommandError);
         Play = new RelayCommand(StartReadingAsync, CanRead, OnCommandError);
-        Pause = new RelayCommand(() => _services.Coordinator.PauseAsync(), () => _playback.State == PlaybackState.Playing, OnCommandError);
+        Pause = new RelayCommand(() => _services.Coordinator.PauseAsync(), () => _playback.IsAudible, OnCommandError);
         // One button: play, pause, or — while a start is still waiting for its audio — cancel that
         // start. Pausing then would not stop it: the start would play when the audio arrived.
         PlayPause = new RelayCommand(() => IsStarting
                 ? _services.Coordinator.StopAsync()
-                : _playback.State == PlaybackState.Playing ? _services.Coordinator.PauseAsync() : StartReadingAsync(),
+                : _playback.IsAudible ? _services.Coordinator.PauseAsync() : StartReadingAsync(),
             CanRead, OnCommandError, allowWhileRunning: true);
         Next = new RelayCommand(() => { _pendingStartSegmentId = null; return _services.Coordinator.NextSegmentAsync(); }, CanRead, OnCommandError, allowWhileRunning: true);
         Previous = new RelayCommand(() => { _pendingStartSegmentId = null; return _services.Coordinator.PreviousSegmentAsync(); }, CanRead, OnCommandError, allowWhileRunning: true);
@@ -115,7 +115,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         Zoom200 = new RelayCommand(() => ApplyZoom(2.0), () => HasDocument, OnCommandError);
         Zoom400 = new RelayCommand(() => ApplyZoom(4.0), () => HasDocument, OnCommandError);
         Zoom800 = new RelayCommand(() => ApplyZoom(8.0), () => HasDocument, OnCommandError);
-        OpenSettings = new RelayCommand(() => SettingsRequested?.Invoke());
+        OpenSettings = new RelayCommand(() => SettingsRequested?.Invoke(null));
+        OpenMathsSettings = new RelayCommand(() => SettingsRequested?.Invoke("Maths"));
         ToggleSidebar = new RelayCommand(() => SidebarVisible = !SidebarVisible);
         _recent = services.Recent;
         CloseDocument = new RelayCommand(CloseDocumentAsync, () => HasDocument && !IsLoading, OnCommandError);
@@ -328,7 +329,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public string? RestoredSegmentId { get; private set; }
 
     /// <summary>The play/pause button's caption: what pressing it will do now.</summary>
-    public string PlayButtonText => IsStarting ? "⏹ Cancel" : _playback.State == PlaybackState.Playing ? "⏸ Pause" : "▶ Play";
+    public string PlayButtonText => IsStarting ? "⏹ Cancel" : _playback.IsAudible ? "⏸ Pause" : "▶ Play";
 
     /// <summary>Play: from the heading chosen in the outline if there is one, else from where reading stands.</summary>
     private Task StartReadingAsync()
@@ -339,11 +340,11 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     }
 
     /// <summary>The play button's words, beside its icon: Play, Pause, or Cancel while a start is waiting.</summary>
-    public string PlayButtonLabel => IsStarting ? "Cancel" : _playback.State == PlaybackState.Playing ? "Pause" : "Play";
+    public string PlayButtonLabel => IsStarting ? "Cancel" : _playback.IsAudible ? "Pause" : "Play";
 
-    public bool PlayButtonShowsPlay => !IsStarting && _playback.State != PlaybackState.Playing;
+    public bool PlayButtonShowsPlay => !IsStarting && !_playback.IsAudible;
 
-    public bool PlayButtonShowsPause => !IsStarting && _playback.State == PlaybackState.Playing;
+    public bool PlayButtonShowsPause => !IsStarting && _playback.IsAudible;
 
     public bool PlayButtonShowsCancel => IsStarting;
 
@@ -473,7 +474,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         if (item.Page is not { } page) { StatusMessage = $"“{item.Title}” does not say which page it is on."; return; }
         PageRequested?.Invoke(page);
         if (FirstPassageFrom(page) is not { } segmentId) return;
-        if (_playback.State == PlaybackState.Playing)
+        if (_playback.IsAudible)
         {
             _pendingStartSegmentId = null;
             RunObserved(Coordinator.GoToSegmentAsync(segmentId), "Could not move to that heading");
@@ -811,7 +812,10 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     /// <summary>Opens the Settings dialogue (File ▸ Settings…, Ctrl+,). The window handles it.</summary>
     public RelayCommand OpenSettings { get; }
 
-    public event Action? SettingsRequested;
+    public event Action<string?>? SettingsRequested;
+
+    /// <summary>Opens the Settings dialogue on its Maths page, where the endpoints and keys are.</summary>
+    public RelayCommand OpenMathsSettings { get; }
 
     public RelayCommand TestMathEndpoint { get; }
     public RelayCommand TestVisionEndpoint { get; }
@@ -1270,7 +1274,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
                 if (error.Code == NarrationErrorCode.SpeechProviderUnavailable && error.Message != _lastNoticedError)
                 {
                     _lastNoticedError = error.Message;
-                    ShowNotice(error.Message, "Speech settings…", () => SettingsRequested?.Invoke());
+                    ShowNotice(error.Message, "Speech settings…", () => SettingsRequested?.Invoke("Speech"));
                 }
             }
             else if (snapshot.Message is { } message) StatusMessage = message;
