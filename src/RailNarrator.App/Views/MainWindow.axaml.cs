@@ -76,6 +76,8 @@ public partial class MainWindow : Window
         AddHandler(KeyDownEvent, OnPreviewKeyDown, RoutingStrategies.Tunnel);
         Closing += OnClosing;
         _viewModel.SettingsRequested += ShowSettings;
+        // In code, not XAML: closing the window is the window's to do, and has no command to bind.
+        KeyBindings.Add(new KeyBinding { Gesture = new KeyGesture(Key.Q, KeyModifiers.Control), Command = new RelayCommand(Close) });
         _viewModel.RestartRequested += Restart;
         _viewModel.PageRequested += page => Surface.ShowPageFromTop(page);
         SetUpSidebar();
@@ -326,11 +328,13 @@ public partial class MainWindow : Window
     /// Opens the Settings dialogue, or brings it forward if it is open. Not modal, as in RailReader2:
     /// a highlight change can be watched on the page while it is made.
     /// </summary>
-    private void ShowSettings()
+    /// <param name="page">The page to show by its name ("Maths", "Speech"), or null for the one it is on.</param>
+    private void ShowSettings(string? page)
     {
-        if (_settingsWindow is { } open) { open.Activate(); return; }
+        if (_settingsWindow is { } open) { open.ShowPage(page); open.Activate(); return; }
         var settings = new SettingsViewModel(_viewModel);
         var window = new SettingsWindow(settings) { FontSize = FontSize };
+        window.ShowPage(page);
         settings.RestartRequested += () =>
         {
             window.Close();
@@ -506,7 +510,7 @@ public partial class MainWindow : Window
                 _viewModel.ResumeFollow.Execute(null);
                 e.Handled = true;
             }
-            else if (_viewModel.Playback.State == PlaybackState.Playing && _viewModel.Pause.CanExecute(null))
+            else if (_viewModel.Playback.IsAudible && _viewModel.Pause.CanExecute(null))
             {
                 _viewModel.Pause.Execute(null);
                 e.Handled = true;

@@ -1,8 +1,8 @@
 # Next steps and open decisions
 
 Handover note, 23 November 2026, on the `fix/sparse-page-ocr-ink-outside-text` branch (from `main`
-after PR #41). It builds with 0 warnings; the test runner reports 662 passed and 16 skipped.
-`status.md` gives 659 passing and 19 opt-in, because it
+after PR #41). It builds with 0 warnings; the test runner reports 663 passed and 16 skipped.
+`status.md` gives 660 passing and 19 opt-in, because it
 counts as opt-in the three Phonon tests that return early without an install and so report as
 passed. What is verified, and how it was measured, is in `status.md`. How to run the real models,
 the GUI and the audio path on a new machine is in `testing-real-world.md`.
@@ -52,6 +52,12 @@ Since PR #10:
   hidden by default, and RailReader's colour filters on the toolbar, in View and on the C key.
 
 ## Recently landed
+
+- **Settings page, Ctrl+Q and Pause** (`fix/settings-page-pause-quit`, `status.md` item 88).
+  Endpoints and API keys… opens Settings on Maths; Ctrl+Q quits; and Pause works while a report
+  about a later passage (its speech failed) stands as the state. The last is a cause found by
+  reading and shown by a test, not confirmed as what the reader met: if Pause is ignored again,
+  note what the status line says at that moment.
 
 - **A nearly empty page is not OCR'd** (`fix/sparse-page-ocr-ink-outside-text`, `status.md` item
   87; was open decision 0). A page with little text is recognised only when it has ink outside

@@ -1649,12 +1649,14 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         double positionSeconds = _audio.PositionSeconds;
         double clipDurationSeconds = _audio.ClipDurationSeconds;
         double bufferedAheadSeconds = _audio.BufferedAheadSeconds;
+        bool transportPlaying = _audio.State == PlaybackState.Playing;
         lock (_gate)
         {
             int index = _segmentIndex;
             string? segmentId = plan is not null && index >= 0 && index < plan.SegmentCount ? plan.Segments[index].Id : null;
             snap = _snapshot with
             {
+                TransportPlaying = transportPlaying,
                 Generation = Generation,
                 SegmentId = segmentId,
                 SegmentIndex = Math.Max(0, index),

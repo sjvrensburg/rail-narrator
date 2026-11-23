@@ -309,6 +309,48 @@ public sealed class NarrationCoordinatorTests
         Assert.Contains("no model installed", error.Message);
     }
 
+    /// <summary>A provider that speaks every passage but the one whose text holds a marker.</summary>
+    private sealed class FailsOnOnePassage(string marker) : ITtsProvider
+    {
+        private readonly FakeTtsProvider _inner = new();
+        public string ProviderId => _inner.ProviderId;
+        public Task<TtsCapabilities> GetCapabilitiesAsync(CancellationToken ct = default) => _inner.GetCapabilitiesAsync(ct);
+        public Task<IReadOnlyList<TtsVoice>> ListVoicesAsync(CancellationToken ct = default) => _inner.ListVoicesAsync(ct);
+        public Task<ProviderSelfTestResult> SelfTestAsync(string voiceId, CancellationToken ct = default) => _inner.SelfTestAsync(voiceId, ct);
+        public ValueTask DisposeAsync() => _inner.DisposeAsync();
+        public async Task<TtsSynthesisResult> SynthesizeAsync(TtsSynthesisRequest request, CancellationToken ct = default)
+        {
+            if (!request.Text.Contains(marker, StringComparison.Ordinal))
+                return await _inner.SynthesizeAsync(request, ct);
+            // Slow to fail, as an engine is: the passages before it are being read by then.
+            await Task.Delay(400, ct);
+            throw new InvalidOperationException("The engine refused this passage.");
+        }
+    }
+
+    [Fact]
+    public async Task AFailureAhead_DoesNotHideThatTheCurrentPassageIsPlaying()
+    {
+        // The lookahead fails on a later passage while the first is being read. The error is
+        // published, and it replaced "Playing" as the state: a play/pause control that chose its
+        // action from the state alone then asked to play, which is ignored while audio plays, so
+        // the reading could not be paused.
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(new FailsOnOnePassage("number 2"), transport);
+
+        await coordinator.LoadPlanAsync(PlanWith(4));
+        await coordinator.PlayAsync();
+        await WaitUntil(() => transport.PlayCount > 0, what: "playback to start");
+        await WaitUntil(() => coordinator.Snapshot.Error is not null, what: "the failure ahead");
+
+        Assert.Equal(PlaybackState.Playing, transport.State);
+        Assert.True(coordinator.Snapshot.IsAudible, "The snapshot must still say that audio is playing.");
+
+        await coordinator.PauseAsync();
+        Assert.Equal(PlaybackState.Paused, transport.State);
+        Assert.False(coordinator.Snapshot.IsAudible);
+    }
+
     [Fact]
     public async Task SilentAudio_IsTreatedAsAFailureNotAsSomethingToPlay()
     {
