@@ -223,6 +223,13 @@ public sealed class RailReaderExtractionSource : IExtractionSource, IDisposable
                 ocr?.Dispose();
             }
 
+            // A maths font that hides brackets and signs does so through the whole document, and a
+            // page with "ν ¼ 7" alone cannot show it: one page's evidence settles it for all. One
+            // character for one, so the lines' ranges and the character boxes still fit.
+            if (pages.Any(p => LegacyMathsEncoding.IsUsedIn(p.Text)))
+                for (int i = 0; i < pages.Count; i++)
+                    pages[i] = pages[i] with { Text = LegacyMathsEncoding.RestoreAll(pages[i].Text) };
+
             return new ExtractionSnapshot(identity, frame, request.Options, pages);
         }
         finally
