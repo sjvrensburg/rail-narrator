@@ -27,7 +27,7 @@ namespace RailNarrator.Inference;
 public static partial class LocalLatexSpeaker
 {
     /// <summary>Changes whenever the phrasing changes; part of cache keys for readings made with it.</summary>
-    public const string Version = "clearspeak/3";
+    public const string Version = "clearspeak/4";
 
     /// <summary>Renders a LaTeX expression as spoken English. Deterministic and offline.</summary>
     public static string Speak(string latex)
@@ -194,7 +194,7 @@ public static partial class LocalLatexSpeaker
     /// <summary>Wrappers whose argument is spoken as it is.</summary>
     private static readonly HashSet<string> StyleWrappers = new(StringComparer.Ordinal)
     {
-        "mathrm", "mathbf", "mathit", "mathsf", "mathcal", "mathscr", "mathfrak", "boldsymbol", "bm", "pmb",
+        "mathrm", "mathbf", "mathit", "mathsf", "mathtt", "mathcal", "mathscr", "mathfrak", "boldsymbol", "bm", "pmb",
         "mathnormal", "displaystyle", "textstyle", "scriptstyle", "rm", "bf", "it", "cal",
     };
 
@@ -536,7 +536,7 @@ public static partial class LocalLatexSpeaker
             if (StyleWrappers.Contains(name))
             {
                 if (Peek is not { Kind: TokenKind.Open }) return null;   // a switch such as \rm
-                if (name is "mathrm" && LooksLikeWord(out string word)) return Functions.ContainsKey(word) ? new Function(word) : new Words(word);
+                if (name is "mathrm" or "mathsf" or "mathtt" or "mathit" && LooksLikeWord(out string word)) return Functions.ContainsKey(word) ? new Function(word) : new Words(word);
                 return ParseArgument();
             }
             if (Accents.TryGetValue(name, out var accent)) return new Accent(ParseArgument(), accent.Word, accent.Prefix);
@@ -558,7 +558,7 @@ public static partial class LocalLatexSpeaker
             return new Fenced(open, closing, body);
         }
 
-        /// <summary>\mathrm{Var}: a multi-letter upright name, spoken as a word.</summary>
+        /// <summary>\mathrm{Var}, \mathsf{dim}: a multi-letter name set in a text face, spoken as a word (a formula model writes it letter by letter, "d i m").</summary>
         private bool LooksLikeWord(out string word)
         {
             word = "";

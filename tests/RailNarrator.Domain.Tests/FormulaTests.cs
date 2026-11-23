@@ -45,6 +45,17 @@ public sealed class FormulaTextLayerCheckTests
     }
 
     [Fact]
+    public void ComputerModernsEpsilon_IsEpsilon()
+    {
+        // pdfTeX's text layer gives \epsilon as "ǫ" (o with ogonek); eight equations of one paper
+        // were held back for "having epsilon, which the page's text does not".
+        var formula = FormulaTextLayerCheck.Reconcile(@"\epsilon _ { n } = C _ { 2 } \kappa ^ { - 1 }", "ǫn = C2κ−1");
+
+        Assert.False(formula.Disagrees);
+        Assert.Empty(formula.Notes);
+    }
+
+    [Fact]
     public void ATextLayerWithNoGreekLetterSaysNothingAboutThem()
     {
         var formula = FormulaTextLayerCheck.Reconcile(@"\alpha + \beta", "a + b");

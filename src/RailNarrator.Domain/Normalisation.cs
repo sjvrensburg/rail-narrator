@@ -347,6 +347,18 @@ public static class TextNormaliser
                 i += m.Length;
                 continue;
             }
+            if (CompactMaths.At(input, i) is { } pieces)
+            {
+                // "Yt+h" as printed is one word to an engine ("yeeth"); each piece keeps its own source.
+                foreach (var (range, spoken) in pieces)
+                {
+                    string word = (sb.Length > 0 && !char.IsWhiteSpace(sb[^1]) && sb[^1] != '(' ? " " : "") + spoken;
+                    mappings.Add(new TextMapping(new TextRange(sb.Length, word.Length), range));
+                    sb.Append(word);
+                }
+                i = pieces[^1].Source.End;
+                continue;
+            }
             if (EnglishNumbers.At(input, i) is { } number)
             {
                 mappings.Add(new TextMapping(new TextRange(sb.Length, number.Words.Length), new TextRange(i, number.Length)));
@@ -465,6 +477,75 @@ internal static class MathsLetters
     };
 
     private static string Capitalise(string s) => char.ToUpperInvariant(s[0]) + s[1..];
+}
+
+/// <summary>
+/// Notation set solid in a line of prose, "Yt+h" or "Yt+h|Ft": a text layer has no subscripts, so a
+/// symbol and its index arrive as one word with an operator in it, which an engine pronounces as a
+/// word. Read as printed, its letters are said one by one and its operators as words ("Y t plus h
+/// given F t"). That is not the meaning, which interpretation supplies when a model is configured,
+/// but it is what is on the page.
+/// </summary>
+internal static class CompactMaths
+{
+    private static bool IsPart(char c) => char.IsAsciiLetterOrDigit(c) || c is '+' or '|';
+
+    /// <summary>True when <paramref name="text"/> holds such a token: a cue that a sentence has maths in it.</summary>
+    public static bool In(ReadOnlySpan<char> text)
+    {
+        string s = text.ToString();
+        for (int i = 0; i < s.Length; i++)
+            if (IsPart(s[i]) && (i == 0 || !IsPart(s[i - 1])) && At(s, i) is not null) return true;
+        return false;
+    }
+
+    /// <summary>
+    /// The token starting at <paramref name="offset"/> as its spoken pieces, each with the source
+    /// range it came from; null when what starts there is not notation. It is notation when an
+    /// operator stands between letters or digits and no run of letters is longer than two ("Yt",
+    /// "Ft", "h"): a longer run is a word ("and/or", "C++", "Google+").
+    /// </summary>
+    public static IReadOnlyList<(TextRange Source, string Spoken)>? At(string text, int offset)
+    {
+        if (offset > 0 && (char.IsLetterOrDigit(text[offset - 1]) || text[offset - 1] is '+' or '|')) return null;
+        int end = offset;
+        while (end < text.Length && IsPart(text[end])) end++;
+        while (end > offset && text[end - 1] is '+' or '|') end--;
+        if (end - offset < 3 || !char.IsAsciiLetterOrDigit(text[offset])) return null;
+        if (end < text.Length && char.IsLetter(text[end])) return null;
+
+        var pieces = new List<(TextRange, string)>();
+        bool operatorInside = false, letter = false;
+        for (int i = offset; i < end;)
+        {
+            char c = text[i];
+            if (c is '+' or '|')
+            {
+                // Two operators together are not this notation ("C++", "||").
+                if (text[i + 1] is '+' or '|') return null;
+                operatorInside = true;
+                pieces.Add((new TextRange(i, 1), c == '+' ? "plus" : "given"));
+                i++;
+            }
+            else if (char.IsAsciiDigit(c))
+            {
+                int j = i;
+                while (j < end && char.IsAsciiDigit(text[j])) j++;
+                string digits = text[i..j];
+                pieces.Add((new TextRange(i, j - i), EnglishNumbers.At(digits, 0)?.Words ?? digits));
+                i = j;
+            }
+            else
+            {
+                int j = i;
+                while (j < end && char.IsAsciiLetter(text[j])) j++;
+                if (j - i > 2) return null;
+                letter = true;
+                for (; i < j; i++) pieces.Add((new TextRange(i, 1), text[i].ToString()));
+            }
+        }
+        return operatorInside && letter ? pieces : null;
+    }
 }
 
 /// <summary>English prose numbers are expanded before synthesis, so aligner and TTS see the same words.</summary>

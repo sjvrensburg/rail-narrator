@@ -294,6 +294,30 @@ public sealed class LayoutRoleTests
         Assert.Contains(units, u => u.OriginalText.StartsWith("The GJR-GARCH", StringComparison.Ordinal) && u.ContainsMaths);
     }
 
+    /// <summary>
+    /// Heron has no class for an equation number, so the number arrives inside the equation's
+    /// block. It stands apart at the block's edge and is not part of the equation: the unit's text
+    /// and its highlighted region (which a formula model's crop is cut from) leave it out.
+    /// </summary>
+    [Fact]
+    public void AnEquationsNumberInsideItsBlock_IsNotPartOfTheEquation()
+    {
+        var snapshot = new LayoutPage()
+            .Block(BlockKind.Text, "The first is written as")
+            .Block(BlockKind.DisplayMath, "g = d + G(t; y, c),", "h = f(2) + k,                    (2.1)", "m = n.")
+            .Block(BlockKind.Text, "where the parameters are restricted as below.")
+            .Snapshot();
+
+        var equation = Assert.Single(Units(snapshot), u => u.Kind == ReadingUnitKind.DisplayMath);
+
+        Assert.DoesNotContain("2.1", equation.OriginalText);
+        Assert.Contains("f(2)", equation.OriginalText);
+        Assert.EndsWith("m=n.", equation.OriginalText);
+        // The label began 156 pt further right than the rest of its line ends.
+        float right = equation.Anchors.SelectMany(a => a.Rects).Max(r => r.Right);
+        Assert.InRange(right, 150f, 175f);
+    }
+
     [Fact]
     public void TheLinesOfOneDisplayBlockAreOneEquation()
     {

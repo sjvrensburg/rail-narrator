@@ -41,7 +41,7 @@ public static class NarrationVersions
     public const string LocalMathReader = "local-math/1";
 
     /// <summary>Bump when the prose normalisation pipeline changes.</summary>
-    public const string ProsePipeline = "prose/9-doi-affiliations";
+    public const string ProsePipeline = "prose/10-equation-labels";
 }
 
 /// <summary>Planner configuration.</summary>

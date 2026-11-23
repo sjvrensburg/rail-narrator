@@ -1216,7 +1216,8 @@ public sealed class ReadingUnitBuilder
                 return true;
             if (c is >= 'α' and <= 'ω' or >= 'Α' and <= 'Ω') return true;
         }
-        return false;
+        // An index set solid with its symbol, "Yt+h": no sign above, but not a word either.
+        return CompactMaths.In(text);
     }
 
     private static IEnumerable<TextRange> SplitAtKindChanges(ReadingRun run, string text, TextRange range)
@@ -1503,6 +1504,13 @@ public sealed class ReadingUnitBuilder
             var g = run.Glyphs[i];
             if (!g.IsReal) continue;
             glyphs.Add((g, i));
+        }
+        // The equation's number is not part of the equation: a layout model with no class for it
+        // leaves it in the block, where a formula model would transcribe it.
+        if (kind == ReadingUnitKind.DisplayMath && glyphs.Count > 0)
+        {
+            var label = EquationLabel.Find(glyphs.Select(x => new EquationLabel.Glyph(x.Glyph.Character, x.Glyph.Rect, x.Glyph.PageIndex)).ToList());
+            if (label.Count > 0) glyphs = glyphs.Where((_, i) => !label.Contains(i)).ToList();
         }
 
         var anchors = BuildAnchors(glyphs, snapshot, seq, kind);
