@@ -395,7 +395,7 @@
         <StackPanel MaxWidth="780" HorizontalAlignment="Center" Margin="24,40,24,32" Spacing="8">
           <!-- On white in both themes, as RailReader2's logo, so the black mark stays visible. -->
           <Border Background="White" CornerRadius="12" Padding="6" HorizontalAlignment="Center">
-            <Image Source="avares://rail-narrator/Assets/rail-narrator.png" Width="120" Height="120" />
+            <Image Source="avares://rail-narrator/Assets/rail-narrator.png" Width="150" Height="150" />
           </Border>
           <TextBlock Text="Rail Narrator" FontSize="30" FontWeight="SemiBold" HorizontalAlignment="Center" />
           <TextBlock Text="Reads a PDF aloud and highlights each passage in the page as it is read"

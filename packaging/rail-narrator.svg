@@ -1,16 +1,22 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
-  <!-- Rail Narrator's mark, drawn in the style of RailReader2's: the same rail track, and in place
-       of its magnifier a ring of the same weight holding a speaker that speaks. -->
+  <!-- Rail Narrator's mark, drawn in the style of RailReader2's: the same rail track, running
+       unbroken from edge to edge, and in place of its magnifier a ring of the same weight holding
+       a speaker that speaks. The ring stands on the track: the far rail passes behind it, the near
+       rail and the sleepers carry on in front of and beside it. -->
   <g fill="#000">
-    <rect x="12" y="132" width="232" height="6" rx="1"/>
-    <rect x="12" y="152" width="232" height="6" rx="1"/>
-    <polygon points="28,124 37,124 31,166 22,166"/><polygon points="45,124 54,124 48,166 39,166"/><polygon points="62,124 71,124 65,166 56,166"/><polygon points="79,124 88,124 82,166 73,166"/><polygon points="181,124 190,124 184,166 175,166"/><polygon points="198,124 207,124 201,166 192,166"/><polygon points="215,124 224,124 218,166 209,166"/><polygon points="232,124 241,124 235,166 226,166"/>
+    <polygon points="21,138 31,138 24,186 14,186"/><polygon points="40,138 50,138 43,186 33,186"/><polygon points="59,138 69,138 62,186 52,186"/><polygon points="78,138 88,138 81,186 71,186"/><polygon points="97,138 107,138 100,186 90,186"/><polygon points="116,138 126,138 119,186 109,186"/><polygon points="135,138 145,138 138,186 128,186"/><polygon points="154,138 164,138 157,186 147,186"/><polygon points="173,138 183,138 176,186 166,186"/><polygon points="192,138 202,138 195,186 185,186"/><polygon points="211,138 221,138 214,186 204,186"/><polygon points="230,138 240,138 233,186 223,186"/>
+    <rect x="8" y="147" width="240" height="7" rx="1.5"/>
+    <rect x="8" y="170" width="240" height="7" rx="1.5"/>
   </g>
-  <circle cx="128" cy="112" r="42" fill="#fff" stroke="#000" stroke-width="8"/>
-  <path d="M100,100 h11 l15,-14 v52 l-15,-14 h-11 z" fill="#000" stroke="#000" stroke-width="3" stroke-linejoin="round"/>
+  <!-- A margin of paper round the ring, so the sleepers end short of it instead of touching. -->
+  <circle cx="128" cy="112" r="54" fill="#fff"/>
+  <circle cx="128" cy="112" r="44" fill="#fff" stroke="#000" stroke-width="8"/>
+  <path d="M99,100 h12 l16,-15 v54 l-16,-15 h-12 z" fill="#000" stroke="#000" stroke-width="3" stroke-linejoin="round"/>
   <g fill="none" stroke="#000" stroke-width="6" stroke-linecap="round">
-    <path d="M136,101 A15,15 0 0 1 136,123"/>
-    <path d="M143,92 A27,27 0 0 1 143,132"/>
+    <path d="M137,101 A15,15 0 0 1 137,123"/>
+    <path d="M144,91 A28,28 0 0 1 144,133"/>
   </g>
-  <path d="M104,88 A30,30 0 0 1 118,80" fill="none" stroke="#000" stroke-width="3" stroke-linecap="round"/>
+  <path d="M103,87 A32,32 0 0 1 118,78" fill="none" stroke="#000" stroke-width="3" stroke-linecap="round"/>
+  <!-- The near rail again, over the ring's margin: the track is not cut by what stands on it. -->
+  <rect x="8" y="170" width="240" height="7" rx="1.5" fill="#000"/>
 </svg>

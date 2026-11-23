@@ -410,6 +410,37 @@ public sealed class ClaudeTests
 
     // ---- the Settings dialogue's test --------------------------------------------------------
 
+    /// <summary>
+    /// The address the documentation's curl example shows is the whole route. The SDK adds the
+    /// route itself, so as typed it asked ".../v1/messages/v1/models/…" and the dialogue's test said
+    /// the model was not known.
+    /// </summary>
+    [Theory]
+    [InlineData("https://api.anthropic.com/v1/messages", null)]
+    [InlineData("https://api.anthropic.com/v1/", null)]
+    [InlineData("https://api.anthropic.com", null)]
+    [InlineData("  ", null)]
+    [InlineData("https://gateway.example/anthropic/v1/messages", "https://gateway.example/anthropic")]
+    [InlineData("https://gateway.example/anthropic/", "https://gateway.example/anthropic")]
+    public void APastedAddress_IsReducedToTheApisRoot(string typed, string? used)
+    {
+        var settings = new ClaudeEndpointSettings(BaseUrl: typed);
+
+        Assert.Equal(used, settings.BaseUrl);
+        Assert.Equal(used is null, settings.IsAnthropicsOwnApi);
+    }
+
+    [Fact]
+    public async Task TheSettingsTest_AcceptsTheWholeRouteAsTheAddress()
+    {
+        var stub = new Stub();
+        var result = await ClaudeEndpointProbe.ProbeAsync("https://api.anthropic.com/v1/messages", "claude-opus-5-5", Key, stub);
+
+        Assert.Equal(EndpointProbeStatus.Ready, result.Status);
+        Assert.NotEmpty(stub.Gets);
+        Assert.DoesNotContain(stub.Gets, p => p.Contains("messages", StringComparison.Ordinal));
+    }
+
     [Fact]
     public async Task TheSettingsTestTellsAKnownModelAnUnknownOneARefusedKeyAndNothingAnsweringApart()
     {

@@ -38,6 +38,27 @@ public sealed record ClaudeEndpointSettings(
     /// <summary>The model used when none is named.</summary>
     public const string DefaultModel = "claude-opus-5-5";
 
+    /// <summary>
+    /// The address as the SDK wants it: the API's root, to which it adds "/v1/messages" itself.
+    /// A reader pastes what the documentation's curl example shows, the whole
+    /// "https://api.anthropic.com/v1/messages"; left as typed, every request went to
+    /// ".../v1/messages/v1/..." and the model was reported as unknown.
+    /// </summary>
+    public string? BaseUrl { get; init; } = NormaliseAddress(BaseUrl);
+
+    /// <summary>
+    /// Strips a trailing "/v1/messages", "/v1" or "/messages", and gives null for Anthropic's own
+    /// address, which is the same as naming none (so its model check and refusal fallback apply).
+    /// </summary>
+    public static string? NormaliseAddress(string? address)
+    {
+        if (string.IsNullOrWhiteSpace(address)) return null;
+        string a = address.Trim().TrimEnd('/');
+        foreach (string suffix in (string[])["/v1/messages", "/messages", "/v1"])
+            if (a.EndsWith(suffix, StringComparison.OrdinalIgnoreCase)) { a = a[..^suffix.Length].TrimEnd('/'); break; }
+        return a.Equals("https://api.anthropic.com", StringComparison.OrdinalIgnoreCase) || a.Length == 0 ? null : a;
+    }
+
     public string EffectiveModel => string.IsNullOrWhiteSpace(Model) ? DefaultModel : Model.Trim();
 
     public TimeSpan Timeout => RequestTimeout ?? TimeSpan.FromMinutes(3);
@@ -66,6 +87,9 @@ internal sealed record ClaudeRequest(
 /// <param name="Final">Asking again cannot help (the key, the model name or the request itself is wrong).</param>
 internal sealed record ClaudeReply(string? Text, bool Refused, bool CutOff, string? Error, bool Final)
 {
+    /// <summary>The failure was the endpoint's (key, quota, server, connection), not this request's.</summary>
+    public bool Endpoint { get; init; }
+
     public static ClaudeReply Failed(string error, bool final) => new(null, false, false, error, final);
 }
 
@@ -160,10 +184,18 @@ internal sealed class ClaudeMessages
         // The key or the model name is wrong; that does not mend itself while the application runs.
         catch (Exception ex) when (ex is AnthropicUnauthorizedException or AnthropicForbiddenException or AnthropicNotFoundException)
         {
+            UnavailableReason = Describe(ex, _settings);
             return (bool)(_available = false);
         }
-        catch { return false; }   // not cached: the network may come back
+        catch (Exception ex)
+        {
+            UnavailableReason = Describe(ex, _settings);
+            return false;   // not cached: the network may come back
+        }
     }
+
+    /// <summary>Why the model could not be asked when <see cref="IsAvailableAsync"/> last said no.</summary>
+    public string? UnavailableReason { get; private set; }
 
     public async Task<ClaudeReply> SendAsync(ClaudeRequest request, CancellationToken ct)
     {
@@ -198,7 +230,7 @@ internal sealed class ClaudeMessages
             catch (Exception ex)
             {
                 return ClaudeReply.Failed(Describe(ex, _settings),
-                    final: ex is AnthropicUnauthorizedException or AnthropicForbiddenException or AnthropicNotFoundException);
+                    final: ex is AnthropicUnauthorizedException or AnthropicForbiddenException or AnthropicNotFoundException) with { Endpoint = true };
             }
         }
         return ClaudeReply.Failed("Claude rejected the request however it was put.", final: true);
@@ -358,6 +390,8 @@ public sealed class ClaudeMathInterpreter : IMathInterpreter, IMathReader
 
     public Task<bool> IsAvailableAsync(CancellationToken ct = default) => _messages.IsAvailableAsync(ct);
 
+    public string? UnavailableReason => _messages.UnavailableReason;
+
     public async Task<MathInterpretationResult> InterpretAsync(MathInterpretationRequest request, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(request);
@@ -371,6 +405,7 @@ public sealed class ClaudeMathInterpreter : IMathInterpreter, IMathReader
         string passage = MathInterpretationPrompt.User(request, withImages);
         string text = passage;
         var problems = new List<string>();
+        string? endpointProblem = null;
 
         for (int answers = 0; answers <= Math.Max(1, _messages.Settings.MaxRetries); answers++)
         {
@@ -380,6 +415,7 @@ public sealed class ClaudeMathInterpreter : IMathInterpreter, IMathReader
             if (reply.Error is not null)
             {
                 problems.Add(reply.Error);
+                endpointProblem = reply.Endpoint ? reply.Error : null;
                 if (reply.Final) break;
                 continue;
             }
@@ -403,7 +439,7 @@ public sealed class ClaudeMathInterpreter : IMathInterpreter, IMathReader
             // One repair turn with the complaint, then refuse.
             text = passage + "\n\nYOUR PREVIOUS ANSWER, WHICH WAS REJECTED:\n<<<\n" + spoken + "\n>>>\n\n" + MathAnswerText.RepairRequest(found);
         }
-        return new MathInterpretationResult(null, [], problems.Count > 0 ? problems : ["No usable response."]);
+        return new MathInterpretationResult(null, [], problems.Count > 0 ? problems : ["No usable response."]) { EndpointProblem = endpointProblem };
     }
 
     /// <summary>
@@ -514,7 +550,7 @@ public static class ClaudeEndpointProbe
 
         var settings = new ClaudeEndpointSettings(model, apiKey, baseUrl, RequestTimeout: timeout ?? TimeSpan.FromSeconds(15));
         using var http = handler is null ? null : new HttpClient(handler, disposeHandler: false) { Timeout = Timeout.InfiniteTimeSpan };
-        var client = ClaudeMessages.CreateClient(apiKey, baseUrl, http, settings.Timeout, transportRetries: 0);
+        var client = ClaudeMessages.CreateClient(apiKey, settings.BaseUrl, http, settings.Timeout, transportRetries: 0);
         string wanted = settings.EffectiveModel;
 
         var models = new List<string>();

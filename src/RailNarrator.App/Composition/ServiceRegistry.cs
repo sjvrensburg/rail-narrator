@@ -93,6 +93,9 @@ public sealed class ServiceRegistry : IAsyncDisposable
     /// by rule): the planner leaves them pending and Regenerate asks the resolver again.
     /// </summary>
     public required bool ResolvesMathsLate { get; init; }
+
+    /// <summary>The resolver that interprets maths during playback; it reports an endpoint that cannot be asked.</summary>
+    public MathInterpretationResolver? MathResolver { get; init; }
     public required IReadOnlyList<string> StartupNotes { get; init; }
 
     /// <summary>The Kokoro provider when one is registered, for its device in the diagnostics.</summary>
@@ -292,7 +295,7 @@ public sealed class ServiceRegistry : IAsyncDisposable
         if (settings.VlmProvider == LlmProvider.Anthropic)
         {
             transcriber = new VlmMathTranscriber(new RailReader.Core.Vlm.Anthropic.AnthropicVlmClient(),
-                new VlmEndpointConfig(settings.VlmBaseUrl, string.IsNullOrWhiteSpace(settings.VlmModel) ? ClaudeEndpointSettings.DefaultModel : settings.VlmModel,
+                new VlmEndpointConfig(ClaudeEndpointSettings.NormaliseAddress(settings.VlmBaseUrl), string.IsNullOrWhiteSpace(settings.VlmModel) ? ClaudeEndpointSettings.DefaultModel : settings.VlmModel,
                     settings.ResolveVlmApiKey()) { Provider = RailReader.Core.Models.VlmProvider.Anthropic },
                 extraction);
         }
@@ -364,6 +367,7 @@ public sealed class ServiceRegistry : IAsyncDisposable
             MathInterpreter = interpreter,
             FormulaModel = formulas,
             ResolvesMathsLate = segmentResolver is not null,
+            MathResolver = segmentResolver as MathInterpretationResolver,
             StartupNotes = notes,
             Kokoro = kokoro,
             LayoutSummary = backend.Capabilities.Classes.Count > 0

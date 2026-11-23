@@ -88,6 +88,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
         _services.Coordinator.SnapshotChanged += OnSnapshotChanged;
         _services.Coordinator.SegmentResolved += OnSegmentResolved;
+        if (_services.MathResolver is { } maths) maths.EndpointProblem += OnMathsEndpointProblem;
         if (_services.Kokoro is { } kokoro)
         {
             kokoro.Initialised += OnKokoroDeviceSettled;
@@ -1299,6 +1300,25 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         if (Dispatcher.UIThread.CheckAccess()) Apply(); else Dispatcher.UIThread.Post(Apply);
     }
 
+    private readonly HashSet<string> _noticedMathsProblems = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// The maths endpoint could not be asked, so a passage is read by rule or announced. Said once
+    /// for each reason while the application runs: the resolver reports it for every passage, and a
+    /// notice the reader dismissed must not come back with the next equation.
+    /// </summary>
+    private void OnMathsEndpointProblem(string reason)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (!_noticedMathsProblems.Add(reason)) return;
+            Notes.Add($"Maths is not being interpreted, and equations are read as notation meanwhile: {reason}");
+            // The cause first and nothing after it: the status bar cuts a long line short.
+            ShowNotice($"Maths not interpreted: {reason}",
+                "Maths settings…", () => SettingsRequested?.Invoke("Maths"));
+        });
+    }
+
     /// <summary>A maths passage got its interpreted words (or its fallback): show what will be said.</summary>
     private void OnSegmentResolved(NarrationSegment segment)
     {
@@ -1589,6 +1609,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         SaveZoomPreferenceNow();   // a zoom made in the last moments before closing
         _services.Coordinator.SnapshotChanged -= OnSnapshotChanged;
         _services.Coordinator.SegmentResolved -= OnSegmentResolved;
+        if (_services.MathResolver is { } maths) maths.EndpointProblem -= OnMathsEndpointProblem;
         _services.Coordinator.ActiveCueChanged -= OnActiveCueChanged;
         _services.Coordinator.FollowRequested -= OnFollowRequested;
         if (_services.Kokoro is { } kokoro)

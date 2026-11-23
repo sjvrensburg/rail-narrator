@@ -1,8 +1,8 @@
 # Next steps and open decisions
 
-Handover note, 23 November 2026, on the `feat/formula-model-heron` branch (from `main`
-after PR #43). It builds with 0 warnings; the test runner reports 710 passed and 16 skipped.
-`status.md` gives 707 passing and 19 opt-in, because it
+Handover note, 23 November 2026, on the `feat/maths-endpoint-notice` branch (from `main`
+after PR #44). It builds with 0 warnings; the test runner reports 723 passed and 16 skipped.
+`status.md` gives 720 passing and 19 opt-in, because it
 counts as opt-in the three Phonon tests that return early without an install and so report as
 passed. What is verified, and how it was measured, is in `status.md`. How to run the real models,
 the GUI and the audio path on a new machine is in `testing-real-world.md`.
@@ -53,6 +53,10 @@ Since PR #10:
 
 ## Recently landed
 
+- **A notice when the maths endpoint cannot be asked** (`feat/maths-endpoint-notice`, `status.md`
+  item 91): a refused key or an exhausted quota is said once in the status bar, with a button to
+  Settings ▸ Maths, where before equations were quietly read by rule. The mark's track is unbroken.
+  A Claude address pasted as "…/v1/messages" now works (item 92).
 - **The formula model under Heron, and how letters are spoken** (`feat/formula-model-heron`,
   `status.md` items 89 and 90). An equation's number is no longer part of the equation (Heron
   left it in the block, and the formula model read it out); the formula model was run on six
