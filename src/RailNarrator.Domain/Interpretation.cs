@@ -49,6 +49,12 @@ public sealed record MathInterpretationResult(
 {
     public bool Succeeded => Spoken is { Length: > 0 } && Problems.Count == 0;
 
+    /// <summary>
+    /// Set when the endpoint, not the answer, was the failure: a refused key, an exhausted quota,
+    /// a server error, no connection. In words for the reader; never the key or the response body.
+    /// </summary>
+    public string? EndpointProblem { get; init; }
+
     public static MathInterpretationResult Reject(params string[] problems) => new(null, [], problems);
 }
 
@@ -67,6 +73,9 @@ public interface IMathInterpreter
     string Revision { get; }
 
     Task<bool> IsAvailableAsync(CancellationToken ct = default);
+
+    /// <summary>Why <see cref="IsAvailableAsync"/> last answered false, in words for the reader; null when unknown.</summary>
+    string? UnavailableReason => null;
 
     /// <summary>Never throws for a bad model response; returns a rejection.</summary>
     Task<MathInterpretationResult> InterpretAsync(MathInterpretationRequest request, CancellationToken ct = default);
@@ -226,6 +235,8 @@ public sealed class MathInterpretationResolver : ISegmentResolver
 
         bool hasEquation = parts.Any(p => p.Kind == ReadingUnitKind.DisplayMath);
         bool canInterpret = _interpreter is not null && await _interpreter.IsAvailableAsync(ct).ConfigureAwait(false);
+        if (_interpreter is not null && !canInterpret)
+            EndpointProblem?.Invoke(_interpreter.UnavailableReason ?? "The maths endpoint is not reachable.");
         string unavailable = _interpreter is null
             ? "No language model is configured for maths, so this passage was not interpreted."
             : "The maths interpreter is not reachable, so this passage was not interpreted.";
@@ -272,10 +283,14 @@ public sealed class MathInterpretationResolver : ISegmentResolver
             MathInterpretationResult result;
             try { result = await _interpreter!.InterpretAsync(request, ct).ConfigureAwait(false); }
             catch (OperationCanceledException) { throw; }
-            catch (Exception ex) { result = MathInterpretationResult.Reject($"request failed: {ex.Message}"); }
+            catch (Exception ex)
+            {
+                result = MathInterpretationResult.Reject($"request failed: {ex.Message}") with { EndpointProblem = "The maths endpoint could not be asked." };
+            }
 
             if (!result.Succeeded)
             {
+                if (result.EndpointProblem is { } problem) EndpointProblem?.Invoke(problem);
                 string reason = "The interpretation was rejected: " + string.Join("; ", result.Problems);
                 // An equation alone is read from the formula model's transcription, which is already
                 // made. A sentence leading into one is better read whole from the interpreter's own
@@ -385,6 +400,13 @@ public sealed class MathInterpretationResolver : ISegmentResolver
             Warnings = segment.Warnings.Concat([reason, label]).Distinct().ToArray(),
         };
     }
+
+    /// <summary>
+    /// The endpoint could not be asked for a passage, which was then read by rule or announced: the
+    /// reason, in words for the reader. Raised for every such passage, on the thread that resolved
+    /// it; a listener that shows it says it once.
+    /// </summary>
+    public event Action<string>? EndpointProblem;
 
     /// <summary>
     /// The passage's display equations as the formula model reads them, each from a tight crop of its

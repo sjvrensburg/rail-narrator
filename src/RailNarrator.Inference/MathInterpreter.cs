@@ -255,15 +255,28 @@ public sealed partial class OpenAiCompatibleMathInterpreter : IMathInterpreter, 
     public async Task<bool> IsAvailableAsync(CancellationToken ct = default)
     {
         if (_available is { } cached) return cached;
-        if (string.IsNullOrWhiteSpace(_settings.BaseUrl) || string.IsNullOrWhiteSpace(_settings.Model)) return (bool)(_available = false);
+        if (string.IsNullOrWhiteSpace(_settings.BaseUrl) || string.IsNullOrWhiteSpace(_settings.Model))
+        {
+            UnavailableReason = "The maths endpoint has no address or no model name.";
+            return (bool)(_available = false);
+        }
         try
         {
             using var response = await _http.GetAsync("models", ct).ConfigureAwait(false);
+            UnavailableReason = response.IsSuccessStatusCode ? null : EndpointRefusal.Describe(Host, response.StatusCode);
             return (bool)(_available = response.IsSuccessStatusCode);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch { return false; }   // not cached: a server that is starting up may answer later
+        catch
+        {
+            UnavailableReason = EndpointRefusal.Describe(Host, null);
+            return false;   // not cached: a server that is starting up may answer later
+        }
     }
+
+    public string? UnavailableReason { get; private set; }
+
+    private string Host => _http.BaseAddress?.Host ?? "the maths endpoint";
 
     public async Task<MathInterpretationResult> InterpretAsync(MathInterpretationRequest request, CancellationToken ct = default)
     {
@@ -272,6 +285,7 @@ public sealed partial class OpenAiCompatibleMathInterpreter : IMathInterpreter, 
         bool withImages = request.Images.Count > 0 && !_imagesRejected;
         var messages = BuildMessages(request, withImages);
         var problems = new List<string>();
+        string? endpointProblem = null;
 
         // The budget counts answers (and failed requests), not the protocol fallbacks below: an
         // endpoint that refuses images or the thinking switch must still get its answer and repair.
@@ -317,7 +331,15 @@ public sealed partial class OpenAiCompatibleMathInterpreter : IMathInterpreter, 
                 messages = BuildMessages(request, withImages: false);
                 continue;
             }
-            if (error is not null) { problems.Add(error); continue; }
+            if (error is not null)
+            {
+                problems.Add(error);
+                // The endpoint's failure, as opposed to an answer that did not pass: no status at
+                // all (no connection), or a refusal that another passage will meet as well.
+                if (status is null || EndpointRefusal.IsEndpoints(status.Value)) endpointProblem = EndpointRefusal.Describe(Host, status);
+                continue;
+            }
+            endpointProblem = null;
             if (finish == "length")
             {
                 problems.Add("The response was cut off at the token limit.");
@@ -337,7 +359,7 @@ public sealed partial class OpenAiCompatibleMathInterpreter : IMathInterpreter, 
                 ["content"] = MathAnswerText.RepairRequest(found),
             });
         }
-        return new MathInterpretationResult(null, warnings, problems.Count > 0 ? problems : ["No usable response."]);
+        return new MathInterpretationResult(null, warnings, problems.Count > 0 ? problems : ["No usable response."]) { EndpointProblem = endpointProblem };
     }
 
     private JsonArray BuildMessages(MathInterpretationRequest request, bool withImages)

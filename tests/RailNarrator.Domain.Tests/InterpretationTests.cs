@@ -101,6 +101,49 @@ public sealed class InterpretationTests
         Assert.Equal(plan.Segments[2].AnchorIds, link.AnchorIds);
     }
 
+    private sealed class UnreachableInterpreter : IMathInterpreter
+    {
+        public string Revision => "fake/1";
+        public string? UnavailableReason => "maths.example refused the API key (401).";
+        public Task<bool> IsAvailableAsync(CancellationToken ct = default) => Task.FromResult(false);
+        public Task<MathInterpretationResult> InterpretAsync(MathInterpretationRequest request, CancellationToken ct = default)
+            => throw new InvalidOperationException("an unavailable interpreter must not be asked");
+    }
+
+    [Fact]
+    public async Task AnInterpreterThatCannotBeAsked_IsReportedWithItsReason()
+    {
+        // A refused key degraded every equation to its fallback with nothing said but a note on each passage.
+        var plan = await PlanAsync(Interpret);
+        var resolver = new MathInterpretationResolver(new UnreachableInterpreter(), options: Interpret);
+        var reported = new List<string>();
+        resolver.EndpointProblem += reported.Add;
+
+        var resolved = await resolver.ResolveAsync(plan, plan.Segments[2]);
+
+        Assert.NotEqual(ScriptProvenance.ModelGenerated, resolved.Provenance);
+        Assert.Equal(["maths.example refused the API key (401)."], reported);
+    }
+
+    [Fact]
+    public async Task ARequestTheEndpointRefused_IsReported_AndARejectedAnswerIsNot()
+    {
+        var plan = await PlanAsync(Interpret);
+        var reported = new List<string>();
+
+        var refused = new MathInterpretationResolver(
+            new FakeInterpreter(_ => MathInterpretationResult.Reject("HTTP 429") with { EndpointProblem = "maths.example is out of quota or limiting requests (429)." }),
+            options: Interpret);
+        refused.EndpointProblem += reported.Add;
+        await refused.ResolveAsync(plan, plan.Segments[2]);
+
+        var rejected = new MathInterpretationResolver(new FakeInterpreter(_ => MathInterpretationResult.Reject("it still has symbols")), options: Interpret);
+        rejected.EndpointProblem += reported.Add;
+        await rejected.ResolveAsync(plan, plan.Segments[2]);
+
+        Assert.Equal(["maths.example is out of quota or limiting requests (429)."], reported);
+    }
+
     [Fact]
     public async Task APassageIsInterpretedOnce_ThenServedFromTheCache()
     {

@@ -103,6 +103,59 @@ public sealed class InterpreterTests
         Assert.False(AskedNotToThink(stub.Bodies[2]));
     }
 
+    // ---- an endpoint that cannot be asked ------------------------------------------------
+
+    private sealed class Refusing(HttpStatusCode status, string body) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+            => Task.FromResult(Json(body, status));
+    }
+
+    [Fact]
+    public async Task ARefusedKey_IsTheReasonTheInterpreterIsUnavailable_WithoutTheServersWords()
+    {
+        // The reader's case: the wrong key for the endpoint. Some servers echo part of the key.
+        var handler = new Refusing(HttpStatusCode.Unauthorized, """{"code":"InvalidApiKey","message":"Invalid API-key provided: sk-abc***"}""");
+        using var interpreter = new OpenAiCompatibleMathInterpreter(new MathEndpointSettings("https://maths.example/v1", "m", ApiKey: "sk-abcdef"),
+            new HttpClient(handler) { BaseAddress = new Uri("https://maths.example/v1/") });
+
+        Assert.False(await interpreter.IsAvailableAsync());
+        Assert.Equal("API key refused (401) by maths.example.", interpreter.UnavailableReason);
+    }
+
+    [Fact]
+    public async Task AnExhaustedQuota_IsReportedAsTheEndpointsProblem()
+    {
+        var stub = new Stub(() => Json("""{"error":"You exceeded your current quota for key sk-abc***"}""", HttpStatusCode.TooManyRequests));
+
+        var result = await Make(stub).InterpretAsync(Request());
+
+        Assert.False(result.Succeeded);
+        Assert.Equal("Out of quota or rate-limited (429) at 127.0.0.1.", result.EndpointProblem);
+    }
+
+    [Fact]
+    public async Task AnAnswerThatDoesNotPass_IsNotTheEndpointsProblem()
+    {
+        var stub = new Stub(() => Answer("$\\sigma_t^2 = h_t g_t$"));
+
+        var result = await Make(stub).InterpretAsync(Request());
+
+        Assert.False(result.Succeeded);
+        Assert.Null(result.EndpointProblem);
+    }
+
+    [Fact]
+    public async Task AFailureFollowedByAnAnswer_IsNotReported()
+    {
+        var stub = new Stub(() => Json("""{"error":"busy"}""", HttpStatusCode.ServiceUnavailable), () => Answer(Good));
+
+        var result = await Make(stub).InterpretAsync(Request());
+
+        Assert.True(result.Succeeded);
+        Assert.Null(result.EndpointProblem);
+    }
+
     private const string Good = "The short-run component equals a constant plus weighted past squared shocks, and past values of itself.";
 
     [Fact]
