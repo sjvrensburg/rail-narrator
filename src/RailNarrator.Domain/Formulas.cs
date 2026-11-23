@@ -131,7 +131,8 @@ public static partial class FormulaTextLayerCheck
         var letters = new HashSet<char>();
         foreach (char raw in (text ?? "").Normalize(NormalizationForm.FormKC))
         {
-            char c = raw switch { 'ϵ' => 'ε', 'ϑ' => 'θ', 'ϕ' => 'φ', 'ϱ' => 'ρ', 'ς' => 'σ', 'ϖ' => 'π', 'ϰ' => 'κ', '∆' => 'Δ', _ => raw };
+            // "ǫ" (o with ogonek) is what Computer Modern's epsilon comes out of a text layer as.
+            char c = raw switch { 'ϵ' => 'ε', 'ǫ' => 'ε', 'ϑ' => 'θ', 'ϕ' => 'φ', 'ϱ' => 'ρ', 'ς' => 'σ', 'ϖ' => 'π', 'ϰ' => 'κ', '∆' => 'Δ', _ => raw };
             if (CommandOf.ContainsKey(c)) letters.Add(c);
         }
         return letters;

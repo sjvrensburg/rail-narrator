@@ -959,7 +959,11 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         }
 
         int maxChars = caps.MaxTextChars > 0 ? caps.MaxTextChars : int.MaxValue;
-        string text = segment.SpokenText;
+        // The engine is given letter names for lone symbols; the script and its offsets stay as written.
+        var speech = segment.Language.StartsWith("en", StringComparison.OrdinalIgnoreCase)
+            ? LetterNames.ForSpeech(segment.SpokenText)
+            : new LetterNames.SpeechForm(segment.SpokenText, []);
+        string text = speech.Text;
         var warnings = new List<string>();
 
         TtsSynthesisResult result;
@@ -977,6 +981,14 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         }
 
         if (generation != Generation) return;   // a late result from a superseded plan
+        if (speech.Changes.Count > 0 && result.Timings is { Count: > 0 } native)
+        {
+            // A provider's own timings point into the text it was given.
+            result = result with
+            {
+                Timings = native.Select(c => c.SpokenRange is { } r ? c with { SpokenRange = speech.ToScript(r) } : c).ToArray(),
+            };
+        }
 
         if (result.IsSilentOrEmpty || AudioSamples.Peak(result.Pcm.Span, result.Format) < SilencePeakThreshold)
         {

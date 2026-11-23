@@ -351,6 +351,39 @@ public sealed class NarrationCoordinatorTests
         Assert.False(coordinator.Snapshot.IsAudible);
     }
 
+    private sealed class RecordingProvider : ITtsProvider
+    {
+        private readonly FakeTtsProvider _inner = new();
+        public List<string> Spoken { get; } = [];
+        public string ProviderId => _inner.ProviderId;
+        public Task<TtsCapabilities> GetCapabilitiesAsync(CancellationToken ct = default) => _inner.GetCapabilitiesAsync(ct);
+        public Task<IReadOnlyList<TtsVoice>> ListVoicesAsync(CancellationToken ct = default) => _inner.ListVoicesAsync(ct);
+        public Task<ProviderSelfTestResult> SelfTestAsync(string voiceId, CancellationToken ct = default) => _inner.SelfTestAsync(voiceId, ct);
+        public ValueTask DisposeAsync() => _inner.DisposeAsync();
+        public Task<TtsSynthesisResult> SynthesizeAsync(TtsSynthesisRequest request, CancellationToken ct = default)
+        {
+            lock (Spoken) Spoken.Add(request.Text);
+            return _inner.SynthesizeAsync(request, ct);
+        }
+    }
+
+    [Fact]
+    public async Task TheEngineIsGivenLetterNames_AndTheScriptStaysAsWritten()
+    {
+        var anchor = SyntheticNarration.Anchor("a0", 0, new PageRect(72, 100, 300, 112));
+        var plan = SyntheticNarration.Plan([SyntheticNarration.ProseUnit("u0", "Here y sub t plus h is the forecast.", anchor)]);
+        var tts = new RecordingProvider();
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(tts, transport);
+
+        await coordinator.LoadPlanAsync(plan);
+        await coordinator.PlayAsync();
+        await WaitUntil(() => transport.PlayCount > 0, what: "playback to start");
+
+        lock (tts.Spoken) Assert.Contains("Here why sub tee plus aitch is the forecast.", tts.Spoken);
+        Assert.Equal("Here y sub t plus h is the forecast.", coordinator.Plan!.Segments[0].SpokenText);
+    }
+
     [Fact]
     public async Task SilentAudio_IsTreatedAsAFailureNotAsSomethingToPlay()
     {

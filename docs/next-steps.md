@@ -1,8 +1,8 @@
 # Next steps and open decisions
 
-Handover note, 23 November 2026, on the `fix/sparse-page-ocr-ink-outside-text` branch (from `main`
-after PR #41). It builds with 0 warnings; the test runner reports 663 passed and 16 skipped.
-`status.md` gives 660 passing and 19 opt-in, because it
+Handover note, 23 November 2026, on the `feat/formula-model-heron` branch (from `main`
+after PR #43). It builds with 0 warnings; the test runner reports 710 passed and 16 skipped.
+`status.md` gives 707 passing and 19 opt-in, because it
 counts as opt-in the three Phonon tests that return early without an install and so report as
 passed. What is verified, and how it was measured, is in `status.md`. How to run the real models,
 the GUI and the audio path on a new machine is in `testing-real-world.md`.
@@ -53,6 +53,13 @@ Since PR #10:
 
 ## Recently landed
 
+- **The formula model under Heron, and how letters are spoken** (`feat/formula-model-heron`,
+  `status.md` items 89 and 90). An equation's number is no longer part of the equation (Heron
+  left it in the block, and the formula model read it out); the formula model was run on six
+  papers and 25 transcriptions compared with the page; image, LaTeX and both were compared on 47
+  passages with a remote model, and `Both` stays the default. The speech engine is given letter
+  names for lone symbols, and "Yt+h" in prose is treated as maths and spelled out when read as
+  printed. Sideways pages were decided: left as they are.
 - **Settings page, Ctrl+Q and Pause** (`fix/settings-page-pause-quit`, `status.md` item 88).
   Endpoints and API keys… opens Settings on Maths; Ctrl+Q quits; and Pause works while a report
   about a later passage (its speech failed) stands as the state. The last is a cause found by
@@ -103,21 +110,21 @@ Since PR #10:
 
 In rough priority order:
 
-- **The formula model with Heron, first** (`status.md` item 85). Heron is the layout model the
-  application picks when installed, and every formula measurement so far used PP-DocLayoutV3.
-  Heron has no class for an equation number, so its equation blocks may include the number, which
-  the model would transcribe and which would shrink the formula in its image (cut it out by the
-  text layer's geometry if so). `rail-narrator-mathbench` builds a PP-DocLayoutV3 backend only;
-  it needs a Heron option for this.
-- **Finish the comparison of the three settings**: `rail-narrator-mathbench --pages 2-6` with
-  `--evidence both` and `--evidence latex` against the image-only tally (71 interpreted, 14 by
-  rule, 776 s). The run with both was stopped after 16 passages. It decides whether `Both` should
-  stay the default.
-- **The formula model beyond one paper.** Run
-  `rail-narrator-mathbench --formula-model … --no-llm` on papers from other fields and
-  publishers. Proof-read more than 15 transcriptions. Then a text-only
-  language model with `--evidence latex`, which is the case the option exists for and has not
-  been run.
+- **An equation block too tall for the formula model** (`status.md` item 89). Heron groups
+  stacked equations into one block; one of 21 on `nbag025.pdf` ran past the 1,536-token limit and
+  is announced when no language model is configured. Cutting such a block into its rows before
+  transcribing needs a rule for where a row ends (a fraction and a summation's limits have blank
+  bands too).
+- **The formula model on more fields.** Six papers so far, all statistics, econometrics, machine
+  learning or applied physics. Still to do: a pure-mathematics and a physics paper, a text-only
+  language model with `--evidence latex`, and the false disagreement when a text layer lacks a
+  capital Greek letter that is on the page (2 of 27 equations in one paper).
+- **Legacy font encodings in prose read as printed.** Older Elsevier and OUP fonts give "=" as
+  "¼", "(" and ")" as "ð" and "Þ", "+" as "þ". A sentence with maths that is read as printed is
+  then noise ("ri;j;t ¼ ɛ tanhð…"). Mapping them back is cheap; it was only done for equation
+  labels.
+- **Listen to the letter names** (`status.md` item 90). They were checked with a speech
+  recogniser, not by ear. "aitch" and "eff" were each misheard once on Phonon.
 - **Sentences with maths in the line** get nothing from the formula model: it reads a formula's
   crop, not a line of text. They are 135 of the GARCH paper's 224 maths passages, the cheap ones
   (about 3 s each on the local model). Reading them locally needs either the inline formulae's
@@ -190,10 +197,7 @@ ready. The preparing card covers the case that mattered (a start that has to wai
    language first, with notation spoken as words where the model is unsure or where a symbol
    recurs, and shorter answers. Run it against the model (`rail-narrator-mathbench --only …`)
    and listen; adjust `MaxNotationShare` and the length cap from what is heard.
-2. **Sideways pages with no Rotate attribute.** The layout model sees the page unrotated and
-   loses a line. Detect the orientation and rotate the raster before layout (application side,
-   since Core cannot change)? Or leave it, since such pages are rare?
-3. **Which LLM endpoint on the new system?** Set in Settings ▸ Maths: the service
+2. **Which LLM endpoint on the new system?** Set in Settings ▸ Maths: the service
    (an OpenAI-compatible endpoint or Claude), address, model, and a key from an environment
    variable or stored in the owner-only settings file. Claude, or any remote API, means sending
    page images and the text around each passage off the machine; a local model does not, and

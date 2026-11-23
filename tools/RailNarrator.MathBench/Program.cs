@@ -3,11 +3,15 @@ using System.Globalization;
 using RailNarrator.Domain;
 using RailNarrator.Inference;
 using RailNarrator.Pdf;
+using RailReader.Core.Models;
 
 // Measures maths interpretation on a real document, with no cache, so every number is a model call.
 // usage: rail-narrator-mathbench <pdf> <layout.onnx> [options]
+//   --layout NAME        heron | pp-doclayout-v3 (default: heron when the model's file name says so, else pp-doclayout-v3)
+//   --dump-crops DIR     write each crop the formula model is given as a PNG, named by passage
 //   --provider NAME      openai (default: any OpenAI-compatible endpoint) | claude (Anthropic, the SDK's own credentials)
 //   --endpoint URL       base URL (default http://127.0.0.1:8088/v1; with claude, only for a gateway)
+//   --api-key-env NAME   the environment variable holding the endpoint's key (never printed)
 //   --model NAME         model id (default ornith-1.5-35b-a3b; with claude, claude-opus-5-5)
 //   --pages A-B          zero-based page range (default all)
 //   --only i,j,k         only these indices among the pending passages (as printed by an earlier run)
@@ -21,7 +25,7 @@ using RailNarrator.Pdf;
 //   --no-llm             no language model: display equations read by rule from the formula model
 if (args.Length < 2)
 {
-    Console.Error.WriteLine("usage: rail-narrator-mathbench <pdf> <layout.onnx> [--provider openai|claude] [--endpoint URL] [--model NAME] [--pages A-B] [--only i,j] [--thinking off|equations|always] [--max-tokens N] [--no-images] [--no-reader] [--formula-model PATH [--formula-config PATH] [--evidence image|latex|both] [--no-llm]]");
+    Console.Error.WriteLine("usage: rail-narrator-mathbench <pdf> <layout.onnx> [--layout heron|pp-doclayout-v3] [--provider openai|claude] [--endpoint URL] [--api-key-env NAME] [--model NAME] [--pages A-B] [--only i,j] [--thinking off|equations|always] [--max-tokens N] [--no-images] [--no-reader] [--formula-model PATH [--formula-config PATH] [--evidence image|latex|both] [--no-llm] [--dump-crops DIR]]");
     return 2;
 }
 
@@ -42,11 +46,14 @@ var thinking = (Option("--thinking") ?? "equations") switch
 var pages = (Option("--pages") ?? "0-100000").Split('-').Select(p => int.Parse(p, CultureInfo.InvariantCulture)).ToArray();
 var only = (Option("--only") ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries).Select(i => int.Parse(i, CultureInfo.InvariantCulture)).ToHashSet();
 
+// Heron is what the application picks when installed; it has no class for an equation number.
+string layout = Option("--layout") ?? (Path.GetFileName(args[1]).Contains("heron", StringComparison.OrdinalIgnoreCase) ? "heron" : "pp-doclayout-v3");
+var architecture = layout == "heron" ? LayoutModelArchitecture.Heron : LayoutModelArchitecture.PPDocLayoutV3;
 using var source = new RailReaderExtractionSource();
-source.WithBackend(ExtractionBackend.OnnxLayout(args[1]));
+source.WithBackend(ExtractionBackend.OnnxLayout(new LayoutModelFiles(architecture, layout, args[1], args[1]), null, LayoutAcceleration.Cpu));
 source.AttachDocument(pdf);
 var snapshot = await source.ExtractAsync(new ExtractionRequest(pdf, null, null,
-    new ExtractionOptions("pp-doclayout-v3", OcrPolicy.Off, 1024, false, ExtractorVersions.Current), NarrationFilterSettings.Default));
+    new ExtractionOptions(layout, OcrPolicy.Off, 1024, false, ExtractorVersions.Current), NarrationFilterSettings.Default));
 var units = new ReadingUnitBuilder().Build(snapshot);
 var options = new NarrationPlannerOptions(MathMode: MathMode.Interpret, InterpretMaths: true);
 var plan = await new NarrationPlanner(options: options).BuildPlanAsync(snapshot, units, NarrationFilterSettings.Default);
@@ -59,7 +66,7 @@ if (Option("--formula-model") is { } formulaModel)
         ?? Path.Combine(Path.GetDirectoryName(Path.GetFullPath(formulaModel))!, Path.GetFileNameWithoutExtension(formulaModel) + "_inference.yml");
     var files = new FormulaModelFiles(formulaModel, config);
     if (!files.Exist) { Console.Error.WriteLine($"formula model not found: '{files.ModelPath}' with '{files.ConfigPath}'"); return 2; }
-    formulas = new TimedFormulas(new PpFormulaNetRecogniser(files));
+    formulas = new TimedFormulas(new PpFormulaNetRecogniser(files), Option("--dump-crops"));
 }
 var evidence = (Option("--evidence") ?? "both") switch
 {
@@ -73,7 +80,7 @@ if (noLlm && formulas is null) { Console.Error.WriteLine("--no-llm needs --formu
 IMathInterpreter? interpreter = noLlm ? null : claude
     ? new ClaudeMathInterpreter(new ClaudeEndpointSettings(model, BaseUrl: endpoint, MaxTokens: maxTokens), thinking: thinking)
     : new OpenAiCompatibleMathInterpreter(
-        new MathEndpointSettings(endpoint!, model!, Temperature: 0.2, MaxTokens: maxTokens, MaxRetries: 1, RequestTimeout: TimeSpan.FromMinutes(3)),
+        new MathEndpointSettings(endpoint!, model!, ApiKey: Option("--api-key-env") is { } keyVariable ? Environment.GetEnvironmentVariable(keyVariable) : null, Temperature: 0.2, MaxTokens: maxTokens, MaxRetries: 1, RequestTimeout: TimeSpan.FromMinutes(3)),
         thinking: thinking);
 using var disposeInterpreter = interpreter as IDisposable;
 using var disposeFormulas = formulas;
@@ -89,7 +96,7 @@ var pending = allPending
     .Select((s, i) => (Segment: s, Index: i))
     .Where(x => only.Count == 0 || only.Contains(x.Index))
     .ToList();
-Console.WriteLine($"{plan.Segments.Count} segments, {allPending.Count} pending; interpreting {pending.Count} (thinking {thinking}" +
+Console.WriteLine($"layout {layout}: {plan.Segments.Count} segments, {allPending.Count} pending; interpreting {pending.Count} (thinking {thinking}" +
     (formulas is null ? ")" : $"; formula model, {(noLlm ? "no language model" : "evidence " + evidence)})"));
 
 var times = new List<double>();
@@ -98,6 +105,7 @@ foreach (var (segment, index) in pending)
 {
     var unit = plan.Units.First(u => u.Id == segment.ReadingUnitIds[0]);
     formulas?.Read.Clear();
+    formulas?.Passage = index;
     var clock = Stopwatch.StartNew();
     var result = await resolver.ResolveAsync(plan, segment);
     times.Add(clock.Elapsed.TotalSeconds);
@@ -125,8 +133,11 @@ if (formulas is { All.Count: > 0 })
 return 0;
 
 /// <summary>A formula model that keeps what it read and how long each equation took.</summary>
-internal sealed class TimedFormulas(PpFormulaNetRecogniser inner) : IFormulaRecogniser, IDisposable
+internal sealed class TimedFormulas(PpFormulaNetRecogniser inner, string? dumpDirectory = null) : IFormulaRecogniser, IDisposable
 {
+    /// <summary>The passage being resolved, for the names of dumped crops.</summary>
+    public int Passage { get; set; }
+
     public List<(FormulaRecognition Read, double Seconds)> Read { get; } = [];
     public List<(FormulaRecognition Read, double Seconds)> All { get; } = [];
 
@@ -134,6 +145,11 @@ internal sealed class TimedFormulas(PpFormulaNetRecogniser inner) : IFormulaReco
 
     public async Task<FormulaRecognition> RecogniseAsync(ReadOnlyMemory<byte> png, CancellationToken ct = default)
     {
+        if (dumpDirectory is not null)
+        {
+            Directory.CreateDirectory(dumpDirectory);
+            await File.WriteAllBytesAsync(Path.Combine(dumpDirectory, $"p{Passage:D3}-{All.Count:D3}.png"), png, ct);
+        }
         var clock = Stopwatch.StartNew();
         var read = await inner.RecogniseAsync(png, ct);
         Read.Add((read, clock.Elapsed.TotalSeconds));

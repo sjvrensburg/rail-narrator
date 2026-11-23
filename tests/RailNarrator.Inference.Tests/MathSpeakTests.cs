@@ -103,4 +103,15 @@ public sealed class MathSpeakTests
         string spoken = LocalLatexSpeaker.Speak(latex);
         Assert.DoesNotContain("\\", spoken, StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// A formula model writes a name set in a text face letter by letter, "\mathsf { d i m }". It
+    /// is one word, as \mathrm's has been; read as letters it was "d i m theta".
+    /// </summary>
+    [Theory]
+    [InlineData(@"\mathsf { d i m } ( \theta )", "the dimension of theta")]
+    [InlineData(@"\mathsf { R M S E } = x", "RMSE equals x")]
+    [InlineData(@"\mathtt { l o s s } + \mathit { c o n s t a n t }", "loss plus constant")]
+    public void ANameSetInATextFace_IsOneWord(string latex, string spoken)
+        => Assert.Equal(spoken, LocalLatexSpeaker.Speak(latex));
 }
