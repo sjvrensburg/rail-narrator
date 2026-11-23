@@ -83,6 +83,13 @@ public enum TimingProvenance
 
     /// <summary>Produced by forced-aligning the audio against the script that was synthesised.</summary>
     ForcedAlignment,
+
+    /// <summary>
+    /// Read from the synthesis model's own attention while it spoke: which token each frame of
+    /// audio was made for. Measured, not guessed, but in the model's frames (80 ms for Phonon), so
+    /// coarser than forced alignment.
+    /// </summary>
+    ModelAttention,
 }
 
 /// <summary>How large a region a cue can honestly highlight.</summary>
@@ -250,7 +257,7 @@ public static class TimedCueValidator
             if (cue.Granularity == CueGranularity.Word && cue.SpokenRange is null) return "word cue has no script range";
             if (cue.Confidence is { } c && (!double.IsFinite(c) || c < MinimumConfidence || c > 1)) return $"confidence {c:F2} is outside the accepted range";
             if (cue.Granularity == CueGranularity.Word && cue.Confidence is null
-                && provenance is not (TimingProvenance.NativeDuration or TimingProvenance.ForcedAlignment))
+                && provenance is not (TimingProvenance.NativeDuration or TimingProvenance.ForcedAlignment or TimingProvenance.ModelAttention))
                 return "word granularity claimed with no confidence value";
             if (requireMonotonic && havePrevious && cue.StartSample < previousEnd)
                 return $"starts at {cue.StartSample}, before the previous cue's end {previousEnd}";

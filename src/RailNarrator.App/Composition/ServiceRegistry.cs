@@ -170,7 +170,13 @@ public sealed class ServiceRegistry : IAsyncDisposable
         SidecarManager? sidecar = null;
 
         KokoroTtsProvider? kokoro = null;
-        string? kokoroModel = settings.KokoroModelPath ?? Path.Combine(XdgPaths.Models, ModelManifest.KokoroFp16.FileName);
+        // The reader's own choice of file; else, when word timing is to come from the engine and
+        // the export with durations is installed, that one; else the default export.
+        string timedKokoro = Path.Combine(XdgPaths.Models, ModelManifest.KokoroTimed.FileName);
+        string? kokoroModel = settings.KokoroModelPath
+            ?? (settings.WordTiming == WordTimingSource.Engine && File.Exists(timedKokoro)
+                ? timedKokoro
+                : Path.Combine(XdgPaths.Models, ModelManifest.KokoroFp16.FileName));
         if (File.Exists(kokoroModel))
         {
             kokoro = new KokoroTtsProvider(new KokoroProviderSettings(
@@ -351,7 +357,8 @@ public sealed class ServiceRegistry : IAsyncDisposable
                 VoiceId: VoiceFor(settings, speechProvider.ProviderId),
                 PlaybackRate: settings.PlaybackRate,
                 FollowMode: settings.FollowMode,
-                RequestTimings: settings.WordHighlighting),
+                RequestTimings: settings.WordHighlighting,
+                WordTiming: settings.WordTiming),
             aligner: aligner,
             resolver: segmentResolver);
 

@@ -26,7 +26,14 @@ public sealed record KokoroGpuOptions(string ModelPath, Action<SessionOptions> C
 /// <summary>Audio from one synthesis, before trimming, with any phoneme timestamps the model gave.</summary>
 /// <param name="Samples">24 kHz mono samples, the segments concatenated.</param>
 /// <param name="Timestamps">Phoneme cues in that raw timeline; empty when the model has no durations output.</param>
-public sealed record KokoroRunOutput(float[] Samples, IReadOnlyList<TimedCue> Timestamps);
+public sealed record KokoroRunOutput(float[] Samples, IReadOnlyList<TimedCue> Timestamps)
+{
+    /// <summary>
+    /// What was spoken, phoneme by phoneme, with the samples each occupies in <see cref="Samples"/>:
+    /// from the durations output of a model that has one. Empty otherwise.
+    /// </summary>
+    public IReadOnlyList<TimedPhoneme> Phonemes { get; init; } = [];
+}
 
 /// <summary>One way of running the Kokoro graph: KokoroSharp's engine on the CPU, or a session on the GPU.</summary>
 public interface IKokoroRunner : IDisposable
@@ -104,8 +111,16 @@ public static class KokoroInputs
 /// </summary>
 public sealed class KokoroSessionRunner : IKokoroRunner
 {
+    /// <summary>Samples of audio in one frame of a duration: 25 ms at 24 kHz.</summary>
+    public const int DurationFrameSamples = 600;
+
+    /// <summary>Frames the audio runs ahead of the durations' count; see <see cref="PhonemeWordTiming.FromDurations"/>.</summary>
+    public const int LeadFrames = 3;
+
     private readonly InferenceSession _session;
     private readonly bool _int32Tokens;
+    private readonly string _tokensInput;
+    private readonly bool _hasDurations;
     private readonly object _gate = new();
 
     /// <param name="modelPath">The model file.</param>
@@ -116,13 +131,17 @@ public sealed class KokoroSessionRunner : IKokoroRunner
     {
         _session = new InferenceSession(modelPath, options);
         var inputs = _session.InputMetadata;
-        foreach (string name in KokoroTtsProvider.RequiredModelInputs)
-            if (!inputs.ContainsKey(name))
+        // KokoroSharp's exports call the phoneme ids "tokens"; onnx-community's, which include the
+        // one with a durations output, call them "input_ids". The tensors are the same.
+        _tokensInput = KokoroTtsProvider.TokenInputNames.FirstOrDefault(inputs.ContainsKey) ?? "";
+        foreach (string name in KokoroTtsProvider.RequiredModelInputs.Where(n => n != "tokens").Append(_tokensInput))
+            if (name.Length == 0 || !inputs.ContainsKey(name))
             {
                 _session.Dispose();
-                throw new InvalidOperationException($"The model at '{modelPath}' has no '{name}' input; it is not a KokoroSharp-compatible export.");
+                throw new InvalidOperationException($"The model at '{modelPath}' has no '{(name.Length == 0 ? "tokens" : name)}' input; it is not a Kokoro export this runtime can drive.");
             }
-        _int32Tokens = inputs["tokens"].ElementType == typeof(int);
+        _int32Tokens = inputs[_tokensInput].ElementType == typeof(int);
+        _hasDurations = _session.OutputMetadata.ContainsKey(KokoroTtsProvider.DurationsOutputName);
         Device = device;
         Revision = $"{device}{(_int32Tokens ? "-i32" : "")}:{fingerprint}";
     }
@@ -138,21 +157,32 @@ public sealed class KokoroSessionRunner : IKokoroRunner
         => Task.Run(() =>
         {
             var samples = new List<float>();
+            var phonemes = new List<TimedPhoneme>();
+            bool timed = _hasDurations;
             foreach (var segment in segments)
             {
                 ct.ThrowIfCancellationRequested();
                 if (segment.Length == 0) continue;
-                samples.AddRange(Infer(segment, voiceStyle));
+                var (audio, padded, durations) = Infer(segment, voiceStyle);
+                // Durations that do not add up to the audio are not trusted for any of the clip.
+                if (timed && durations is not null
+                    && PhonemeWordTiming.FromDurations(padded.Select(Symbol).ToArray(), padded.Select((_, i) => i == 0 || i == padded.Length - 1).ToArray(),
+                        durations, DurationFrameSamples, audio.Length, samples.Count, LeadFrames) is { } segmentPhonemes)
+                    phonemes.AddRange(segmentPhonemes);
+                else timed = false;
+                samples.AddRange(audio);
             }
-            return new KokoroRunOutput(samples.ToArray(), []);
+            return new KokoroRunOutput(samples.ToArray(), []) { Phonemes = timed ? phonemes : [] };
         }, ct);
 
-    private float[] Infer(int[] tokens, float[,,] voiceStyle)
+    private static char Symbol(int token) => Tokenizer.TokenToChar.TryGetValue(token, out char c) ? c : ' ';
+
+    private (float[] Audio, int[] Padded, float[]? Durations) Infer(int[] tokens, float[,,] voiceStyle)
     {
         var (padded, style) = KokoroInputs.Build(tokens, voiceStyle);
         var tokenValue = _int32Tokens
-            ? NamedOnnxValue.CreateFromTensor("tokens", new DenseTensor<int>(padded, [1, padded.Length]))
-            : NamedOnnxValue.CreateFromTensor("tokens", new DenseTensor<long>(padded.Select(v => (long)v).ToArray(), [1, padded.Length]));
+            ? NamedOnnxValue.CreateFromTensor(_tokensInput, new DenseTensor<int>(padded, [1, padded.Length]))
+            : NamedOnnxValue.CreateFromTensor(_tokensInput, new DenseTensor<long>(padded.Select(v => (long)v).ToArray(), [1, padded.Length]));
         var inputs = new List<NamedOnnxValue>
         {
             tokenValue,
@@ -162,7 +192,12 @@ public sealed class KokoroSessionRunner : IKokoroRunner
         lock (_gate)
         {
             using var results = _session.Run(inputs);
-            return [.. results[0].AsTensor<float>()];
+            float[]? durations = _hasDurations
+                ? [.. results.First(r => r.Name == KokoroTtsProvider.DurationsOutputName).AsTensor<float>()]
+                : null;
+            // The audio is the output that is not the durations, whatever the export calls it.
+            float[] audio = [.. results.First(r => r.Name != KokoroTtsProvider.DurationsOutputName).AsTensor<float>()];
+            return (audio, padded, durations);
         }
     }
 

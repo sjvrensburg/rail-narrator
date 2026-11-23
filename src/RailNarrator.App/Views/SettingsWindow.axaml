@@ -145,8 +145,13 @@
             </Grid>
             <CheckBox IsChecked="{Binding WordHighlighting}" Content="Highlight word by word"
                       Margin="0,6,0,0" />
-            <TextBlock Classes="hint" Text="Times each word against the speech with the local aligner, when it is installed (tools/setup-word-alignment.sh). A sentence that cannot be timed is highlighted whole; no timing is ever guessed." />
-            <TextBlock Classes="restart" Text="Word highlighting applies after a restart." />
+            <TextBlock Classes="hint" Text="Each word is highlighted as it is spoken, from measured timing. A sentence that cannot be timed is highlighted whole; no timing is ever guessed." />
+            <Grid ColumnDefinitions="180,*" RowDefinitions="Auto,Auto" RowSpacing="6" Margin="0,6,0,0">
+              <TextBlock Classes="label" Text="Word timing from" />
+              <ComboBox Grid.Column="1" ItemsSource="{Binding WordTimingOptions}" SelectedItem="{Binding WordTiming}" MinWidth="260" />
+              <TextBlock Grid.Row="1" Grid.Column="1" Classes="hint" Text="{Binding WordTiming.Description}" />
+            </Grid>
+            <TextBlock Classes="restart" Text="Word highlighting and its timing source apply after a restart." />
 
             <TextBlock Classes="section" Text="Following" />
             <TextBlock Classes="hint" Text="The view glides with the reading. Scrolling, dragging or turning a page pauses it while you look around." />

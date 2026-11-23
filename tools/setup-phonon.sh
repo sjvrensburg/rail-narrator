@@ -5,7 +5,8 @@ set -euo pipefail
 # ADR-0009.
 #
 # Only this explicit command builds or downloads anything; the application never does. It
-#   1. builds Gradium's C library (libptts_ffi.so) from xn-ptts at a pinned release commit; this
+#   1. builds Gradium's C library (libptts_ffi.so) from xn-ptts at a pinned release commit, with
+#      tools/phonon-word-timing.patch applied; this
 #      needs git and a Rust toolchain (cargo, edition 2024), and takes about a minute;
 #   2. downloads phonon-31m-en (Apache 2.0) at the revision that release pins, and the 25 British
 #      and American English voices of Gradium's voice catalog (Apache 2.0), each verified by its
@@ -35,16 +36,23 @@ fetch() {   # url, destination, sha256
 }
 
 # ---- the runtime -------------------------------------------------------------------------------
-if [[ ! -f "$dir/libptts_ffi.so" || "$(cat "$dir/runtime-commit" 2>/dev/null)" != "$runtime_commit" ]]; then
+# Rail Narrator's one change to it (tools/phonon-word-timing.patch): a call that also reports one
+# attention head of the language model per frame, which word timing is made from. Upstream has no
+# word timing. The library is rebuilt when the pinned commit or the patch changes.
+patch="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/phonon-word-timing.patch"
+[[ -f "$patch" ]] || { echo "Missing $patch." >&2; exit 1; }
+runtime_id="$runtime_commit+timing-$(sha256sum "$patch" | cut -c1-12)"
+if [[ ! -f "$dir/libptts_ffi.so" || "$(cat "$dir/runtime-commit" 2>/dev/null)" != "$runtime_id" ]]; then
     build="$(mktemp -d)"
     trap 'rm -rf "$build"' EXIT
     echo "Building Gradium's runtime $runtime_tag (about a minute)…"
     git -c advice.detachedHead=false clone -q --depth 1 --branch "$runtime_tag" https://github.com/gradium-ai/xn-ptts.git "$build/xn-ptts"
     [[ "$(git -C "$build/xn-ptts" rev-parse HEAD)" == "$runtime_commit" ]] || { echo "The $runtime_tag tag no longer points at $runtime_commit; refusing to build it." >&2; exit 1; }
+    git -C "$build/xn-ptts" apply "$patch" || { echo "tools/phonon-word-timing.patch no longer applies to $runtime_tag." >&2; exit 1; }
     CARGO_TARGET_DIR="$build/target" cargo build -q --release --manifest-path "$build/xn-ptts/Cargo.toml" -p ptts-ffi
     cp "$build/target/release/libptts_ffi.so" "$dir/libptts_ffi.so.part"
     mv "$dir/libptts_ffi.so.part" "$dir/libptts_ffi.so"
-    echo "$runtime_commit" > "$dir/runtime-commit"
+    echo "$runtime_id" > "$dir/runtime-commit"
 fi
 
 # The release build wants the library alone.

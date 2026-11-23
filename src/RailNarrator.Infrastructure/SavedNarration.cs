@@ -219,7 +219,7 @@ public sealed class SavedNarrationWriter : IDisposable
         _segments.Add(segment);
         _first ??= asset;
         _seconds += asset.DurationSeconds;
-        if (asset.TimingProvenance == TimingProvenance.ForcedAlignment && asset.Timings.Count > 0) _wordTimed++;
+        if (asset.Timings.Count > 0 && asset.Timings.Any(c => c.Granularity == CueGranularity.Word)) _wordTimed++;
     }
 
     /// <summary>

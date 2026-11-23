@@ -126,12 +126,30 @@ public sealed record NarrationCoordinatorOptions(
     double PreRollSeconds = 60,
     double PreRollTimeoutSeconds = 20,
     double LookaheadSeconds = 60,
-    int MaxLookaheadSegments = 40)
+    int MaxLookaheadSegments = 40,
+    WordTimingSource WordTiming = WordTimingSource.Aligner)
 {
     /// <summary>Speaking rate used to estimate how long a passage takes, from its length (Kokoro at 1×).</summary>
     public const double EstimatedCharactersPerSecond = 15;
 
     public static NarrationCoordinatorOptions Default { get; } = new();
+}
+
+/// <summary>Where a passage's word timing is taken from when there is a choice.</summary>
+public enum WordTimingSource
+{
+    /// <summary>
+    /// The forced aligner when one is installed. What the speech engine reports with its audio is
+    /// shown until the aligner's measurement arrives, and stands where there is no aligner.
+    /// </summary>
+    Aligner,
+
+    /// <summary>
+    /// The speech engine's own report (its attention, or its durations) when it gives a time for
+    /// every word; the aligner is then not run for that passage. Sooner and with nothing to
+    /// install, but coarser. A passage the engine could not time still goes to the aligner.
+    /// </summary>
+    Engine,
 }
 
 /// <summary>
@@ -1082,13 +1100,13 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         }
 
         if (generation != Generation) return;   // a late result from a superseded plan
-        if (speech.Changes.Count > 0 && result.Timings is { Count: > 0 } native)
+        if (result.Timings is { Count: > 0 } native)
         {
-            // A provider's own timings point into the text it was given.
-            result = result with
-            {
-                Timings = native.Select(c => c.SpokenRange is { } r ? c with { SpokenRange = speech.ToScript(r) } : c).ToArray(),
-            };
+            // A provider's own timings point into the text it was given, which names lone letters.
+            if (speech.Changes.Count > 0)
+                native = native.Select(c => c.SpokenRange is { } r ? c with { SpokenRange = speech.ToScript(r) } : c).ToArray();
+            // Word cues belong to the script's words, and only where the script is the page's words.
+            result = result with { Timings = SpeaksItsSourceWordForWord(segment) ? ToScriptWords(native, segment.SpokenText) : WithoutWordCues(native) };
         }
 
         if (result.IsSilentOrEmpty || AudioSamples.Peak(result.Pcm.Span, result.Format) < SilencePeakThreshold)
@@ -1162,6 +1180,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         // result for a superseded generation is dropped below instead.
         var ct = _lifetime.Token;
         if (!_options.RequestTimings || _aligner is null || !SpeaksItsSourceWordForWord(segment)) return;
+        if (EngineTimingStands(asset)) return;
         var task = Task.Run(async () =>
         {
             try
@@ -1312,6 +1331,42 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         }
     }
 
+    private static IReadOnlyList<TimedCue> WithoutWordCues(IReadOnlyList<TimedCue> cues)
+        => cues.Any(c => c.Granularity == CueGranularity.Word) ? cues.Where(c => c.Granularity != CueGranularity.Word).ToArray() : cues;
+
+    /// <summary>
+    /// An engine's word cues as cues for the script's own words (<see cref="SpokenWord.Tokenize"/>):
+    /// each takes the range of the script word it falls in, and cues that fall in one word (a
+    /// letter spoken by a two-word name, "double you") become one. Empty when a cue belongs to no
+    /// word of the script: a timing that cannot be placed is not shown.
+    /// </summary>
+    public static IReadOnlyList<TimedCue> ToScriptWords(IReadOnlyList<TimedCue> cues, string script)
+    {
+        ArgumentNullException.ThrowIfNull(cues);
+        if (!cues.Any(c => c.Granularity == CueGranularity.Word)) return cues;
+        var words = SpokenWord.Tokenize(script);
+        var placed = new List<TimedCue>(cues.Count);
+        int w = 0;
+        foreach (var cue in cues.OrderBy(c => c.StartSample))
+        {
+            if (cue.Granularity != CueGranularity.Word) { placed.Add(cue); continue; }
+            if (cue.SpokenRange is not { } range) return [];
+            while (w < words.Count && words[w].Range.End <= range.Start) w++;
+            if (w >= words.Count || words[w].Range.Start > range.Start) return [];
+            if (placed.Count > 0 && placed[^1].Granularity == CueGranularity.Word && placed[^1].SpokenRange == words[w].Range)
+                placed[^1] = placed[^1] with { EndSample = Math.Max(placed[^1].EndSample, cue.EndSample) };
+            else
+                placed.Add(cue with { SpokenRange = words[w].Range });
+        }
+        return placed;
+    }
+
+    /// <summary>True when the engine timed every word of the passage and the reader prefers that to the aligner.</summary>
+    private bool EngineTimingStands(SpeechAsset asset)
+        => _options.WordTiming == WordTimingSource.Engine
+           && asset.TimingProvenance is TimingProvenance.ModelAttention or TimingProvenance.NativeDuration
+           && asset.Timings.Count > 0 && asset.Timings.All(c => c.Granularity == CueGranularity.Word);
+
     private IReadOnlyList<TimedCue> BindTimings(NarrationSegment segment, IReadOnlyList<TimedCue> timings)
         => timings.Select(c => c.SpokenRange is { } range
             ? c with { AnchorIds = segment.SourceLinks.Where(l => l.SpokenRange.Overlaps(range))
@@ -1359,6 +1414,9 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
+            // What the engine itself reported is still evidence when the aligner fails.
+            if (asset.HasTimings && asset.TimingProvenance is TimingProvenance.ModelAttention or TimingProvenance.NativeDuration)
+                return asset with { TimingWarnings = asset.TimingWarnings.Append("Word alignment unavailable: " + ex.Message).Distinct().ToArray() };
             return asset with { Timings = [], TimingProvenance = TimingProvenance.ClipBoundary,
                 AlignmentRevision = null, PcmHash = hash, TimingWarnings = ["Word alignment unavailable: " + ex.Message] };
         }

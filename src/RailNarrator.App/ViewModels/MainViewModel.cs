@@ -141,6 +141,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         TestMathEndpoint = new RelayCommand(() => TestMathEndpointAsync(), () => !Busy, OnCommandError);
         TestVisionEndpoint = new RelayCommand(() => TestVisionEndpointAsync(), () => !Busy, OnCommandError);
         DownloadKokoroModel = new RelayCommand(() => ConfirmDownload(ModelManifest.KokoroFp16), () => !Busy && !KokoroModelInstalled, OnCommandError);
+        DownloadKokoroTimedModel = new RelayCommand(() => ConfirmDownload(ModelManifest.KokoroTimed), () => !Busy && !KokoroTimedModelInstalled, OnCommandError);
         DownloadLayoutModel = new RelayCommand(() => ConfirmDownload(ModelManifest.LayoutHeronInt8), () => !Busy && !LayoutModelInstalled, OnCommandError);
         DownloadLayoutModelGpu = new RelayCommand(() => ConfirmDownload(ModelManifest.LayoutHeron), () => !Busy && !LayoutModelGpuInstalled, OnCommandError);
         // The vocabulary first: the model is of no use without it, and it is the small one.
@@ -824,6 +825,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public RelayCommand TestMathEndpoint { get; }
     public RelayCommand TestVisionEndpoint { get; }
     public RelayCommand DownloadKokoroModel { get; }
+
+    public RelayCommand DownloadKokoroTimedModel { get; }
     /// <summary>Docling Heron INT8, the layout model on the CPU.</summary>
     public RelayCommand DownloadLayoutModel { get; }
 
@@ -837,10 +840,12 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     // checked (hashing hundreds of MB on the UI thread is not acceptable); the download verifies it.
     // A model downloaded in this session counts as installed although it is used after a restart.
 
-    private (bool, bool, bool, bool)? _modelsInstalled;
+    private (bool, bool, bool, bool, bool)? _modelsInstalled;
 
     private bool KokoroModelInstalled
         => File.Exists(_services.CurrentSettings.KokoroModelPath ?? _services.Models.PathFor(ModelManifest.KokoroFp16));
+
+    private bool KokoroTimedModelInstalled => File.Exists(_services.Models.PathFor(ModelManifest.KokoroTimed));
 
     private bool LayoutModelInstalled => LayoutFileInstalled(ModelManifest.LayoutHeronInt8);
 
@@ -861,6 +866,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public string DownloadKokoroModelHeader => ModelMenuHeader(KokoroModelInstalled,
         $"Download _Kokoro speech model ({ModelManifest.KokoroFp16.HumanSize})…", "Kokoro speech model");
 
+    public string DownloadKokoroTimedModelHeader => ModelMenuHeader(KokoroTimedModelInstalled,
+        $"Download Kokoro with _word timing ({ModelManifest.KokoroTimed.HumanSize})…", "Kokoro with word timing");
+
     public string DownloadLayoutModelHeader => ModelMenuHeader(LayoutModelInstalled,
         $"Download _layout model ({ModelManifest.LayoutHeronInt8.HumanSize})…", "Layout model");
 
@@ -875,14 +883,16 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     {
         // Only on a change: a header notified while the menu opens is laid out again after the popup
         // has taken its width, and comes out clipped.
-        var installed = (KokoroModelInstalled, LayoutModelInstalled, LayoutModelGpuInstalled, FormulaModelInstalled);
+        var installed = (KokoroModelInstalled, KokoroTimedModelInstalled, LayoutModelInstalled, LayoutModelGpuInstalled, FormulaModelInstalled);
         if (installed == _modelsInstalled) return;
         _modelsInstalled = installed;
         OnPropertyChanged(nameof(DownloadKokoroModelHeader));
+        OnPropertyChanged(nameof(DownloadKokoroTimedModelHeader));
         OnPropertyChanged(nameof(DownloadLayoutModelHeader));
         OnPropertyChanged(nameof(DownloadLayoutModelGpuHeader));
         OnPropertyChanged(nameof(DownloadFormulaModelHeader));
         DownloadKokoroModel.RaiseCanExecuteChanged();
+        DownloadKokoroTimedModel.RaiseCanExecuteChanged();
         DownloadLayoutModel.RaiseCanExecuteChanged();
         DownloadLayoutModelGpu.RaiseCanExecuteChanged();
         DownloadFormulaModel.RaiseCanExecuteChanged();

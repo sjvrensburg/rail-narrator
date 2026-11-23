@@ -81,6 +81,16 @@ public sealed class KokoroTtsProvider : ITtsProvider
     /// </summary>
     public static readonly IReadOnlyList<string> RequiredModelInputs = ["tokens", "style", "speed"];
 
+    /// <summary>
+    /// What an export may call its phoneme-id input: "tokens" in KokoroSharp's, "input_ids" in
+    /// onnx-community's (among them the one with a durations output). KokoroSharp's own engine
+    /// feeds "tokens" only, so the other is run in a session of this application's.
+    /// </summary>
+    public static readonly IReadOnlyList<string> TokenInputNames = ["tokens", "input_ids"];
+
+    /// <summary>Bump when how word times are made from durations changes: they are stored with the audio.</summary>
+    public const string PhonemeTimingVersion = "durations/1";
+
     /// <summary>The graph output that carries per-phoneme durations, when an export provides it.</summary>
     public const string DurationsOutputName = "durations";
 
@@ -96,6 +106,8 @@ public sealed class KokoroTtsProvider : ITtsProvider
     private bool _voicesLoaded;
     private TimingProvenance _observedTiming = TimingProvenance.None;
     private bool _modelReportsDurations;
+    private string? _tokensInput;
+    private bool _ownSession;
     private string _modelFingerprint = "unavailable";
     private bool _disposed;
 
@@ -169,7 +181,10 @@ public sealed class KokoroTtsProvider : ITtsProvider
     /// </summary>
     private string ModelRevision => _chain?.Active is { Device: not "cpu" } gpu
         ? $"kokoro-sharp/{KokoroSharpVersion}/trim-2/{gpu.Revision}"
-        : $"kokoro-sharp/{KokoroSharpVersion}/trim-2:{_modelFingerprint}";
+        : _ownSession
+            // Not KokoroSharp's engine, and its word times are stored with the audio.
+            ? $"kokoro-session/trim-2/{PhonemeTimingVersion}:{_modelFingerprint}"
+            : $"kokoro-sharp/{KokoroSharpVersion}/trim-2:{_modelFingerprint}";
 
     private const string KokoroSharpVersion = "0.8.4";
 
@@ -249,6 +264,19 @@ public sealed class KokoroTtsProvider : ITtsProvider
         ct.ThrowIfCancellationRequested();
         float[] audio = output.Samples;
         var timestamps = output.Timestamps.ToList();
+
+        // Word times from the model's own durations, when it reports them: each word of the script
+        // counted off against the phoneme string's words. Replaces the bare phoneme cues, which
+        // carry no script range and so could never be shown.
+        if (output.Phonemes.Count > 0 && request.RequestTimings)
+        {
+            string language = voice.GetLangCode();
+            var words = PhonemeWordTiming.Words(text, output.Phonemes, part => Tokenizer.Phonemize(part, language, true), out string? problem);
+            if (words is null) warnings.Add($"No word timing from the model's durations: {problem}.");
+            int lead = request.Text.Length - request.Text.TrimStart().Length;
+            timestamps = words is null ? [] : words.Select(c => c with { SpokenRange = new TextRange(c.SpokenRange!.Value.Start + lead, c.SpokenRange.Value.Length) }).ToList();
+        }
+        else if (output.Phonemes.Count > 0) timestamps = [];
         bool timingsObserved = timestamps.Count > 0;
         if (timingsObserved) _observedTiming = TimingProvenance.NativeDuration;
 
@@ -346,7 +374,9 @@ public sealed class KokoroTtsProvider : ITtsProvider
             var inputs = probe.InputMetadata.Keys.ToHashSet(StringComparer.Ordinal);
             var outputs = probe.OutputMetadata.Keys.ToHashSet(StringComparer.Ordinal);
 
-            var missing = RequiredModelInputs.Where(name => !inputs.Contains(name)).ToList();
+            // Either name for the phoneme ids; an export with the other one is run by KokoroSessionRunner.
+            _tokensInput = TokenInputNames.FirstOrDefault(inputs.Contains);
+            var missing = RequiredModelInputs.Where(name => name == "tokens" ? _tokensInput is null : !inputs.Contains(name)).ToList();
             if (missing.Count > 0)
                 return $"This ONNX model is not a KokoroSharp-compatible Kokoro export: it declares no " +
                        $"'{string.Join("', '", missing)}' input (its inputs are: " +
@@ -447,9 +477,15 @@ public sealed class KokoroTtsProvider : ITtsProvider
 
                 _cpuOptions = options;
                 var (gpuRunner, gpuReason) = await TryCreateGpuRunnerAsync(ct).ConfigureAwait(false);
+                // KokoroSharp's engine for the export it was made for, unchanged so that its cached
+                // audio stays valid. An export it cannot feed ("input_ids"), or one with a durations
+                // output, which its engine does not read, runs in a session of our own on the CPU.
+                bool ownSession = _ownSession = _tokensInput != "tokens" || _modelReportsDurations;
                 var chain = new KokoroRunnerChain(gpuRunner,
-                    () => new KokoroEngineRunner(_settings.ModelPath, _cpuOptions!,
-                        $"kokoro-sharp/{KokoroSharpVersion}/trim-2:{_modelFingerprint}"),
+                    () => ownSession
+                        ? new KokoroSessionRunner(_settings.ModelPath, _cpuOptions!, "cpu", $"trim-2/{PhonemeTimingVersion}:{_modelFingerprint}")
+                        : new KokoroEngineRunner(_settings.ModelPath, _cpuOptions!,
+                            $"kokoro-sharp/{KokoroSharpVersion}/trim-2:{_modelFingerprint}"),
                     gpuReason);
                 chain.FellBack += reason => FellBackToCpu?.Invoke(reason);
                 if (gpuRunner is null) _ = chain.Active;   // build the CPU engine now, as before

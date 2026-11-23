@@ -66,6 +66,23 @@ public static class ModelManifest
         FileName: "kokoro-fp16.onnx");
 
     /// <summary>
+    /// Kokoro-82M with a durations output: the length the model gave each phoneme, from which each
+    /// word's time is read with no aligner (ADR-0013). The onnx-community export, which names its
+    /// phoneme ids "input_ids" and is therefore run in this application's own session, not
+    /// KokoroSharp's engine. The same weights and voices as <see cref="KokoroFp16"/>.
+    /// </summary>
+    public static ModelAsset KokoroTimed { get; } = new(
+        Id: "kokoro-timed-fp16",
+        Description: "Kokoro-82M with phoneme durations, fp16 ONNX export. Word timing without an aligner. Optional.",
+        Url: "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX-timestamped/resolve/dd4401a9add81ac692d20e240d22ec9dda82cc29/onnx/model_fp16.onnx",
+        Revision: "onnx-community/Kokoro-82M-v1.0-ONNX-timestamped at commit dd4401a9add81ac692d20e240d22ec9dda82cc29",
+        Bytes: 163_232_776,
+        Sha256: "220724d5c5e0cc01be30f38faa6cf0c895a7cde6e7773e91db2973c8c7e5123c",
+        Licence: "Apache-2.0 (model weights)",
+        Required: false,
+        FileName: "kokoro-timed-fp16.onnx");
+
+    /// <summary>
     /// The fp32 Kokoro export from the same release. Not used directly: it is the source of
     /// <see cref="KokoroWebGpu"/>, fetched only by <c>tools/kokoro-webgpu-model.sh</c>.
     /// </summary>
@@ -214,7 +231,7 @@ public static class ModelManifest
         Required: false,
         FileName: "PP-FormulaNet_plus-M_inference.yml");
 
-    public static IReadOnlyList<ModelAsset> All { get; } = [KokoroFp16, KokoroFp32, KokoroWebGpu, KokoroVoices, ZonosBackbone, ZonosDecoderFull, LayoutHeronInt8, LayoutHeron, LayoutPpDocV3, FormulaModel, FormulaModelConfig];
+    public static IReadOnlyList<ModelAsset> All { get; } = [KokoroFp16, KokoroTimed, KokoroFp32, KokoroWebGpu, KokoroVoices, ZonosBackbone, ZonosDecoderFull, LayoutHeronInt8, LayoutHeron, LayoutPpDocV3, FormulaModel, FormulaModelConfig];
 
     public static ModelAsset? Find(string id) => All.FirstOrDefault(a => a.Id == id);
 
