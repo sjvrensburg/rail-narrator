@@ -38,24 +38,36 @@ jobs:
         uses: actions/setup-dotnet@v5
         with:
           global-json-file: global.json
+      - name: Build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev zsync
       - name: Test
         run: dotnet test RailNarrator.slnx -c Release
       - name: Package
         env:
           WITH_PHONON: "yes"
           COMPRESS: "gz"
-        run: packaging/build-release.sh
-      - name: glibc floor
         run: |
-          dir=$(echo dist/rail-narrator-*-linux-x64/usr/lib/rail-narrator)
-          worst=$(for f in "$dir"/*.so; do objdump -T "$f" | grep -oE 'GLIBC_[0-9.]+'; done | sort -Vu | tail -1)
-          echo "Highest glibc symbol version needed: $worst"
-          [[ "$(printf '%s\n' "$worst" GLIBC_2.35 | sort -V | tail -1)" == GLIBC_2.35 ]] \
-            || { echo "A bundled library needs newer than glibc 2.35." >&2; exit 1; }
+          packaging/build-release.sh
+          packaging/build-appimage.sh
+      - name: glibc floor
+        run: packaging/check-glibc.sh dist/rail-narrator-*-linux-x64/usr/lib/rail-narrator 2.35
+      - name: AppImage smoke
+        run: |
+          test -s dist/rail-narrator-x86_64.AppImage.zsync
+          chmod +x dist/rail-narrator-x86_64.AppImage
+          set +e
+          APPIMAGE_EXTRACT_AND_RUN=1 dist/rail-narrator-x86_64.AppImage narrate > usage.txt 2>&1
+          code=$?
+          set -e
+          cat usage.txt
+          [[ $code == 2 ]] && grep -q "rail-narrator narrate" usage.txt
       - uses: actions/upload-artifact@v7
         with:
           name: linux
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/*.AppImage
+            dist/*.zsync
 
   windows:
     needs: check
@@ -68,11 +80,16 @@ jobs:
           global-json-file: global.json
       - name: Test
         run: dotnet test RailNarrator.slnx -c Release
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
       - name: Package
         shell: bash
         env:
           WITH_PORTAUDIO: "yes"
           WITH_PHONON: "yes"
+          WITH_INSTALLER: "yes"
         run: packaging/build-windows.sh
       - name: Native libraries present
         shell: bash
@@ -83,7 +100,9 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: windows
-          path: dist/*.zip
+          path: |
+            dist/*.zip
+            dist/*.exe
 
   release:
     needs: [linux, windows]

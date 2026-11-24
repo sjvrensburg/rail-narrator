@@ -1,0 +1,186 @@
+name: Packages
+
+# Builds, tests and packages Rail Narrator for every pull request: on Windows, the one platform that
+# cannot be checked on the developer's machine (tests, zip, installer, installed and run), and the
+# Linux packages as a release builds them (tarball and AppImage on Ubuntu 22.04, the AppImage run).
+# Linux tests are still run locally (CLAUDE.md); this does not replace that.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('Directory.Packages.props', '**/*.csproj') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Build
+        run: dotnet build RailNarrator.slnx -c Release
+
+      # Needs no GPU, network, model or sound card, as on Linux.
+      - name: Test
+        run: dotnet test RailNarrator.slnx -c Release --no-build --logger "trx" --results-directory test-results
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-test-results
+          path: test-results
+
+  windows-package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Inno Setup
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+
+      # PortAudio is built with CMake and MSVC, Phonon's runtime (ptts_ffi.dll) with the runner's
+      # Rust toolchain (MSVC target), and the installer with Inno Setup. All three are required.
+      - name: Package
+        shell: bash
+        env:
+          WITH_PORTAUDIO: "yes"
+          WITH_PHONON: "yes"
+          WITH_INSTALLER: "yes"
+        run: packaging/build-windows.sh
+
+      # The package carries both native libraries, and ptts_ffi.dll has the word-timing call that
+      # only the patched build has (tools/phonon-word-timing.patch).
+      - name: Native libraries present
+        shell: bash
+        run: |
+          dir=$(echo dist/rail-narrator-*-win-x64)
+          ls -l "$dir/portaudio.dll" "$dir/ptts_ffi.dll" "$dir/install-phonon.sh" "$dir/LICENSE" "$dir/THIRD-PARTY-NOTICES.txt" "$dir/licenses"/*
+          grep -q ptts_speak_aligned "$dir/ptts_ffi.dll"
+
+      # The bundled portaudio.dll loads and answers: version, initialise, devices (a runner has
+      # none, which the smoke tool reports and accepts).
+      - name: PortAudio smoke
+        shell: bash
+        run: |
+          dotnet build tools/RailNarrator.Smoke -c Release
+          cp dist/rail-narrator-*-win-x64/portaudio.dll tools/RailNarrator.Smoke/bin/Release/net10.0/
+          tools/RailNarrator.Smoke/bin/Release/net10.0/rail-narrator-smoke.exe audio --silent
+
+      # The console twin starts and prints its usage (exit code 2).
+      - name: CLI smoke
+        shell: bash
+        run: |
+          set +e
+          dist/rail-narrator-*-win-x64/rail-narrator-cli.exe > usage.txt 2>&1
+          code=$?
+          cat usage.txt
+          [[ $code == 2 ]] && grep -q "rail-narrator-cli narrate" usage.txt
+
+      # The installer installs per user without a prompt, the installed copy runs, and it uninstalls
+      # leaving nothing of its own behind.
+      - name: Installer round trip
+        shell: pwsh
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP "rail-narrator-installed"
+          Start-Process -Wait -FilePath "dist\rail-narrator-setup-x64.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/CURRENTUSER","/DIR=$dir","/TASKS=pdfassoc"
+          foreach ($f in "rail-narrator.exe","rail-narrator-cli.exe","portaudio.dll","ptts_ffi.dll","voices\af_heart.npy") {
+            if (-not (Test-Path (Join-Path $dir $f))) { throw "Not installed: $f" }
+          }
+          & (Join-Path $dir "rail-narrator-cli.exe") *> usage.txt
+          if ($LASTEXITCODE -ne 2) { throw "rail-narrator-cli.exe exited with $LASTEXITCODE" }
+          Get-Content usage.txt
+          if (-not (Test-Path "HKCU:\Software\Classes\RailNarrator.PDF")) { throw "The PDF 'Open with' entry was not registered." }
+          Start-Process -Wait -FilePath (Join-Path $dir "unins000.exe") -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART"
+          if (Test-Path (Join-Path $dir "rail-narrator.exe")) { throw "The uninstaller left the application behind." }
+          if (Test-Path "HKCU:\Software\Classes\RailNarrator.PDF") { throw "The uninstaller left the PDF entry behind." }
+          # The CLI's usage exit code (2) is still $LASTEXITCODE, which would fail the step.
+          exit 0
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: rail-narrator-win-x64
+          path: |
+            dist/*.zip
+            dist/*.exe
+
+  linux-package:
+    # As the release builds it: the oldest supported runner, so the bundled native libraries need no
+    # newer glibc than Ubuntu 22.04's.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Build tools
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev zsync
+
+      - name: Package
+        env:
+          WITH_PHONON: "yes"
+          COMPRESS: "gz"
+        run: |
+          packaging/build-release.sh
+          packaging/build-appimage.sh
+
+      - name: glibc floor
+        run: packaging/check-glibc.sh dist/rail-narrator-*-linux-x64/usr/lib/rail-narrator 2.35
+
+      # The AppImage starts (without FUSE, by extracting itself) and prints the narrate usage; its
+      # PortAudio needs nothing but ALSA and the C library; the update information and .zsync are there.
+      - name: AppImage smoke
+        run: |
+          test -s dist/rail-narrator-x86_64.AppImage.zsync
+          chmod +x dist/rail-narrator-x86_64.AppImage
+          set +e
+          APPIMAGE_EXTRACT_AND_RUN=1 dist/rail-narrator-x86_64.AppImage narrate > usage.txt 2>&1
+          code=$?
+          set -e
+          cat usage.txt
+          [[ $code == 2 ]] && grep -q "rail-narrator narrate" usage.txt
+          cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/dist/rail-narrator-x86_64.AppImage" --appimage-extract >/dev/null
+          so=squashfs-root/usr/lib/rail-narrator/libportaudio.so.2
+          ldd "$so"
+          ! ldd "$so" | grep -q "not found"
+          ! ldd "$so" | grep -q -i jack
+          test -f squashfs-root/usr/share/metainfo/io.github.sjvrensburg.RailNarrator.metainfo.xml
+          test -f squashfs-root/io.github.sjvrensburg.RailNarrator.desktop
+
+      - name: Upload packages
+        uses: actions/upload-artifact@v7
+        with:
+          name: rail-narrator-linux-x64
+          path: |
+            dist/*.tar.gz
+            dist/*.AppImage
+            dist/*.zsync

@@ -151,6 +151,7 @@
       <!-- A model already installed is named as such and its download is disabled. The menu re-reads
            the models directory each time it opens (MainWindow: RefreshModelMenu). -->
       <MenuItem Name="ModelsMenu" Header="M_odels and endpoints">
+        <MenuItem Header="{Binding DownloadPhononHeader}" Command="{Binding DownloadPhonon}" ToolTip.Tip="Phonon (Gradium's phonon-31m-en) and 25 British and American voices: fast speech on this computer, timing its own words. Needs Phonon's runtime, which a release carries" />
         <MenuItem Header="{Binding DownloadKokoroModelHeader}" Command="{Binding DownloadKokoroModel}" ToolTip.Tip="Kokoro-82M FP16: speech on this computer" />
         <MenuItem Header="{Binding DownloadKokoroTimedModelHeader}" Command="{Binding DownloadKokoroTimedModel}" ToolTip.Tip="Kokoro-82M FP16 with phoneme durations: word timing from the model itself, with no aligner. Used when Settings ▸ Reading ▸ Word timing is set to the speech engine's own" />
         <MenuItem Header="{Binding DownloadLayoutModelHeader}" Command="{Binding DownloadLayoutModel}" ToolTip.Tip="Docling Heron INT8: finds headings, figures, tables and equations (on the CPU)" />
