@@ -10,7 +10,10 @@ add_release_files() {
   cp "$ROOT/packaging/THIRD-PARTY-NOTICES.txt" "$stage/THIRD-PARTY-NOTICES.txt"
   mkdir -p "$stage/licenses"
   local packages version
-  packages="$(dotnet nuget locals global-packages --list | sed -E 's/^global-packages: *//')"
+  packages="$(dotnet nuget locals global-packages --list | sed -E 's/^global-packages: *//' | tr -d '\r')"
+  # Git Bash on Windows: the path is C:\Users\…, which globbing below cannot walk.
+  if command -v cygpath >/dev/null; then packages="$(cygpath -u "$packages")"; fi
+  packages="${packages%/}"
   version="$(grep -m1 'Include="Microsoft.ML.OnnxRuntime"' "$ROOT/Directory.Packages.props" | sed -E 's/.*Version="([^"]+)".*/\1/')"
   cp "$packages/microsoft.ml.onnxruntime/$version/ThirdPartyNotices.txt" "$stage/licenses/onnxruntime-third-party-notices.txt"
   local webgpu
