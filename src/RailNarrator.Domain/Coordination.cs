@@ -197,6 +197,15 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     /// one generation alone stops when it is overtaken. Guarded by <see cref="_gate"/>.
     /// </summary>
     private CancellationTokenSource _generationCts = new();
+    /// <summary>
+    /// The generation for which an operation that will start playback (Play, a seek, a voice change
+    /// while reading, a passage giving way to the next) is under way, until its clip plays; -1 when
+    /// none. A voice change reads it: the transport is stopped while such an operation waits for
+    /// its passage, and taking that for "not reading" left a quick second voice change silent.
+    /// </summary>
+    private long _startPendingFor = -1;
+
+    private void MarkStartPending(long generation) => Interlocked.Exchange(ref _startPendingFor, generation);
     private Task? _prepareLoop;
     private bool _disposed;
     private bool _followSuspended;
@@ -423,6 +432,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             Publish(PlaybackState.Error, null, NarrationError.ProviderUnavailable("No document is loaded."));
             return;
         }
+        MarkStartPending(gen);
         // A fresh start is a request to read from here: following resumes, as for a seek.
         lock (_gate) _followSuspended = false;
         Publish(PlaybackState.Preparing, "Preparing speech");
@@ -518,6 +528,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         int index = _plan.Segments.ToList().FindIndex(s => s.Id == segmentId);
         if (index < 0) return;
         long gen = AdvanceGeneration();
+        MarkStartPending(gen);
         // The reader asked to read from this passage (Next, Previous, a click, the script list), so
         // a pause in following from browsing ends here rather than leaving the view where it was
         // while the reading starts somewhere else.
@@ -626,11 +637,15 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         if (string.IsNullOrWhiteSpace(voiceId)) return;
         if (string.Equals(_options.VoiceId, voiceId, StringComparison.Ordinal)) return;
 
-        bool wasPlaying = _audio.State == PlaybackState.Playing;
+        // Reading, or about to: the transport playing or filling, or a start under way (a Play, a
+        // seek or an earlier voice change waiting for its passage with the transport stopped).
+        bool wasPlaying = _audio.State is PlaybackState.Playing or PlaybackState.Buffering
+                          || Interlocked.Read(ref _startPendingFor) == Generation;
         _options = _options with { VoiceId = voiceId };
         // Another voice was asked for: the recording is in its own, so the engine speaks from here.
         _recording = null;
         long generation = AdvanceGeneration();
+        if (wasPlaying) MarkStartPending(generation);
         // Discarded now, with the change, not once the transport has stopped: a seek that finishes
         // while it is stopping would otherwise find the old voice's clip ready and play it.
         lock (_gate) _prepared.Clear();
@@ -1607,6 +1622,8 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         await _audio.LoadAsync(segmentId, prepared.Asset, prepared.Pcm, ct).ConfigureAwait(false);
         if (withinSeconds > 0) await _audio.SeekAsync(withinSeconds, ct).ConfigureAwait(false);
         await _audio.PlayAsync(ct).ConfigureAwait(false);
+        // Playing now: the transport says so from here.
+        Interlocked.CompareExchange(ref _startPendingFor, -1, generation);
         Publish(PlaybackState.Playing, null);
         RaiseCueForCurrentPosition();
         await TryQueueNextAsync(generation).ConfigureAwait(false);
@@ -1679,6 +1696,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
                     ReleaseClipsOutsideWindow(plan, index + 1);
                 }
                 ExtendPreparation(gen);
+                MarkStartPending(gen);
                 if (!await WaitForSegmentAsync(index + 1, gen, PlaybackState.Buffering, CancellationToken.None).ConfigureAwait(false)) return;
                 if (gen != Generation) return;
                 await StartCurrentSegmentAsync(gen, CancellationToken.None).ConfigureAwait(false);

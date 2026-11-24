@@ -145,6 +145,50 @@ public sealed class NarrationCoordinatorTests
         Assert.True(waited < 2000, $"The last seek's passage played {waited} ms after the burst.");
     }
 
+    /// <summary>
+    /// The voice changed several times quickly while reading. The second change found the transport
+    /// stopped by the first, took it for not reading, and did not start again; the first, overtaken,
+    /// gave up its own start. Reading stopped with the status left at "Synthesising speech" (found by
+    /// driving the application). Reading now carries on in the last voice chosen.
+    /// </summary>
+    [Fact]
+    public async Task QuickVoiceChangesWhileReading_CarryOnReadingInTheLastVoice()
+    {
+        var tts = new OneAtATimeProvider(TimeSpan.FromMilliseconds(150));
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(tts, transport,
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 1, LookaheadSeconds: 0));
+        await coordinator.LoadPlanAsync(PlanWith(10));
+        await coordinator.PlayAsync();
+        await WaitUntil(() => transport.State == PlaybackState.Playing, what: "playback to start");
+
+        var changes = new List<Task>();
+        foreach (string voice in new[] { "voice-a", "voice-b", "voice-c" })
+        {
+            changes.Add(coordinator.SetVoiceAsync(voice));   // not awaited, as the window does not
+            await Task.Delay(20);
+        }
+        await Task.WhenAll(changes).WaitAsync(TimeSpan.FromSeconds(10));
+
+        await WaitUntil(() => transport.State == PlaybackState.Playing && coordinator.Snapshot.State == PlaybackState.Playing,
+            timeoutMs: 5000, what: "reading to carry on");
+        Assert.Equal("voice-c", transport.Loaded[^1].Asset.VoiceId);
+    }
+
+    /// <summary>A voice chosen while nothing is being read starts nothing: a document is never read unasked.</summary>
+    [Fact]
+    public async Task AVoiceChosenWhileStopped_StartsNothing()
+    {
+        var tts = new OneAtATimeProvider(TimeSpan.FromMilliseconds(20));
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(tts, transport);
+        await coordinator.LoadPlanAsync(PlanWith(3));
+        await coordinator.SetVoiceAsync("voice-a");
+        await coordinator.SetVoiceAsync("voice-b");
+        await Task.Delay(300);
+        Assert.Equal(0, transport.PlayCount);
+    }
+
     [Fact]
     public async Task PreviousAndNext_OnAnEmptyPlan_AreNoOpsNotThrows()
     {
