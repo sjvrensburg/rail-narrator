@@ -161,8 +161,10 @@ for candidate in "$(command -v iscc 2>/dev/null || true)" "$(command -v ISCC.exe
   [[ -n "$candidate" && -x "$candidate" ]] && { iscc="$candidate"; break; }
 done
 if [[ "${WITH_INSTALLER:-auto}" != "no" && $ON_WINDOWS == 1 && -n "$iscc" ]]; then
-  "$iscc" /Q "/DAPP_VERSION=$VERSION" "/DSOURCE_DIR=$(cygpath -w "$STAGE")" "/DOUTPUT_DIR=$(cygpath -w "$OUT")" \
-    "$(cygpath -w "$ROOT/installer/rail-narrator.iss")"
+  # MSYS2_ARG_CONV_EXCL: Git Bash would otherwise rewrite every argument that starts with "/" (all
+  # of ISCC's switches) into a Windows path.
+  MSYS2_ARG_CONV_EXCL='*' "$iscc" "/DAPP_VERSION=$VERSION" "/DSOURCE_DIR=$(cygpath -w "$STAGE")" \
+    "/DOUTPUT_DIR=$(cygpath -w "$OUT")" "$(cygpath -w "$ROOT/installer/rail-narrator.iss")" | tail -20
   echo "==> $OUT/rail-narrator-setup-x64.exe ($(du -h "$OUT/rail-narrator-setup-x64.exe" | cut -f1))"
 elif [[ "${WITH_INSTALLER:-auto}" == "yes" ]]; then
   echo "WITH_INSTALLER=yes needs Windows with Inno Setup 6 (ISCC.exe)." >&2; exit 1

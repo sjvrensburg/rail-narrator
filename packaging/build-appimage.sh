@@ -49,8 +49,11 @@ else
   cmake -S "$WORK/portaudio" -B "$WORK/portaudio-build" -DCMAKE_BUILD_TYPE=Release -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DPA_USE_ALSA=ON -DPA_USE_JACK=OFF -DPA_BUILD_SHARED=ON -DPA_BUILD_STATIC=OFF >/dev/null
   cmake --build "$WORK/portaudio-build" -j >/dev/null
-  so="$(find "$WORK/portaudio-build" -name 'libportaudio.so.2*' -type f | head -1)"
-  [[ -n "$so" ]] || { echo "The PortAudio build produced no libportaudio.so.2." >&2; exit 1; }
+  # v19.7.0's CMake names it libportaudio.so.19 (its autotools build, which distributions ship,
+  # libportaudio.so.2): the same V19 interface. The application loads it by path, beside itself,
+  # under the name it looks for first.
+  so="$(find "$WORK/portaudio-build" -name 'libportaudio.so*' -type f | head -1)"
+  [[ -n "$so" ]] || { echo "The PortAudio build produced no libportaudio.so." >&2; exit 1; }
   cp "$so" "$LIB/libportaudio.so.2"
   mkdir -p "$APPDIR/usr/share/doc/rail-narrator"
   cp "$WORK/portaudio/LICENSE.txt" "$APPDIR/usr/share/doc/rail-narrator/portaudio-LICENSE.txt"
