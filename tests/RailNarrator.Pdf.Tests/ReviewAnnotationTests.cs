@@ -274,4 +274,42 @@ public sealed class ReviewAnnotationTests : IDisposable
 
         Assert.Empty(index.Rects(new TextRange(page.Text.Length, 5)));
     }
+
+    [Fact]
+    public async Task ADocumentOpenedAgainInTheSameSessionIsSaved()
+    {
+        var store = new ReviewAnnotationStore(_root);
+        var first = store.Load(Hash, null).Document;
+        for (int i = 0; i < 40; i++) first.MarkViewChanged();
+        first.File.Pages[0] = [new HighlightAnnotation { NativeId = "a", Rects = [new HighlightRect(1, 1, 1, 1)] }];
+        first.MarkChanged();
+        await store.SaveAsync(first);
+
+        // Opened again: its versions start at 0, below the first instance's.
+        var second = store.Load(Hash, null).Document;
+        second.File.Pages[0].Add(new HighlightAnnotation { NativeId = "b", Rects = [new HighlightRect(2, 2, 1, 1)] });
+        second.MarkChanged();
+        await store.SaveAsync(second);
+
+        Assert.Equal(["a", "b"], store.Load(Hash, null).Document.File.Pages[0].Select(a => a.NativeId));
+    }
+
+    [Fact]
+    public async Task NotesNotPlacedAreKeptWhenTheRecordOfTheirVersionIsLost_AndAPeekMovesNothing()
+    {
+        var store = new ReviewAnnotationStore(_root);
+        var unplaced = new AnnotationFile();
+        unplaced.Pages[2] = [new TextNoteAnnotation { NativeId = "n", X = 1, Y = 1, Text = "Waiting." }];
+        var document = new ReviewDocument(Hash, null, unplaced: unplaced);   // no Earlier: its earlier.json was unreadable
+        document.MarkChanged();
+        await store.SaveAsync(document);
+        Assert.True(store.Load(Hash, null).Document.HasUnplaced);
+
+        string annotations = Path.Combine(store.DirectoryFor(Hash), "annotations.json");
+        await File.WriteAllTextAsync(annotations, "{ not json");
+        var peeked = store.Peek(Hash);
+        Assert.NotNull(peeked.Problem);
+        Assert.True(File.Exists(annotations));
+        Assert.Empty(Directory.GetFiles(store.DirectoryFor(Hash), "*unreadable*"));
+    }
 }

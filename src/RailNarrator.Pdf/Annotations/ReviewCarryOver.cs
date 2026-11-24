@@ -14,7 +14,7 @@ public sealed record PagedAnnotation(int Page, Annotation Annotation);
 /// </summary>
 /// <param name="Placed">Placed on this version, by their page here.</param>
 /// <param name="PlacedLinks">Their links to this version's text and narration.</param>
-/// <param name="Unplaced">Not placed, by their page in the earlier version.</param>
+/// <param name="Unplaced">Not placed, by the page of this version "Place as before" puts them on.</param>
 /// <param name="UnplacedLinks">Their links, as they were.</param>
 /// <param name="NotesPlaced">How many notes were placed (a mark across a page break is one).</param>
 /// <param name="NotesUnplaced">How many were not.</param>
@@ -22,6 +22,7 @@ public sealed record PagedAnnotation(int Page, Annotation Annotation);
 /// Where an earlier page's text is now, for each earlier page with a note placed by its text (and
 /// only where every such note on it agrees): the page a note not placed is put on "as before".
 /// </param>
+/// <param name="UnplacedEarlierPages">Each note not placed, by its new id: its page in the earlier version.</param>
 public sealed record CarriedNotes(
     IReadOnlyList<PagedAnnotation> Placed,
     IReadOnlyList<ReviewLink> PlacedLinks,
@@ -29,7 +30,8 @@ public sealed record CarriedNotes(
     IReadOnlyList<ReviewLink> UnplacedLinks,
     int NotesPlaced,
     int NotesUnplaced,
-    IReadOnlyDictionary<int, int> PageMap);
+    IReadOnlyDictionary<int, int> PageMap,
+    IReadOnlyDictionary<string, int> UnplacedEarlierPages);
 
 /// <summary>
 /// Brings the notes of an earlier version of a PDF to a revised one by the text they quote (ADR-0014).
@@ -64,37 +66,53 @@ public static class ReviewCarryOver
         ArgumentNullException.ThrowIfNull(earlier);
         ArgumentNullException.ThrowIfNull(snapshot);
         var pages = new PageTextCache(snapshot);
-        var letters = DocumentLetters.Of(snapshot, pages.Ligatures);
+        // Text the narration reads first: page numbers, running heads and footers between the two
+        // halves of a sentence across a page break are not in its quote. Then all of the text, for
+        // a mark made by hand on what is not read (a running head, a skipped affiliation).
+        var read = Covered(plan, snapshot) is { } covered ? DocumentLetters.Of(snapshot, pages.Ligatures, covered) : null;
+        var letters = DocumentLetters.Of(snapshot, pages.Ligatures, null);
         var placed = new List<PagedAnnotation>();
         var placedLinks = new List<ReviewLink>();
-        var unplaced = new AnnotationFile();
-        var unplacedLinks = new List<ReviewLink>();
-        int notesPlaced = 0, notesUnplaced = 0;
+        var waiting = new List<(Group Group, bool Own)>();
+        int notesPlaced = 0;
         var moved = new Dictionary<int, HashSet<int>>();
         var ownGroups = Groups(earlier.File, earlier.Links).ToList();
+        // Copies get ids of their own: the same note brought to a document twice (from two versions
+        // that both carry it) must not be two annotations under one /NM, which links are keyed by.
+        var ids = new Dictionary<string, string>(StringComparer.Ordinal);
+        string NewId(string? old)
+        {
+            if (old is null) return Guid.NewGuid().ToString();
+            if (!ids.TryGetValue(old, out var id)) ids[old] = id = Guid.NewGuid().ToString();
+            return id;
+        }
+        Annotation Copy(Annotation source)
+        {
+            var copy = ReviewAnnotationJson.Clone(source);
+            copy.NativeId = NewId(source.NativeId);
+            if (copy.InReplyTo is { } parent) copy.InReplyTo = NewId(parent);
+            return copy;
+        }
 
-        foreach (var group in ownGroups.Concat(Groups(earlier.Unplaced, earlier.UnplacedLinks)))
+        foreach (var (group, own) in ownGroups.Select(g => (g, true)).Concat(Groups(earlier.Unplaced, earlier.UnplacedLinks).Select(g => (g, false))))
         {
             var head = group.Members[0];
             var link = group.Link;
             bool markup = group.Members.All(m => m.Annotation is TextMarkupAnnotation);
             string key = markup && link is not null ? DocumentLetters.KeyOf(link.QuotedText) : "";
             float oldTop = AnnotationGeometry.GetAnnotationBounds(head.Annotation)?.Top ?? 0;
-            var found = key.Length > 0 ? letters.Find(key, head.Page, oldTop, pages) : null;
-            var ranges = found is { } start ? letters.Ranges(start, start + key.Length) : [];
+            IReadOnlyList<LinkedRange> ranges = [];
+            foreach (var stream in new[] { read, letters })
+            {
+                if (key.Length == 0 || stream is null) continue;
+                if (stream.Find(key, head.Page, oldTop, pages) is { } start) { ranges = stream.Ranges(start, start + key.Length); break; }
+            }
             var boxes = ranges.Select(r => (Range: r, Rects: pages.For(r.PageIndex)?.Rects(new TextRange(r.Start, r.Length)) ?? []))
                 .Where(x => x.Rects.Count > 0).ToList();
 
             if (boxes.Count == 0 || link is null)
             {
-                foreach (var member in group.Members)
-                {
-                    var copy = ReviewAnnotationJson.Clone(member.Annotation);
-                    if (!unplaced.Pages.TryGetValue(member.Page, out var list)) unplaced.Pages[member.Page] = list = [];
-                    list.Add(copy);
-                    if (copy.NativeId is { } id && group.Links.TryGetValue(id, out var own)) unplacedLinks.Add(own);
-                }
-                notesUnplaced++;
+                waiting.Add((group, own));
                 continue;
             }
 
@@ -107,7 +125,7 @@ public static class ReviewCarryOver
             {
                 var basis = group.Members[Math.Min(i, group.Members.Count - 1)].Annotation;
                 var copy = (TextMarkupAnnotation)ReviewAnnotationJson.Clone(basis);
-                if (i >= group.Members.Count || copy.NativeId is null) copy.NativeId = Guid.NewGuid().ToString();
+                copy.NativeId = i < group.Members.Count ? NewId(basis.NativeId) : Guid.NewGuid().ToString();
                 if (i > 0) copy.Contents = null;   // the note is on the first
                 copy.Source = AnnotationSource.RailReader;
                 copy.Rects = [.. boxes[i].Rects];
@@ -118,14 +136,51 @@ public static class ReviewCarryOver
             }
             notesPlaced++;
             // Pages of the earlier version only: a note it had not placed itself is by a still earlier one's page.
-            if (ownGroups.Contains(group))
+            if (own)
             {
                 if (!moved.TryGetValue(head.Page, out var to)) moved[head.Page] = to = [];
                 to.Add(first.PageIndex);
             }
         }
         var pageMap = moved.Where(m => m.Value.Count == 1).ToDictionary(m => m.Key, m => m.Value.Single());
-        return new CarriedNotes(placed, placedLinks, unplaced, unplacedLinks, notesPlaced, notesUnplaced, pageMap);
+
+        // Not placed: kept by the page of this version they would be placed on "as before" (the
+        // page their page became, by the notes found there, else the same number), with the
+        // earlier version's page for the reader.
+        var unplaced = new AnnotationFile();
+        var unplacedLinks = new List<ReviewLink>();
+        var earlierPages = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var (group, _) in waiting)
+            foreach (var member in group.Members)
+            {
+                var copy = Copy(member.Annotation);
+                int now = pageMap.TryGetValue(member.Page, out int mapped) ? mapped : member.Page;
+                if (!unplaced.Pages.TryGetValue(now, out var list)) unplaced.Pages[now] = list = [];
+                list.Add(copy);
+                earlierPages[copy.NativeId!] = member.Page;
+                if (member.Annotation.NativeId is { } old && group.Links.TryGetValue(old, out var l))
+                    unplacedLinks.Add(l with { NativeId = copy.NativeId!, GroupId = l.GroupId is { } g ? NewId(g) : null });
+            }
+        return new CarriedNotes(placed, placedLinks, unplaced, unplacedLinks, notesPlaced, waiting.Count, pageMap, earlierPages);
+    }
+
+    /// <summary>
+    /// Per page, the characters some reading unit reads (its anchors' source ranges); null when the
+    /// plan has none, as with no plan at all.
+    /// </summary>
+    private static Func<int, int, bool>? Covered(NarrationPlan? plan, ExtractionSnapshot snapshot)
+    {
+        if (plan is null) return null;
+        var masks = new Dictionary<int, bool[]>();
+        foreach (var anchor in plan.Units.SelectMany(u => u.Anchors))
+        {
+            if (anchor.SourceCharRange is not { Length: > 0 } range || !anchor.BelongsTo(snapshot.Identity)
+                || snapshot.Page(anchor.PageIndex) is not { } page) continue;
+            if (!masks.TryGetValue(anchor.PageIndex, out var mask)) masks[anchor.PageIndex] = mask = new bool[page.Text.Length];
+            for (int i = Math.Max(0, range.Start); i < Math.Min(mask.Length, range.End); i++) mask[i] = true;
+        }
+        if (masks.Count == 0) return null;
+        return (page, offset) => masks.TryGetValue(page, out var mask) && offset < mask.Length && mask[offset];
     }
 
     /// <summary>How many notes a document has: a mark across a page break is one, and notes not placed count too.</summary>
@@ -186,7 +241,8 @@ public static class ReviewCarryOver
             return sb.ToString();
         }
 
-        public static DocumentLetters Of(ExtractionSnapshot snapshot, IReadOnlyDictionary<char, string> ligatures)
+        public static DocumentLetters Of(ExtractionSnapshot snapshot, IReadOnlyDictionary<char, string> ligatures,
+            Func<int, int, bool>? keep)
         {
             var sb = new System.Text.StringBuilder();
             var page = new List<int>();
@@ -199,6 +255,7 @@ public static class ReviewCarryOver
                 for (int i = 0; i < text.Length; i++)
                 {
                     char c = text[i];
+                    if (keep is not null && !keep(p.PageIndex, i)) { inWord = false; continue; }
                     if (char.IsLetterOrDigit(c)) Emit(char.ToLowerInvariant(c).ToString(), i);
                     else if (PageQuote.IsUnmapped(c) && !PageQuote.IsLineEndHyphen(text, i)
                              && ligatures.TryGetValue(c, out var spelled) && PageQuote.InsideAWord(text, i))

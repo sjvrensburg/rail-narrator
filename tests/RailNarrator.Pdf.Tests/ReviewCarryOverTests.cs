@@ -174,7 +174,7 @@ public sealed class ReviewCarryOverTests : IDisposable
         Assert.True(document.HasUnplaced);
 
         var cut = document.Unplaced.Pages[0].Single(a => a.Contents == "Why drop them?");
-        session.PlaceAsBefore(cut);
+        Assert.True(session.PlaceAsBefore(cut, pageCount: 1));
         Assert.Contains(cut, document.File.Pages[0]);
         Assert.DoesNotContain(cut, document.Unplaced.Pages[0]);
         var link = session.LinkOf(cut)!;
@@ -267,14 +267,93 @@ public sealed class ReviewCarryOverTests : IDisposable
         var document = new ReviewDocument(RevisedHash, null);
         var session = new ReviewSession(document);
         session.CarryOver(carried, EarlierHash);
-        var stroke = document.Unplaced.Pages[1].OfType<FreehandAnnotation>().Single();
-        Assert.Equal(0, session.PageNow(1));
-        session.PlaceAsBefore(stroke);
-        Assert.Contains(stroke, document.File.Pages[0]);
+        // Kept by the page it goes on now, and labelled with the page it was on.
+        var stroke = document.Unplaced.Pages[0].OfType<FreehandAnnotation>().Single();
+        Assert.Equal(1, session.EarlierPageOf(stroke));
         // No note on the cover page was found, so its page number is kept.
-        Assert.Equal(0, session.PageNow(0));
+        var cover = document.Unplaced.Pages[0].OfType<TextNoteAnnotation>().Single();
+        Assert.Equal(0, session.EarlierPageOf(cover));
+        Assert.True(session.PlaceAsBefore(stroke, pageCount: 1));
+        Assert.Contains(stroke, document.File.Pages[0]);
 
         await store.SaveAsync(document);
-        Assert.Equal(0, store.Load(RevisedHash, null).Document.Earlier!.PageNow(1));
+        var again = store.Load(RevisedHash, null).Document;
+        var kept = again.Unplaced.Pages[0].Single();
+        Assert.Equal(0, again.UnplacedEarlierPages[kept.NativeId!]);
+    }
+
+    [Fact]
+    public void ASentenceAcrossAPageBreakIsFoundPastThePageNumberAndRunningHeadBetweenItsHalves()
+    {
+        var p0 = Page(0, [new LineSpec("The estimator is", 700), new LineSpec("3", 760)]);
+        var p1 = Page(1, [new LineSpec("Journal of Econometrics", 40), new LineSpec("consistent.", 100)]);
+        var v = new ExtractionSnapshot(new ExtractionIdentity("deadbeefcafebabe", 1), CoordinateFrameId.DisplayedPagePoints(),
+            ExtractionOptions.ModelFree, [p0, p1]);
+        var unit = new ReadingUnit("u0", ReadingUnitKind.Prose,
+            [Anchor("a0", 0, p0.Lines[0].Rect, p0.Lines[0].Text), Anchor("a1", 1, p1.Lines[1].Rect, p1.Lines[1].Text)],
+            "The estimator is consistent.", null, "", "", [], 0);
+        var plan = Plan([unit]);
+        var earlier = new ReviewDocument(EarlierHash, null);
+        new ReviewSession(earlier).Highlight(ReviewTarget.Find(plan, v, new PageTextCache(v), "s00000", ["a0"], false)!, "Proof?");
+
+        var carried = ReviewCarryOver.Match(earlier, plan, v);
+
+        Assert.Equal((1, 0), (carried.NotesPlaced, carried.NotesUnplaced));
+        Assert.Equal([0, 1], carried.Placed.Select(p => p.Page));
+        Assert.Equal("Proof?", carried.Placed[0].Annotation.Contents);
+    }
+
+    [Fact]
+    public void NotesBroughtTwiceAreCopiesWithIdsOfTheirOwn_AndUndoingOneLeavesTheOther()
+    {
+        var (v1, plan1) = Version([First, Third]);
+        var earlier = new ReviewDocument(EarlierHash, null);
+        var before = new ReviewSession(earlier);
+        before.Highlight(Sentence(v1, plan1, "u0-0"), "Under which conditions?");
+        before.AddNote(0, 540, 100, "Cite the original.");
+        var (v2, plan2) = Version([First]);
+
+        var document = new ReviewDocument(RevisedHash, null);
+        var session = new ReviewSession(document);
+        session.CarryOver(ReviewCarryOver.Match(earlier, plan2, v2), EarlierHash);
+        session.CarryOver(ReviewCarryOver.Match(earlier, plan2, v2), "3333");
+
+        var all = document.File.Pages.Values.SelectMany(p => p).Concat(document.Unplaced.Pages.Values.SelectMany(p => p)).ToList();
+        Assert.Equal(4, all.Count);
+        Assert.Equal(4, all.Select(a => a.NativeId).Distinct().Count());
+        Assert.DoesNotContain(all, a => earlier.File.Pages[0].Any(e => e.NativeId == a.NativeId));
+        Assert.Equal(2, document.Links.Count);
+
+        session.Undo();
+        var first = Assert.Single(document.File.Pages[0]);
+        Assert.NotNull(session.LinkOf(first));
+        Assert.Single(document.Unplaced.Pages[0]);
+    }
+
+    [Fact]
+    public void PlacingANoteAsBeforeTakesItsRepliesAlong_AndRefusesAPageThisVersionLacks()
+    {
+        var earlier = new ReviewDocument(EarlierHash, null);
+        var note = new TextNoteAnnotation { NativeId = "n1", X = 540, Y = 100, Text = "Cite the original." };
+        var reply = new TextNoteAnnotation { NativeId = "r1", X = 540, Y = 100, Text = "Done.", InReplyTo = "n1" };
+        earlier.File.Pages[3] = [note, reply];
+        var (v2, plan2) = Version([First]);
+
+        var document = new ReviewDocument(RevisedHash, null);
+        var session = new ReviewSession(document);
+        session.CarryOver(ReviewCarryOver.Match(earlier, plan2, v2), EarlierHash);
+        var head = document.Unplaced.Pages[3].Single(a => a.InReplyTo is null);
+        var answer = document.Unplaced.Pages[3].Single(a => a.InReplyTo is not null);
+        Assert.Equal(head.NativeId, answer.InReplyTo);
+
+        Assert.False(session.PlaceAsBefore(head, pageCount: 1));
+        Assert.Equal(2, document.Unplaced.Pages[3].Count);
+        Assert.Equal([3], session.PlacesAsBefore(head));
+
+        Assert.True(session.PlaceAsBefore(head, pageCount: 4));
+        Assert.Equal([head, answer], document.File.Pages[3]);
+        Assert.Empty(document.Unplaced.Pages[3]);
+        session.Undo();
+        Assert.Equal([head, answer], document.Unplaced.Pages[3]);
     }
 }

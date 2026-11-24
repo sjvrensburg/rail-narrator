@@ -100,14 +100,20 @@ Not reused:
     (page, then height). The mark gets the new character boxes and the passage that reads them now;
   - keeps everything else as **not placed**: a mark whose words are gone, and a sticky note, text
     box, drawing or imported mark, which quotes no text. Nothing is placed by position or by a near
-    match. Not-placed notes are kept in the new document's `unplaced.json` (Core's format) with
-    their links in `earlier.json`, listed at the end of Review notes, and exported in their own
-    Markdown section; never drawn, never written into a PDF copy;
-  - records, per earlier page, the page its placed notes went to when they all agree. *Place as
-    before* puts a not-placed note at the same coordinates on that page (else on the same page
-    number): the reader's choice, never automatic. *Discard* drops it from this version.
-  Bringing notes over, placing one and discarding one are undoable steps. The earlier version's
-  own files are only read.
+    match. A text is looked for first among the characters the narration reads (so a page
+    number or running head between the halves of a sentence across a page break does not hide
+    it), then in all the page text. Not-placed notes are kept in the new document's
+    `unplaced.json` (Core's format) with their links and earlier pages in `unplaced-links.json`
+    (`earlier.json` holds only which version and when), listed at the end of Review notes, and
+    exported in their own Markdown section; never drawn, never written into a PDF copy;
+  - keeps each not-placed note under the page it would go on: the page its earlier page became,
+    when the notes placed from that page all agree, else the same page number. *Place as before*
+    puts it, with its replies, at the same coordinates there (the reader's choice, never
+    automatic), and refuses when that page is not in this version. *Discard* drops it.
+  - gives every copy an id of its own (and its replies and group the matching ids), so the same
+    note brought to a document twice is two annotations, never two under one /NM.
+  Bringing notes over, placing one and discarding one are undoable steps. The earlier version is
+  read with `Peek`, which never sets a file aside: one that cannot be read is reported, not moved.
 - **A saved narration (ADR-0012) carries no annotations.** `paper.narration` holds the plan and
   audio; notes stay in the data directory, keyed by the PDF's hash, and the headless `narrate` and
   `export` commands neither read nor write them.

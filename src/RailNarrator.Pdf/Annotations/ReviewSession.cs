@@ -219,72 +219,128 @@ public sealed class ReviewSession
             foreach (var annotation in list)
                 actions.Add(new OnFile(Document.Unplaced, new AddAnnotationAction(page, annotation)));
         var before = Document.Earlier;
-        var after = new EarlierVersion(earlierHash) { CarriedUtc = _now(), PageMap = carried.PageMap };
+        var after = new EarlierVersion(earlierHash) { CarriedUtc = _now() };
         var links = carried.UnplacedLinks.ToList();
+        var pages = carried.UnplacedEarlierPages.ToList();
         actions.Add(new HostAction(
-            () => { Document.Earlier = after; foreach (var l in links) Document.UnplacedLinks[l.NativeId] = l; },
-            () => { Document.Earlier = before; foreach (var l in links) Document.UnplacedLinks.Remove(l.NativeId); }));
+            () =>
+            {
+                Document.Earlier = after;
+                foreach (var l in links) Document.UnplacedLinks[l.NativeId] = l;
+                foreach (var (id, page) in pages) Document.UnplacedEarlierPages[id] = page;
+            },
+            () =>
+            {
+                Document.Earlier = before;
+                foreach (var l in links) Document.UnplacedLinks.Remove(l.NativeId);
+                foreach (var (id, _) in pages) Document.UnplacedEarlierPages.Remove(id);
+            }));
         Apply(new Step(actions, carried.PlacedLinks, []));
     }
 
     /// <summary>
-    /// Puts a note brought from an earlier version, and the others made with it, on this document
-    /// where it was there: the same place, on the page its page became when other notes on it were
-    /// found by their text (<see cref="EarlierVersion.PageNow"/>), else the same page number. The
+    /// The pages of this document a note not placed (with the others made with it, and its replies)
+    /// would be put on by <see cref="PlaceAsBefore"/>.
+    /// </summary>
+    public IReadOnlyList<int> PlacesAsBefore(Annotation unplaced)
+        => [.. UnplacedGroup(unplaced).Select(g => g.Page).Distinct().Order()];
+
+    /// <summary>
+    /// Puts a note brought from an earlier version, the others made with it, and its replies, on
+    /// this document where it was there: the same place, on the page it is kept under (the page its
+    /// page became when other notes on it were found by their text, else the same page number). The
     /// reader's choice, for a note whose words could not be found. It is no longer linked to a passage.
     /// </summary>
-    public void PlaceAsBefore(Annotation unplaced)
+    /// <returns>False, with nothing done, when one of its pages is not in this document.</returns>
+    public bool PlaceAsBefore(Annotation unplaced, int pageCount)
     {
         ArgumentNullException.ThrowIfNull(unplaced);
         var group = UnplacedGroup(unplaced);
-        if (group.Count == 0) return;
-        var oldLinks = group.Select(g => g.Annotation.NativeId is { } id && Document.UnplacedLinks.TryGetValue(id, out var l) ? l : null)
-            .OfType<ReviewLink>().ToList();
+        if (group.Count == 0 || group.Any(g => g.Page < 0 || g.Page >= pageCount)) return false;
+        var oldLinks = LinksOf(group);
         // Kept as a mark on the words it quoted, but its ranges and passage belong to the other version.
         var newLinks = oldLinks.Select(l => l with { SegmentId = null, UnitId = null, Ranges = [], ByHand = true }).ToList();
         var actions = new List<IUndoAction>();
         foreach (var (page, annotation) in group)
         {
-            actions.Add(new OnFile(Document.Unplaced, new RemoveAnnotationAction(page, annotation)));
-            actions.Add(new AddAnnotationAction(PageNow(page), annotation));
+            // Not Core's RemoveAnnotationAction: it takes the replies too, which move here with it.
+            actions.Add(new TakeOut(Document.Unplaced, page, annotation));
+            actions.Add(new AddAnnotationAction(page, annotation));
         }
-        actions.Add(UnplacedLinksRemoved(oldLinks));
+        actions.Add(UnplacedRemoved(group, oldLinks));
         Apply(new Step(actions, newLinks, []));
         Selected = group[0].Annotation;
+        return true;
     }
 
-    /// <summary>Discards a note brought from an earlier version that could not be placed (undoable; the earlier version keeps it).</summary>
+    /// <summary>
+    /// Discards a note brought from an earlier version that could not be placed, with the others
+    /// made with it and its replies (undoable; the earlier version keeps it).
+    /// </summary>
     public void Discard(Annotation unplaced)
     {
         ArgumentNullException.ThrowIfNull(unplaced);
         var group = UnplacedGroup(unplaced);
         if (group.Count == 0) return;
-        var oldLinks = group.Select(g => g.Annotation.NativeId is { } id && Document.UnplacedLinks.TryGetValue(id, out var l) ? l : null)
-            .OfType<ReviewLink>().ToList();
-        var actions = group.Select(g => (IUndoAction)new OnFile(Document.Unplaced, new RemoveAnnotationAction(g.Page, g.Annotation))).ToList();
-        actions.Add(UnplacedLinksRemoved(oldLinks));
+        var actions = group.Select(g => (IUndoAction)new TakeOut(Document.Unplaced, g.Page, g.Annotation)).ToList();
+        actions.Add(UnplacedRemoved(group, LinksOf(group)));
         Apply(new Step(actions, [], []));
     }
 
-    /// <summary>The page of this document a note not placed from <paramref name="earlierPage"/> would be placed on.</summary>
-    public int PageNow(int earlierPage) => Document.Earlier?.PageNow(earlierPage) ?? earlierPage;
+    /// <summary>The page a note not placed was on in the version it came from.</summary>
+    public int? EarlierPageOf(Annotation unplaced)
+        => unplaced.NativeId is { } id && Document.UnplacedEarlierPages.TryGetValue(id, out int page) ? page : null;
 
     /// <summary>The link of a note not placed, as it was in the earlier version.</summary>
     public ReviewLink? UnplacedLinkOf(Annotation annotation)
         => annotation.NativeId is { } id && Document.UnplacedLinks.TryGetValue(id, out var link) ? link : null;
 
-    private IUndoAction UnplacedLinksRemoved(IReadOnlyList<ReviewLink> links) => new HostAction(
-        () => { foreach (var l in links) Document.UnplacedLinks.Remove(l.NativeId); },
-        () => { foreach (var l in links) Document.UnplacedLinks[l.NativeId] = l; });
+    private List<ReviewLink> LinksOf(List<(int Page, Annotation Annotation)> group)
+        => group.Select(g => g.Annotation.NativeId is { } id && Document.UnplacedLinks.TryGetValue(id, out var l) ? l : null)
+            .OfType<ReviewLink>().ToList();
 
+    private IUndoAction UnplacedRemoved(List<(int Page, Annotation Annotation)> group, IReadOnlyList<ReviewLink> links)
+    {
+        var pages = group.Select(g => g.Annotation.NativeId).OfType<string>()
+            .Where(Document.UnplacedEarlierPages.ContainsKey).Select(id => (Id: id, Page: Document.UnplacedEarlierPages[id])).ToList();
+        return new HostAction(
+            () =>
+            {
+                foreach (var l in links) Document.UnplacedLinks.Remove(l.NativeId);
+                foreach (var p in pages) Document.UnplacedEarlierPages.Remove(p.Id);
+            },
+            () =>
+            {
+                foreach (var l in links) Document.UnplacedLinks[l.NativeId] = l;
+                foreach (var p in pages) Document.UnplacedEarlierPages[p.Id] = p.Page;
+            });
+    }
+
+    /// <summary>A note not placed, the others made with it, then the replies under any of them; the note itself first.</summary>
     private List<(int Page, Annotation Annotation)> UnplacedGroup(Annotation annotation)
     {
         var all = Document.Unplaced.Pages.OrderBy(p => p.Key).SelectMany(p => p.Value.Select(a => (Page: p.Key, Annotation: a))).ToList();
-        var self = all.Where(x => ReferenceEquals(x.Annotation, annotation)).ToList();
-        if (self.Count == 0 || UnplacedLinkOf(annotation)?.GroupId is not { } group) return self;
-        var members = Document.UnplacedLinks.Values.Where(l => l.GroupId == group).Select(l => l.NativeId).ToHashSet(StringComparer.Ordinal);
-        return all.Where(x => x.Annotation.NativeId is { } id && members.Contains(id))
-            .OrderBy(x => x.Annotation.NativeId == group ? 0 : 1).ToList();
+        var group = all.Where(x => ReferenceEquals(x.Annotation, annotation)).ToList();
+        if (group.Count == 0) return group;
+        if (UnplacedLinkOf(annotation)?.GroupId is { } groupId)
+        {
+            var members = Document.UnplacedLinks.Values.Where(l => l.GroupId == groupId).Select(l => l.NativeId).ToHashSet(StringComparer.Ordinal);
+            group = all.Where(x => x.Annotation.NativeId is { } id && members.Contains(id))
+                .OrderBy(x => ReferenceEquals(x.Annotation, annotation) ? 0 : 1).ToList();
+        }
+        var ids = group.Select(g => g.Annotation.NativeId).OfType<string>().ToHashSet(StringComparer.Ordinal);
+        for (bool more = true; more;)
+        {
+            more = false;
+            foreach (var x in all)
+                if (x.Annotation.InReplyTo is { } parent && ids.Contains(parent) && !group.Contains(x))
+                {
+                    group.Add(x);
+                    if (x.Annotation.NativeId is { } id) ids.Add(id);
+                    more = true;
+                }
+        }
+        return group;
     }
 
     private T Stamp<T>(T annotation) where T : Annotation
@@ -439,6 +495,25 @@ public sealed class ReviewSession
         public void Undo(AnnotationFile file) => inner.Undo(target);
 
         public void Redo(AnnotationFile file) => inner.Redo(target);
+    }
+
+    /// <summary>Takes one annotation out of a page's list, and puts it back where it was on undo (its replies stay).</summary>
+    private sealed class TakeOut(AnnotationFile target, int page, Annotation annotation) : IUndoAction
+    {
+        private int _index = -1;
+
+        public void Redo(AnnotationFile file)
+        {
+            _index = target.Pages.TryGetValue(page, out var list) ? list.IndexOf(annotation) : -1;
+            if (_index >= 0) list!.RemoveAt(_index);
+        }
+
+        public void Undo(AnnotationFile file)
+        {
+            if (_index < 0) return;
+            if (!target.Pages.TryGetValue(page, out var list)) target.Pages[page] = list = [];
+            list.Insert(Math.Min(_index, list.Count), annotation);
+        }
     }
 
     /// <summary>A change to what the document keeps beside its annotations.</summary>
