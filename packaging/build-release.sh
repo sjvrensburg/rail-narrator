@@ -65,6 +65,10 @@ Required
   libSkiaSharp        Bundled by SkiaSharp.NativeAssets.Linux in the archive.
   libPDFium           Bundled by RailReader.Core.Pdfium in the archive.
 
+Bundled speech data
+  Kokoro voices       voices/*.npy, 54 voices, 27 MB, Apache-2.0 (from KokoroSharp's package).
+                      The Kokoro model they belong to is not bundled.
+
 Required for scanned documents
   PP-OCRv5 models     Bundled by RailReader.Core.Ocr.RapidOcr beside the application.
 

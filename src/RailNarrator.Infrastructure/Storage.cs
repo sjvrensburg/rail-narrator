@@ -5,55 +5,85 @@ using RailNarrator.Domain;
 namespace RailNarrator.Infrastructure;
 
 /// <summary>
-/// Rail Narrator's own XDG directories.
+/// Rail Narrator's own directories: the XDG ones on Linux, the user's application-data folders on
+/// Windows.
 /// </summary>
 /// <remarks>
+/// <para>
 /// Deliberately separate from RailReaderCore's <c>AppConfig</c>, whose <c>ConfigDir</c> is hard-coded
 /// to <c>~/.config/railreader2</c> and which creates that directory on first access. This application
 /// is a companion, not a rewrite: sharing a settings directory would mean one product silently
 /// reading and overwriting the other's configuration.
+/// </para>
+/// <para>
+/// On Windows settings go to the roaming <c>%APPDATA%\rail-narrator</c> and everything large or
+/// machine-specific (models, caches, logs) to <c>%LOCALAPPDATA%\rail-narrator</c>, so a roaming
+/// profile does not carry gigabytes of models and cached speech. An <c>XDG_*</c> variable that is
+/// set wins on every platform: the tests and the GUI harness isolate a run with them.
+/// </para>
 /// </remarks>
 public static class XdgPaths
 {
     public const string ApplicationId = "rail-narrator";
 
-    private static string Base(string envVar, string fallback)
+    private static string? Override(string envVar)
     {
         string? value = Environment.GetEnvironmentVariable(envVar);
-        return string.IsNullOrWhiteSpace(value) ? fallback : value;
+        return string.IsNullOrWhiteSpace(value) ? null : value;
     }
 
-    /// <summary>Settings and small state. <c>$XDG_CONFIG_HOME/rail-narrator</c>.</summary>
-    public static string Config => Path.Combine(
-        Base("XDG_CONFIG_HOME", Path.Combine(Home, ".config")), ApplicationId);
+    private static string RoamingAppData => Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+    private static string LocalAppData => Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
 
-    /// <summary>Models, cached speech and extraction snapshots. <c>$XDG_DATA_HOME/rail-narrator</c>.</summary>
-    public static string Data => Path.Combine(
-        Base("XDG_DATA_HOME", Path.Combine(Home, ".local", "share")), ApplicationId);
+    /// <summary>
+    /// Settings and small state. <c>$XDG_CONFIG_HOME/rail-narrator</c>; on Windows
+    /// <c>%APPDATA%\rail-narrator</c>.
+    /// </summary>
+    public static string Config => Override("XDG_CONFIG_HOME") is { } xdg ? Path.Combine(xdg, ApplicationId)
+        : OperatingSystem.IsWindows() ? Path.Combine(RoamingAppData, ApplicationId)
+        : Path.Combine(Home, ".config", ApplicationId);
 
-    /// <summary>Regenerable caches that may be cleared freely. <c>$XDG_CACHE_HOME/rail-narrator</c>.</summary>
-    public static string Cache => Path.Combine(
-        Base("XDG_CACHE_HOME", Path.Combine(Home, ".cache")), ApplicationId);
+    /// <summary>
+    /// Models, cached speech and extraction snapshots. <c>$XDG_DATA_HOME/rail-narrator</c>; on
+    /// Windows <c>%LOCALAPPDATA%\rail-narrator</c>.
+    /// </summary>
+    public static string Data => Override("XDG_DATA_HOME") is { } xdg ? Path.Combine(xdg, ApplicationId)
+        : OperatingSystem.IsWindows() ? Path.Combine(LocalAppData, ApplicationId)
+        : Path.Combine(Home, ".local", "share", ApplicationId);
 
-    /// <summary>Logs and diagnostics. <c>$XDG_STATE_HOME/rail-narrator</c>.</summary>
-    public static string State => Path.Combine(
-        Base("XDG_STATE_HOME", Path.Combine(Home, ".local", "state")), ApplicationId);
+    /// <summary>
+    /// Regenerable caches that may be cleared freely. <c>$XDG_CACHE_HOME/rail-narrator</c>; on
+    /// Windows <c>%LOCALAPPDATA%\rail-narrator\cache</c>.
+    /// </summary>
+    public static string Cache => Override("XDG_CACHE_HOME") is { } xdg ? Path.Combine(xdg, ApplicationId)
+        : OperatingSystem.IsWindows() ? Path.Combine(LocalAppData, ApplicationId, "cache")
+        : Path.Combine(Home, ".cache", ApplicationId);
+
+    /// <summary>
+    /// Logs and diagnostics. <c>$XDG_STATE_HOME/rail-narrator</c>; on Windows
+    /// <c>%LOCALAPPDATA%\rail-narrator\state</c>.
+    /// </summary>
+    public static string State => Override("XDG_STATE_HOME") is { } xdg ? Path.Combine(xdg, ApplicationId)
+        : OperatingSystem.IsWindows() ? Path.Combine(LocalAppData, ApplicationId, "state")
+        : Path.Combine(Home, ".local", "state", ApplicationId);
 
     public static string Models => Path.Combine(Data, "models");
 
     /// <summary>
-    /// Where RailReader2 keeps the layout models it downloads (<c>$XDG_CONFIG_HOME/railreader2/models</c>).
-    /// Read, never written: a reader who already has Heron for RailReader2 need not download it again.
+    /// Where RailReader2 keeps the layout models it downloads: Core's <c>AppConfig.ConfigDir</c>
+    /// (<c>$XDG_CONFIG_HOME/railreader2</c>, on Windows <c>%APPDATA%\railreader2</c>) plus
+    /// <c>models</c>. Read, never written: a reader who already has Heron for RailReader2 need not
+    /// download it again.
     /// </summary>
     public static string RailReader2Models => Path.Combine(
-        Base("XDG_CONFIG_HOME", Path.Combine(Home, ".config")), "railreader2", "models");
+        Override("XDG_CONFIG_HOME") ?? (OperatingSystem.IsWindows() ? RoamingAppData : Path.Combine(Home, ".config")),
+        "railreader2", "models");
     public static string SpeechCache => Path.Combine(Cache, "speech");
     public static string ExtractionCache => Path.Combine(Cache, "extraction");
     public static string Logs => Path.Combine(State, "logs");
 
     private static string Home
-        => Environment.GetEnvironmentVariable("HOME")
-           ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        => Override("HOME") ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
     /// <summary>Creates every directory the application needs. Safe to call repeatedly.</summary>
     public static void EnsureCreated()
@@ -436,7 +466,15 @@ public sealed class DiskSpeechAssetStore : ISpeechAssetStore
 
     public string Root => _root;
 
-    private string AssetDirectory(string assetId) => Path.Combine(_root, Bucket(assetId), assetId);
+    private string AssetDirectory(string assetId) => Path.Combine(_root, Bucket(assetId), DirectoryName(assetId));
+
+    /// <summary>
+    /// The folder an asset is kept in. An asset id is <c>rn1:&lt;hex&gt;</c>, and Windows does not allow a
+    /// colon in a file name (NTFS reads it as a stream name), so there it becomes an underscore.
+    /// Elsewhere the id is used as it is, which keeps the speech already cached on Linux.
+    /// </summary>
+    internal static string DirectoryName(string assetId)
+        => OperatingSystem.IsWindows() ? assetId.Replace(':', '_') : assetId;
     private string MetaPath(string assetId) => Path.Combine(AssetDirectory(assetId), "asset.json");
     private string PcmPath(string assetId) => Path.Combine(AssetDirectory(assetId), "audio.pcm");
 

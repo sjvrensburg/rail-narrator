@@ -182,6 +182,26 @@ binary launches under X11 and loads a PDF with no exceptions. Models are exclude
 by design. An AppImage is deliberately not built yet — the plain archive has not
 been through a clean-machine test.
 
+Windows (x64) is in progress and **not yet run on Windows**:
+
+```bash
+./packaging/build-windows.sh          # self-contained win-x64 folder and zip
+```
+
+On Windows (Git Bash, with CMake, MSVC and optionally cargo) it also builds PortAudio
+v19.7.0 from a pinned commit and Phonon's `ptts_ffi.dll`; on Linux it cross-publishes the
+.NET part only. The folder holds `rail-narrator.exe` and `rail-narrator-cli.exe`, the
+console program for `narrate` and `export`, which a GUI executable cannot serve on
+Windows. Settings go to `%APPDATA%\rail-narrator`, models and caches to
+`%LOCALAPPDATA%\rail-narrator`. `.github/workflows/windows.yml` builds, tests and packages
+it on a Windows runner. ffmpeg is never bundled on any platform: audiobook export runs the
+ffmpeg the reader installed (`winget install ffmpeg` on Windows), so its licence binds
+no one here. Word alignment (MFA) is Linux-only.
+
+Both archives carry Kokoro's voices (`voices/`, 54 voices, 27 MB, Apache-2.0); the
+Kokoro model is downloaded on approval as before. Before this, a release had no voices
+and Kokoro found them only in a developer's NuGet cache.
+
 ## Known limitations
 
 See `docs/status.md` for the full list. The headline items:

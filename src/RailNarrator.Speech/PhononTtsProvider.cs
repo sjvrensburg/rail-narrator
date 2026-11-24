@@ -6,7 +6,7 @@ using RailNarrator.Domain;
 namespace RailNarrator.Speech;
 
 /// <summary>Where Phonon is installed and how it should speak.</summary>
-/// <param name="LibraryPath">Gradium's C library, <c>libptts_ffi.so</c> (tools/setup-phonon.sh builds it).</param>
+/// <param name="LibraryPath">Gradium's C library, <see cref="PhononTtsProvider.LibraryFileName"/> (tools/setup-phonon.sh builds it).</param>
 /// <param name="ModelDirectory">The checkpoint folder: config.json, tokenizer.json, model.q8.gguf, voices/.</param>
 /// <param name="DefaultVoice">Spoken when the voice asked for is not installed.</param>
 /// <param name="Threads">CPU threads. 4 was as fast as 8 on the i7-12700H (ADR-0009).</param>
@@ -49,6 +49,13 @@ public sealed class PhononTtsProvider : ITtsProvider
 
     /// <summary>The voice a first run speaks in: Maeve, a British English adult voice.</summary>
     public const string DefaultVoice = "Maeve";
+
+    /// <summary>
+    /// The file cargo builds for Gradium's <c>ptts-ffi</c> crate on this platform: no <c>lib</c>
+    /// prefix on Windows.
+    /// </summary>
+    public static string LibraryFileName
+        => OperatingSystem.IsWindows() ? "ptts_ffi.dll" : OperatingSystem.IsMacOS() ? "libptts_ffi.dylib" : "libptts_ffi.so";
 
     public const int OutputSampleRate = 24000;
 
@@ -244,7 +251,6 @@ public sealed class PhononTtsProvider : ITtsProvider
         try
         {
             // The runtime reads its thread count from the environment once, when it first starts.
-            // .NET's Environment.SetEnvironmentVariable does not reach native getenv on Linux.
             if (Environment.GetEnvironmentVariable("RAYON_NUM_THREADS") is null)
                 Native.SetEnv("RAYON_NUM_THREADS", Math.Max(1, _settings.Threads).ToString());
             var native = new Native(_settings.LibraryPath);
@@ -484,6 +490,16 @@ public sealed class PhononTtsProvider : ITtsProvider
         [DllImport("libc", EntryPoint = "setenv")]
         private static extern int setenv(string name, string value, int overwrite);
 
-        public static void SetEnv(string name, string value) => setenv(name, value, 0);
+        /// <summary>
+        /// Sets a variable the native runtime will read. On Linux .NET keeps its own copy of the
+        /// environment, which native <c>getenv</c> never sees, so libc's <c>setenv</c> is called; on
+        /// Windows .NET writes the process environment itself, where Rust's <c>std::env</c> reads it,
+        /// and there is no libc to call.
+        /// </summary>
+        public static void SetEnv(string name, string value)
+        {
+            if (OperatingSystem.IsWindows()) Environment.SetEnvironmentVariable(name, value);
+            else setenv(name, value, 0);
+        }
     }
 }

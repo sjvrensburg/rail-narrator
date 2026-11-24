@@ -1,15 +1,59 @@
+using System.Reflection;
 using System.Runtime.InteropServices;
 using RailNarrator.Domain;
 
 namespace RailNarrator.Audio;
 
-/// <summary>PortAudio V19 ABI on Linux: C long/unsigned long are pointer-sized.</summary>
+/// <summary>
+/// PortAudio V19's C ABI. Every C <c>unsigned long</c> in it (sample format, frame counts, flags) is
+/// a <see cref="CULong"/>: eight bytes on 64-bit Linux, four on 64-bit Windows, so a fixed-width
+/// type is wrong on one of them.
+/// </summary>
 internal static class PortAudioNative
 {
-    private const string Library = "libportaudio.so.2";
-    public const nuint SampleFormatFloat32 = 1;
-    public const nuint SampleFormatInt16 = 8;
+    /// <summary>The name the imports use; <see cref="Resolve"/> turns it into the platform's file.</summary>
+    private const string Library = "portaudio";
+    public const ulong SampleFormatFloat32 = 1;
+    public const ulong SampleFormatInt16 = 8;
     public const int NoDevice = -1;
+    /// <summary><c>paWASAPI</c> in <c>PaHostApiTypeId</c>.</summary>
+    public const int HostApiWasapi = 13;
+    /// <summary><c>paWinWasapiAutoConvert</c>: the shared-mode mixer converts rate and channels.</summary>
+    public const uint WasapiAutoConvert = 1 << 6;
+
+    static PortAudioNative() => NativeLibrary.SetDllImportResolver(typeof(PortAudioNative).Assembly, Resolve);
+
+    /// <summary>Registers the resolver; the static constructor does the work, before any import runs.</summary>
+    public static void EnsureResolver() { }
+
+    /// <summary>
+    /// Linux has PortAudio as a system package (<c>libportaudio.so.2</c>); Windows has none, so a
+    /// release carries <c>portaudio.dll</c> beside the application, which is searched first. The
+    /// other Windows names are those of PortAudio's older CMake builds and of MSYS2.
+    /// </summary>
+    internal static IReadOnlyList<string> CandidateNames()
+        => OperatingSystem.IsWindows() ? ["portaudio.dll", "portaudio_x64.dll", "libportaudio.dll", "libportaudio-2.dll"]
+         : OperatingSystem.IsMacOS() ? ["libportaudio.2.dylib", "libportaudio.dylib"]
+         : ["libportaudio.so.2", "libportaudio.so"];
+
+    /// <summary>What to install when no PortAudio was found, for this platform.</summary>
+    public static string MissingLibraryMessage
+        => OperatingSystem.IsWindows()
+            ? "PortAudio (portaudio.dll) was not found beside the application, so there is no audio output. Reinstall Rail Narrator."
+            : "Install libportaudio.so.2 to enable audio output (Fedora: portaudio; Debian and Ubuntu: libportaudio2).";
+
+    private static nint Resolve(string name, Assembly assembly, DllImportSearchPath? searchPath)
+    {
+        if (name != Library) return 0;
+        foreach (string candidate in CandidateNames())
+        {
+            string beside = Path.Combine(AppContext.BaseDirectory, candidate);
+            if (File.Exists(beside) && NativeLibrary.TryLoad(beside, out nint local)) return local;
+            if (NativeLibrary.TryLoad(candidate, assembly, searchPath, out nint handle)) return handle;
+        }
+        return 0;   // the runtime then raises DllNotFoundException, which Initialise reports
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     public struct DeviceInfo
     {
@@ -20,12 +64,33 @@ internal static class PortAudioNative
         public double defaultHighInputLatency, defaultHighOutputLatency, defaultSampleRate;
     }
     [StructLayout(LayoutKind.Sequential)]
+    public struct HostApiInfo
+    {
+        public int structVersion, type;
+        public IntPtr name;
+        public int deviceCount, defaultInputDevice, defaultOutputDevice;
+    }
+    [StructLayout(LayoutKind.Sequential)]
     public struct StreamParameters
     {
         public int device, channelCount;
-        public nuint sampleFormat;
+        public CULong sampleFormat;
         public double suggestedLatency;
         public IntPtr hostApiSpecificStreamInfo;
+    }
+    /// <summary>
+    /// <c>PaWasapiStreamInfo</c> (pa_win_wasapi.h, version 1), used on Windows only, where C
+    /// <c>unsigned long</c> is four bytes. PortAudio accepts it only when <see cref="size"/> is its
+    /// own <c>sizeof</c>, 56 bytes on x64 (PortAudioAbiTests).
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    public struct WasapiStreamInfo
+    {
+        public uint size;
+        public int hostApiType;
+        public uint version, flags, channelMask;
+        public IntPtr hostProcessorOutput, hostProcessorInput;
+        public int threadPriority, streamCategory, streamOption;
     }
     [StructLayout(LayoutKind.Sequential)]
     public struct StreamInfo
@@ -36,23 +101,45 @@ internal static class PortAudioNative
     [StructLayout(LayoutKind.Sequential)]
     public struct CallbackTimes { public double inputBufferAdcTime, currentTime, outputBufferDacTime; }
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
-    public delegate int Callback(IntPtr input, IntPtr output, nuint frames, ref CallbackTimes times, nuint flags, IntPtr userData);
+    public delegate int Callback(IntPtr input, IntPtr output, CULong frames, ref CallbackTimes times, CULong flags, IntPtr userData);
     [DllImport(Library)] public static extern int Pa_Initialize();
     [DllImport(Library)] public static extern IntPtr Pa_GetVersionText();
     [DllImport(Library)] public static extern int Pa_GetDeviceCount();
     [DllImport(Library)] public static extern int Pa_GetDefaultOutputDevice();
     [DllImport(Library)] public static extern IntPtr Pa_GetDeviceInfo(int device);
+    [DllImport(Library)] public static extern int Pa_HostApiTypeIdToHostApiIndex(int type);
+    [DllImport(Library)] public static extern IntPtr Pa_GetHostApiInfo(int hostApi);
     [DllImport(Library)] public static extern IntPtr Pa_GetErrorText(int error);
     [DllImport(Library)] public static extern IntPtr Pa_GetStreamInfo(IntPtr stream);
     [DllImport(Library)] public static extern double Pa_GetStreamTime(IntPtr stream);
     [DllImport(Library)] public static extern int Pa_OpenStream(out IntPtr stream, IntPtr input,
-        ref StreamParameters output, double rate, nuint framesPerBuffer, nuint flags, Callback callback, IntPtr userData);
+        ref StreamParameters output, double rate, CULong framesPerBuffer, CULong flags, Callback callback, IntPtr userData);
     [DllImport(Library)] public static extern int Pa_StartStream(IntPtr stream);
     [DllImport(Library)] public static extern int Pa_AbortStream(IntPtr stream);
     [DllImport(Library)] public static extern int Pa_CloseStream(IntPtr stream);
     [DllImport(Library)] public static extern int Pa_IsStreamActive(IntPtr stream);
-    public static string Describe(int code) => Marshal.PtrToStringAnsi(Pa_GetErrorText(code)) ?? $"error {code}";
-    public static string? VersionText() => Marshal.PtrToStringAnsi(Pa_GetVersionText());
+    public static string Describe(int code) => Marshal.PtrToStringUTF8(Pa_GetErrorText(code)) ?? $"error {code}";
+    public static string? VersionText() => Marshal.PtrToStringUTF8(Pa_GetVersionText());
+
+    /// <summary>
+    /// The host API whose devices are offered, or null for all of them. On Windows that is WASAPI:
+    /// PortAudio lists every device once per host API (MME, DirectSound, WASAPI, WDM-KS), and its
+    /// default, MME, adds a large buffer of its own and reports no useful presentation time.
+    /// Elsewhere there is one host API worth using (ALSA, which PipeWire and PulseAudio serve).
+    /// </summary>
+    public static (int Index, int DefaultOutput)? PreferredHostApi()
+    {
+        if (!OperatingSystem.IsWindows()) return null;
+        int index = Pa_HostApiTypeIdToHostApiIndex(HostApiWasapi);
+        if (index < 0) return null;
+        IntPtr info = Pa_GetHostApiInfo(index);
+        if (info == IntPtr.Zero) return null;
+        return (index, Marshal.PtrToStructure<HostApiInfo>(info).defaultOutputDevice);
+    }
+
+    /// <summary>The default output of the preferred host API, else PortAudio's own default.</summary>
+    public static int DefaultOutputDevice()
+        => PreferredHostApi() is { DefaultOutput: >= 0 } host ? host.DefaultOutput : Pa_GetDefaultOutputDevice();
 }
 
 /// <summary>
@@ -109,30 +196,34 @@ public sealed class PortAudioOutputDevice : IAudioOutputDevice
             if (_initialised) return _initError;
             try
             {
+                PortAudioNative.EnsureResolver();
                 int rc;
                 using (NativeAudioChatter.Quiet()) rc = PortAudioNative.Pa_Initialize();
                 _initError = rc == 0 ? null : PortAudioNative.Describe(rc);
             }
-            catch (DllNotFoundException) { _initError = "Install libportaudio.so.2 to enable audio output."; }
+            catch (DllNotFoundException) { _initError = PortAudioNative.MissingLibraryMessage; }
             catch (EntryPointNotFoundException ex) { _initError = ex.Message; }
             _initialised = true;
             return _initError;
         }
     }
-    public static string? Version => PortAudioNative.VersionText();
+    public static string? Version => Initialise() is null ? PortAudioNative.VersionText() : null;
     public IReadOnlyList<AudioDeviceInfo> Enumerate()
     {
         if (Initialise() is not null) return [];
         var devices = new List<AudioDeviceInfo>();
-        int count = PortAudioNative.Pa_GetDeviceCount(), defaultId = PortAudioNative.Pa_GetDefaultOutputDevice();
+        var host = PortAudioNative.PreferredHostApi();
+        int count = PortAudioNative.Pa_GetDeviceCount(), defaultId = PortAudioNative.DefaultOutputDevice();
         for (int i = 0; i < count; i++)
         {
             var ptr = PortAudioNative.Pa_GetDeviceInfo(i);
             if (ptr == IntPtr.Zero) continue;
             var info = Marshal.PtrToStructure<PortAudioNative.DeviceInfo>(ptr);
             if (info.maxOutputChannels <= 0) continue;
+            if (host is { } preferred && info.hostApi != preferred.Index) continue;
+            // PortAudio gives device names in UTF-8 on every host API (WASAPI converts them).
             devices.Add(new AudioDeviceInfo(i.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                Marshal.PtrToStringAnsi(info.name) ?? $"Device {i}", i == defaultId,
+                Marshal.PtrToStringUTF8(info.name) ?? $"Device {i}", i == defaultId,
                 info.defaultSampleRate > 0 ? (int)info.defaultSampleRate : 44100, info.maxOutputChannels,
                 info.defaultLowOutputLatency > 0 ? info.defaultLowOutputLatency : null));
         }
@@ -146,19 +237,19 @@ public sealed class PortAudioOutputDevice : IAudioOutputDevice
         lock (_gate)
         {
             CloseCore();
-            int device = int.TryParse(deviceId, out int id) ? id : PortAudioNative.Pa_GetDefaultOutputDevice();
+            int device = int.TryParse(deviceId, out int id) ? id : PortAudioNative.DefaultOutputDevice();
             var ptr = PortAudioNative.Pa_GetDeviceInfo(device);
             if (ptr == IntPtr.Zero) throw new InvalidOperationException("No usable audio output device.");
             var info = Marshal.PtrToStructure<PortAudioNative.DeviceInfo>(ptr);
             var parameters = new PortAudioNative.StreamParameters
             {
                 device = device, channelCount = format.Channels,
-                sampleFormat = format.SampleFormat switch
+                sampleFormat = new CULong((nuint)(format.SampleFormat switch
                 {
                     SampleFormat.Float32LittleEndian => PortAudioNative.SampleFormatFloat32,
                     SampleFormat.Int16LittleEndian => PortAudioNative.SampleFormatInt16,
                     _ => throw new NotSupportedException("Unsupported output encoding."),
-                },
+                })),
                 suggestedLatency = Math.Max(MinimumStreamLatencySeconds, info.defaultHighOutputLatency),
             };
             _bytesPerFrame = format.BytesPerFrame;
@@ -168,14 +259,43 @@ public sealed class PortAudioOutputDevice : IAudioOutputDevice
             _written = _consumed = 0;
             _underflows = 0;
             _clock.Reset();
-            int rc = PortAudioNative.Pa_OpenStream(out var opened, IntPtr.Zero, ref parameters,
-                format.SampleRate, FramesPerBuffer, 0, _callback, IntPtr.Zero);
+            int rc = OpenStream(ref parameters, format.SampleRate, info.hostApi, out var opened);
             if (rc != 0) throw new InvalidOperationException("Cannot open audio: " + PortAudioNative.Describe(rc));
             _stream = opened;
             var streamInfo = PortAudioNative.Pa_GetStreamInfo(_stream);
             _outputLatency = streamInfo == IntPtr.Zero ? null : Marshal.PtrToStructure<PortAudioNative.StreamInfo>(streamInfo).outputLatency;
         }
     }
+    /// <summary>
+    /// Opens the stream. A WASAPI device is asked to let Windows' shared-mode mixer convert the
+    /// format: shared mode otherwise refuses any channel count or rate but the mixer's own. If
+    /// PortAudio rejects that request the stream is opened plainly.
+    /// </summary>
+    private int OpenStream(ref PortAudioNative.StreamParameters parameters, int sampleRate, int hostApi, out IntPtr opened)
+    {
+        var frames = new CULong((nuint)FramesPerBuffer);
+        if (OperatingSystem.IsWindows() && PortAudioNative.PreferredHostApi() is { } wasapi && wasapi.Index == hostApi)
+        {
+            var info = new PortAudioNative.WasapiStreamInfo
+            {
+                size = (uint)Marshal.SizeOf<PortAudioNative.WasapiStreamInfo>(),
+                hostApiType = PortAudioNative.HostApiWasapi,
+                version = 1,
+                flags = PortAudioNative.WasapiAutoConvert,
+            };
+            IntPtr block = Marshal.AllocHGlobal(Marshal.SizeOf<PortAudioNative.WasapiStreamInfo>());
+            try
+            {
+                Marshal.StructureToPtr(info, block, false);
+                var withInfo = parameters with { hostApiSpecificStreamInfo = block };
+                int rc = PortAudioNative.Pa_OpenStream(out opened, IntPtr.Zero, ref withInfo, sampleRate, frames, default, _callback, IntPtr.Zero);
+                if (rc == 0) return 0;
+            }
+            finally { Marshal.FreeHGlobal(block); }
+        }
+        return PortAudioNative.Pa_OpenStream(out opened, IntPtr.Zero, ref parameters, sampleRate, frames, default, _callback, IntPtr.Zero);
+    }
+
     public int BufferCapacityFrames => _capacityFrames;
     public int UnderflowCount => Volatile.Read(ref _underflows);
     public double? ReportedLatencySeconds { get { lock (_gate) return _outputLatency; } }
@@ -266,9 +386,9 @@ public sealed class PortAudioOutputDevice : IAudioOutputDevice
             Thread.Sleep(1);
         }
     }
-    private unsafe int Render(IntPtr input, IntPtr output, nuint frames, ref PortAudioNative.CallbackTimes times, nuint flags, IntPtr userData)
+    private unsafe int Render(IntPtr input, IntPtr output, CULong frames, ref PortAudioNative.CallbackTimes times, CULong flags, IntPtr userData)
     {
-        int frameCount = (int)frames;
+        int frameCount = (int)frames.Value;
         var destination = new Span<byte>((void*)output, frameCount * _bytesPerFrame);
         destination.Clear();
         long start = _consumed;
@@ -282,7 +402,7 @@ public sealed class PortAudioOutputDevice : IAudioOutputDevice
         }
         _clock.Record(times.outputBufferDacTime, start, count, _sampleRate);
         Interlocked.Exchange(ref _consumed, start + count);
-        if ((flags & 4) != 0) Interlocked.Increment(ref _underflows);
+        if ((flags.Value & 4) != 0) Interlocked.Increment(ref _underflows);   // paOutputUnderflow
         return 0;
     }
     public void Dispose()

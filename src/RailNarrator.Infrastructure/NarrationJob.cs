@@ -118,6 +118,17 @@ public sealed record AudiobookChapter(string Title, double StartSeconds);
 /// </summary>
 public static class AudiobookExporter
 {
+    /// <summary>
+    /// What to do when no ffmpeg was found. Rail Narrator never ships ffmpeg (it is a separate
+    /// program, installed by the reader, whose licence then binds no one here), so the message says
+    /// where this platform gets it.
+    /// </summary>
+    public static string MissingFfmpegMessage
+        => "Exporting an audiobook needs ffmpeg, which was not found on the PATH. Install it ("
+           + (OperatingSystem.IsWindows() ? "for example 'winget install ffmpeg', then open a new window"
+              : "Debian and Ubuntu: 'sudo apt install ffmpeg'; Fedora: 'sudo dnf install ffmpeg-free'")
+           + ") and try again.";
+
     /// <summary>The ffmpeg on the PATH, or null.</summary>
     public static string? FindFfmpeg()
     {
@@ -185,7 +196,7 @@ public static class AudiobookExporter
     {
         ArgumentNullException.ThrowIfNull(recording);
         string ffmpeg = ffmpegPath ?? FindFfmpeg()
-            ?? throw new InvalidOperationException("Exporting an audiobook needs ffmpeg, which was not found on the PATH. Install it (for example 'sudo apt install ffmpeg') and try again.");
+            ?? throw new InvalidOperationException(MissingFfmpegMessage);
         var plan = recording.Plan;
 
         // First pass: lengths, for the chapters, which ffmpeg wants before the audio. From what

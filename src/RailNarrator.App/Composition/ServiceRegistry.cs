@@ -70,8 +70,8 @@ public sealed class ServiceRegistry : IAsyncDisposable
     private static (string Library, string Model) PhononPaths(RailNarratorSettings settings)
     {
         string installed = Path.Combine(XdgPaths.Data, "phonon");
-        string beside = Path.Combine(AppContext.BaseDirectory, "libptts_ffi.so");
-        string library = settings.PhononLibraryPath ?? (File.Exists(beside) ? beside : Path.Combine(installed, "libptts_ffi.so"));
+        string beside = Path.Combine(AppContext.BaseDirectory, PhononTtsProvider.LibraryFileName);
+        string library = settings.PhononLibraryPath ?? (File.Exists(beside) ? beside : Path.Combine(installed, PhononTtsProvider.LibraryFileName));
         return (library, settings.PhononModelDirectory ?? Path.Combine(installed, "phonon-31m-en"));
     }
     public required IAudioOutputDevice AudioDevice { get; init; }
