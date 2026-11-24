@@ -694,24 +694,28 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     public async Task ApplyScriptEditAsync(string segmentId, string newSpokenText, CancellationToken ct = default)
     {
         ThrowIfDisposed();
-        if (_plan is null) return;
-        var segments = _plan.Segments.ToList();
-        int index = segments.FindIndex(s => s.Id == segmentId);
-        if (index < 0) return;
-
-        segments[index] = segments[index] with
+        // Built from the plan as it is under the lock: an interpretation resolved meanwhile (written
+        // under the same lock) is kept, not replaced by a copy taken before it arrived.
+        lock (_gate)
         {
-            SpokenText = newSpokenText,
-            Provenance = ScriptProvenance.UserEdited,
-            ScriptRevision = segments[index].ScriptRevision + 1,
-            SourceLinks = [new SourceLink(new TextRange(0, newSpokenText.Length), segments[index].AnchorIds)],
-        };
-        _plan = _plan with { Segments = segments };
+            if (_plan is not { } current) return;
+            var segments = current.Segments.ToList();
+            int index = segments.FindIndex(s => s.Id == segmentId);
+            if (index < 0) return;
+            segments[index] = segments[index] with
+            {
+                SpokenText = newSpokenText,
+                Provenance = ScriptProvenance.UserEdited,
+                ScriptRevision = segments[index].ScriptRevision + 1,
+                SourceLinks = [new SourceLink(new TextRange(0, newSpokenText.Length), segments[index].AnchorIds)],
+            };
+            _plan = current with { Segments = segments };
+        }
 
         long gen = AdvanceGeneration();
         lock (_gate)
         {
-            _scheduler = new CueScheduler(_plan);
+            _scheduler = new CueScheduler(_plan!);
             _prepared.Clear();
         }
         // A paused transport still holds the old wording. Play resumes a paused clip, so it must be
@@ -720,7 +724,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         // A queued clip may be the edited passage in its old words.
         else await _audio.ClearQueuedAsync(ct).ConfigureAwait(false);
         if (_assetStore is not null)
-            await _assetStore.InvalidateAsync(_plan.Header.Extraction.DocumentContentHash, ct).ConfigureAwait(false);
+            await _assetStore.InvalidateAsync(_plan!.Header.Extraction.DocumentContentHash, ct).ConfigureAwait(false);
         StartPreparation(gen);
         PublishSnapshotOnly();
     }

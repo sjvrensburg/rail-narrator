@@ -2375,7 +2375,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     /// </summary>
     private void AskToNarrateDocument()
     {
-        if (Plan is not { } plan || DocumentPath is null) return;
+        // The notice may be acted on after another document is opened: it narrates this one, to its own path.
+        if (Plan is not { } plan || DocumentPath is not { } documentPath) return;
         int maths = plan.Segments.Count(s => s.Provenance == ScriptProvenance.PendingInterpretation);
         string mathsNote = maths == 0 ? "" : _services.MathInterpreter is null
             ? $" {maths} maths passages will be read as notation: no maths model is set up."
@@ -2388,17 +2389,18 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         if (fellBack > 0 && _services.MathInterpreter is not null)
             mathsNote = $" {fellBack} maths passages were not interpreted in this reading and will be saved as they are (reload first to try again)." + mathsNote;
         ShowNotice($"Save a narration of all {plan.SegmentCount} passages?{mathsNote}",
-            "Narrate", () => _ = NarrateDocumentAsync(plan, DocumentPath));
+            "Narrate", () => _ = NarrateDocumentAsync(plan, documentPath));
     }
 
     private async Task NarrateDocumentAsync(NarrationPlan plan, string documentPath, bool allowUninterpreted = false)
     {
         if (_narration is not null) return;
+        // Worked out before the job is taken: nothing may throw between taking it and the finally that frees it.
+        string target = SavedNarration.PathFor(documentPath);
         using var cts = new CancellationTokenSource();
         _narration = cts;
         NarrateDocument.RaiseCanExecuteChanged();
         StopNarration.RaiseCanExecuteChanged();
-        string target = SavedNarration.PathFor(documentPath);
         long lastShown = 0;
         ShowNotice($"Narrating the document: starting ({plan.SegmentCount} passages).", "Stop", () => cts.Cancel());
         try

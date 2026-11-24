@@ -90,6 +90,35 @@ public sealed class DiskSpeechAssetStoreTests : IDisposable
 /// The two old follow modes became one. A settings file naming either must load as following, not
 /// fail and reset every other preference to its default.
 /// </summary>
+public sealed class SettingsStoreUnreadableTests : IDisposable
+{
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), "rn-settings-" + Guid.NewGuid().ToString("N"));
+
+    public void Dispose()
+    {
+        try { Directory.Delete(_dir, recursive: true); }
+        catch (DirectoryNotFoundException) { }
+    }
+
+    [Fact]
+    public void AFileThatIsNotSettingsIsSetAsideBeforeTheDefaultsAreSaved()
+    {
+        Directory.CreateDirectory(_dir);
+        string path = Path.Combine(_dir, "settings.json");
+        const string broken = "{ \"MathLlmApiKey\": \"sk-keep-me\", \"FollowMode\": \"Sideways\" ";
+        File.WriteAllText(path, broken);
+        var store = new RailNarrator.Infrastructure.SettingsStore(path);
+
+        var settings = store.Load();
+        store.Save(settings with { FitWidth = false });
+
+        string aside = Assert.Single(Directory.GetFiles(_dir, "settings.unreadable-*.json"));
+        Assert.Equal(broken, File.ReadAllText(aside));
+        Assert.Contains(Path.GetFileName(aside), store.LastError);
+        Assert.False(store.Load().FitWidth);
+    }
+}
+
 public sealed class SettingsStoreFollowModeTests : IDisposable
 {
     private readonly string _dir = Directory.CreateTempSubdirectory("rn-settings-").FullName;
