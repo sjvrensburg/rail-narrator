@@ -857,7 +857,8 @@ public sealed class PdfSurface : Control
         var point = e.GetPosition(this);
         var properties = e.GetCurrentPoint(this).Properties;
 
-        if (properties.IsLeftButtonPressed && _viewModel is { } vm && _source is not null)
+        // A stylus's eraser end erases in annotate mode, whichever tool is chosen.
+        if ((properties.IsLeftButtonPressed || properties.IsEraser) && _viewModel is { } vm && _source is not null)
         {
             // A note's icon, or the mark of a highlight's note, is the reader's own: a click there
             // opens it (a double click edits it) and does not start reading.
@@ -867,7 +868,7 @@ public sealed class PdfSurface : Control
                 && vm.ClickAnnotation(CurrentPage, notePageX, notePageY, e.ClickCount >= 2)) { e.Handled = true; return; }
 
             // Annotate mode: the left button marks text and selects; it never reads from there or pans.
-            if (vm.AnnotatePress(CurrentPage, notePageX, notePageY, e.ClickCount >= 2))
+            if (vm.AnnotatePress(CurrentPage, notePageX, notePageY, e.ClickCount >= 2, properties.IsEraser))
             {
                 _annotating = true;
                 e.Pointer.Capture(this);

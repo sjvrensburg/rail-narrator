@@ -595,6 +595,10 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     private MarkupDrag? _drag;
     private AnnotationMove? _move;
     private BoxDrag? _box;
+    private StrokeDrag? _stroke;
+    private StrokeResize? _resize;
+    private bool _erasing;
+    private AnnotationTool _boxTool;
     private (int Page, float X, float Y)? _pressedAt;
     private Dictionary<AnnotationTool, int>? _colourIndices;
 
@@ -625,7 +629,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             if (!Set(ref _tool, value)) return;
             foreach (var name in new[] { nameof(IsHighlightTool), nameof(IsUnderlineTool), nameof(IsStrikeOutTool),
                          nameof(IsSquigglyTool), nameof(IsSelectTool), nameof(IsTextNoteTool), nameof(IsFreeTextTool),
-                         nameof(IsTextMarkupTool), nameof(ActiveColourIndex), nameof(ActiveColour) })
+                         nameof(IsTextMarkupTool), nameof(IsPenTool), nameof(IsRectangleTool), nameof(IsEraserTool),
+                         nameof(HasThickness), nameof(ThicknessIndex), nameof(IsThin), nameof(IsNormalThickness), nameof(IsThick),
+                         nameof(ActiveColourIndex), nameof(ActiveColour) })
                 OnPropertyChanged(name);
         }
     }
@@ -637,6 +643,44 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public bool IsSelectTool => _tool == AnnotationTool.None;
     public bool IsTextNoteTool => _tool == AnnotationTool.TextNote;
     public bool IsFreeTextTool => _tool == AnnotationTool.FreeText;
+    public bool IsPenTool => _tool == AnnotationTool.Pen;
+    public bool IsRectangleTool => _tool == AnnotationTool.Rectangle;
+    public bool IsEraserTool => _tool == AnnotationTool.Eraser;
+
+    /// <summary>A tool that draws a line, and so has a thickness to choose.</summary>
+    public bool HasThickness => _tool is AnnotationTool.Pen or AnnotationTool.Rectangle;
+
+    private Dictionary<AnnotationTool, int>? _thicknessIndices;
+
+    /// <summary>The active tool's line thickness, 0 to 2 (thin, normal, thick).</summary>
+    public int ThicknessIndex => ThicknessIndexOf(_tool);
+
+    public bool IsThin => HasThickness && ThicknessIndex == 0;
+    public bool IsNormalThickness => HasThickness && ThicknessIndex == 1;
+    public bool IsThick => HasThickness && ThicknessIndex == 2;
+
+    private int ThicknessIndexOf(AnnotationTool tool)
+    {
+        _thicknessIndices ??= (_services.CurrentSettings.AnnotationThicknessIndices ?? new Dictionary<string, int>())
+            .Where(kv => Enum.TryParse<AnnotationTool>(kv.Key, out _) && kv.Value >= 0 && kv.Value < ReviewPalette.Thicknesses.Count)
+            .ToDictionary(kv => Enum.Parse<AnnotationTool>(kv.Key), kv => kv.Value);
+        return _thicknessIndices.TryGetValue(tool, out int index) ? index : 1;
+    }
+
+    private float WidthOf(AnnotationTool tool) => ReviewPalette.Thicknesses[ThicknessIndexOf(tool)];
+
+    public RelayCommand<string> ChooseThickness { get; private set; } = null!;
+
+    private void UseThickness(int index)
+    {
+        if (!HasThickness || index < 0 || index >= ReviewPalette.Thicknesses.Count) return;
+        ThicknessIndexOf(_tool);
+        _thicknessIndices![_tool] = index;
+        var indices = _thicknessIndices.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value);
+        PersistPreference(s => s with { AnnotationThicknessIndices = indices });
+        _services.CurrentSettings = _services.CurrentSettings with { AnnotationThicknessIndices = indices };
+        foreach (var name in new[] { nameof(ThicknessIndex), nameof(IsThin), nameof(IsNormalThickness), nameof(IsThick) }) OnPropertyChanged(name);
+    }
 
     /// <summary>A tool that marks text by dragging over it.</summary>
     public bool IsTextMarkupTool => RailReader.Core.AnnotationInteractionHandler.IsTextMarkupTool(_tool);
@@ -671,9 +715,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     }
 
     /// <summary>The markup being dragged, to draw; null when none.</summary>
-    public Annotation? MarkupPreview => (Annotation?)_drag?.Preview ?? _box?.Preview;
+    public Annotation? MarkupPreview => (Annotation?)_drag?.Preview ?? (Annotation?)_stroke?.Preview ?? _box?.Preview;
 
-    public int MarkupPreviewPage => _drag?.PageIndex ?? _box?.PageIndex ?? -1;
+    public int MarkupPreviewPage => _drag?.PageIndex ?? _stroke?.PageIndex ?? _box?.PageIndex ?? -1;
 
     public RelayCommand ToggleAnnotateMode { get; private set; } = null!;
     public RelayCommand<string> ChooseTool { get; private set; } = null!;
@@ -689,6 +733,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             AnnotateMode = true;
         });
         ChooseColour = new RelayCommand<PaletteColour>(colour => UseColour(colour.Index));
+        ChooseThickness = new RelayCommand<string>(index => { if (int.TryParse(index, out int i)) UseThickness(i); });
     }
 
     /// <summary>
@@ -721,12 +766,30 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     /// A left press on the page in annotate mode, in page points. True when it is taken (always, in
     /// annotate mode: a click there selects; it never reads from there).
     /// </summary>
-    public bool AnnotatePress(int pageIndex, double pageX, double pageY, bool doubleClick = false)
+    public bool AnnotatePress(int pageIndex, double pageX, double pageY, bool doubleClick = false, bool eraserTip = false)
     {
         if (!_annotateMode || _session is null) return false;
         CancelAnnotateDrag();
         float x = (float)pageX, y = (float)pageY;
         _pressedAt = (pageIndex, x, y);
+        // The eraser, or a stylus turned to its eraser end whatever the tool: what it touches goes.
+        if (_tool == AnnotationTool.Eraser || eraserTip)
+        {
+            _erasing = true;
+            EraseAt(pageIndex, x, y);
+            return true;
+        }
+        if (_tool == AnnotationTool.Pen)
+        {
+            _stroke = new StrokeDrag(pageIndex, x, y, ReviewPalette.Hex(ColourIndexOf(_tool)), ReviewPalette.OpacityFor(_tool), WidthOf(_tool));
+            return true;
+        }
+        if (_tool == AnnotationTool.None && _session.Selected is FreehandAnnotation selectedStroke
+            && _session.PageOf(selectedStroke) == pageIndex && StrokeResize.Begin(selectedStroke, x, y) is { } resize)
+        {
+            _resize = resize;   // a handle of the selected stroke: stretch it
+            return true;
+        }
         if (_tool == AnnotationTool.None)
         {
             // Select: a press on an annotation selects it, and a drag moves a note, a text box or a
@@ -738,8 +801,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             _move = AnnotationMove.Begin(hit, x, y);
             return true;
         }
-        if (_tool == AnnotationTool.FreeText)
+        if (_tool is AnnotationTool.FreeText or AnnotationTool.Rectangle)
         {
+            _boxTool = _tool;
             _box = new BoxDrag(pageIndex, x, y, ReviewPalette.Hex(ColourIndexOf(_tool)));
             return true;
         }
@@ -756,6 +820,23 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public void AnnotateMove(double pageX, double pageY)
     {
         float x = (float)pageX, y = (float)pageY;
+        if (_erasing)
+        {
+            if (_pressedAt is { } at) EraseAt(at.Page, x, y);
+            return;
+        }
+        if (_resize is { } resize)
+        {
+            resize.To(x, y);
+            if (resize.Resized) _review?.MarkViewChanged();
+            return;
+        }
+        if (_stroke is { } stroke)
+        {
+            stroke.To(x, y);
+            InvalidateSurface?.Invoke();
+            return;
+        }
         if (_move is { } move)
         {
             move.To(x, y);
@@ -780,11 +861,45 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         var pressed = _pressedAt;
         var move = _move;
         var box = _box;
+        var stroke = _stroke;
+        var resize = _resize;
+        bool erasing = _erasing;
         _drag = null;
         _move = null;
         _box = null;
+        _stroke = null;
+        _resize = null;
+        _erasing = false;
         _pressedAt = null;
         if (_session is null) return;
+        if (erasing) return;
+        if (resize is not null)
+        {
+            _session.Resized(resize);
+            return;
+        }
+        if (stroke is not null)
+        {
+            if (stroke.IsStroke)
+            {
+                _session.Author = Author;
+                _session.AddStroke(stroke.PageIndex, stroke.Points, stroke.Colour, stroke.Width, stroke.Opacity);
+            }
+            InvalidateSurface?.Invoke();
+            return;
+        }
+        if (box is not null && _boxTool == AnnotationTool.Rectangle)
+        {
+            if (box.IsBox)
+            {
+                var (rx, ry, rw, rh) = box.Box;
+                _session.Author = Author;
+                _session.AddRectangle(box.PageIndex, rx, ry, rw, rh, ReviewPalette.Hex(ColourIndexOf(AnnotationTool.Rectangle)),
+                    WidthOf(AnnotationTool.Rectangle));
+            }
+            InvalidateSurface?.Invoke();
+            return;
+        }
         if (move is not null)
         {
             _session.Moved(move);
@@ -816,15 +931,23 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     public void CancelAnnotateDrag()
     {
-        bool had = _drag is not null || _box is not null;
+        bool had = _drag is not null || _box is not null || _stroke is not null;
         if (_move is { Moved: true } move)
         {
             move.Cancel();
             _review?.MarkViewChanged();
         }
+        if (_resize is { Resized: true } resize)
+        {
+            resize.Cancel();
+            _review?.MarkViewChanged();
+        }
         _drag = null;
         _move = null;
         _box = null;
+        _stroke = null;
+        _resize = null;
+        _erasing = false;
         _pressedAt = null;
         if (had) InvalidateSurface?.Invoke();
     }
@@ -837,6 +960,14 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         _session.Selected = hit;
         if (hit is not null)
             StatusMessage = "Selected. A colour (1 to 5) recolours it, N writes its note, Delete removes it.";
+    }
+
+    /// <summary>Removes the annotation under a page point (and the others made with it), each one undoable.</summary>
+    private void EraseAt(int pageIndex, float x, float y)
+    {
+        if (_session is null || AnnotationAt(pageIndex, x, y) is not { } hit) return;
+        _session.Delete(hit);
+        StatusMessage = "Erased. Ctrl+Z brings it back.";
     }
 
     /// <summary>The topmost annotation under a page point: notes over drawings over markup, as drawn.</summary>
@@ -1093,6 +1224,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         _drag = null;
         _move = null;
         _box = null;
+        _stroke = null;
+        _resize = null;
+        _erasing = false;
         _pressedAt = null;
         OnPropertyChanged(nameof(AnnotateMode));
         _pageText = null;

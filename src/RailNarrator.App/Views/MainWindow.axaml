@@ -125,6 +125,9 @@
           <MenuItem Header="S_quiggle" ToggleType="Radio" IsChecked="{Binding IsSquigglyTool, Mode=OneWay}" Command="{Binding ChooseTool}" CommandParameter="Squiggly" />
           <MenuItem Header="Sticky _note" ToggleType="Radio" IsChecked="{Binding IsTextNoteTool, Mode=OneWay}" Command="{Binding ChooseTool}" CommandParameter="TextNote" />
           <MenuItem Header="Te_xt box" ToggleType="Radio" IsChecked="{Binding IsFreeTextTool, Mode=OneWay}" Command="{Binding ChooseTool}" CommandParameter="FreeText" />
+          <MenuItem Header="_Pen" ToggleType="Radio" IsChecked="{Binding IsPenTool, Mode=OneWay}" Command="{Binding ChooseTool}" CommandParameter="Pen" />
+          <MenuItem Header="_Box" ToggleType="Radio" IsChecked="{Binding IsRectangleTool, Mode=OneWay}" Command="{Binding ChooseTool}" CommandParameter="Rectangle" />
+          <MenuItem Header="E_raser" ToggleType="Radio" IsChecked="{Binding IsEraserTool, Mode=OneWay}" Command="{Binding ChooseTool}" CommandParameter="Eraser" />
           <MenuItem Header="S_elect" ToggleType="Radio" IsChecked="{Binding IsSelectTool, Mode=OneWay}" Command="{Binding ChooseTool}" CommandParameter="None" />
         </MenuItem>
       </MenuItem>
@@ -262,6 +265,12 @@
                     Content="Note" ToolTip.Tip="Click anywhere on the page to put a sticky note there" />
             <Button Classes="toolBtn" Classes.active="{Binding IsFreeTextTool}" Command="{Binding ChooseTool}" CommandParameter="FreeText"
                     Content="Text box" ToolTip.Tip="Drag out a box (or click) and write in it on the page" />
+            <Button Classes="toolBtn" Classes.active="{Binding IsPenTool}" Command="{Binding ChooseTool}" CommandParameter="Pen"
+                    Content="Pen" ToolTip.Tip="Draw freehand on the page" />
+            <Button Classes="toolBtn" Classes.active="{Binding IsRectangleTool}" Command="{Binding ChooseTool}" CommandParameter="Rectangle"
+                    Content="Box" ToolTip.Tip="Drag out a rectangle round a figure, a table or an equation" />
+            <Button Classes="toolBtn" Classes.active="{Binding IsEraserTool}" Command="{Binding ChooseTool}" CommandParameter="Eraser"
+                    Content="Eraser" ToolTip.Tip="Click or drag over annotations to remove them (Ctrl+Z brings them back); a stylus's eraser end does the same" />
             <Button Classes="toolBtn" Classes.active="{Binding IsSelectTool}" Command="{Binding ChooseTool}" CommandParameter="None"
                     Content="Select" ToolTip.Tip="Click an annotation to select it, drag a note or text box to move it, double-click to edit; 1–5 recolour, Delete removes" />
             <ItemsControl ItemsSource="{Binding Palette}" VerticalAlignment="Center" Margin="6,0,0,0">
@@ -278,6 +287,20 @@
               </ItemsControl.ItemTemplate>
             </ItemsControl>
             <TextBlock Text="{Binding ActiveColour.Name}" VerticalAlignment="Center" Margin="6,0,0,0" Classes="secondary" />
+            <StackPanel Orientation="Horizontal" Spacing="2" IsVisible="{Binding HasThickness}" Margin="8,0,0,0" VerticalAlignment="Center">
+              <Button Classes="toolBtn" Classes.active="{Binding IsThin}" Command="{Binding ChooseThickness}" CommandParameter="0"
+                      ToolTip.Tip="Thin line" AutomationProperties.Name="Thin line">
+                <Border Width="18" Height="1" Background="{DynamicResource SystemControlForegroundBaseHighBrush}" />
+              </Button>
+              <Button Classes="toolBtn" Classes.active="{Binding IsNormalThickness}" Command="{Binding ChooseThickness}" CommandParameter="1"
+                      ToolTip.Tip="Normal line" AutomationProperties.Name="Normal line">
+                <Border Width="18" Height="2" Background="{DynamicResource SystemControlForegroundBaseHighBrush}" />
+              </Button>
+              <Button Classes="toolBtn" Classes.active="{Binding IsThick}" Command="{Binding ChooseThickness}" CommandParameter="2"
+                      ToolTip.Tip="Thick line" AutomationProperties.Name="Thick line">
+                <Border Width="18" Height="4" Background="{DynamicResource SystemControlForegroundBaseHighBrush}" />
+              </Button>
+            </StackPanel>
           </StackPanel>
 
           <Border Classes="toolSep" />

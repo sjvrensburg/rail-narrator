@@ -34,6 +34,8 @@ public partial class ShortcutsDialog : Window
             ("Escape", "Leave annotate mode"),
             ("Middle drag", "Pan the page, in annotate mode too"),
             ("Drag (Select tool)", "Move a sticky note, a text box or a drawing; double-click to edit its words"),
+            ("Drag a handle (Select tool)", "Stretch the selected pen stroke"),
+            ("Stylus eraser end", "In annotate mode: erase what it touches, whichever tool is chosen"),
         ]),
         ("Following", [
             ("Ctrl+F", "Follow the reading on or off"),

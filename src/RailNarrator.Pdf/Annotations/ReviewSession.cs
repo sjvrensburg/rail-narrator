@@ -138,6 +138,37 @@ public sealed class ReviewSession
         Apply(new Step([new MoveAnnotationAction(move.Annotation, move.Before, after), new TouchAction(move.Annotation, _now())], [], []));
     }
 
+    /// <summary>Core's opacities for a pen stroke and a rectangle.</summary>
+    public const float PenOpacity = 0.8f, RectangleOpacity = 0.5f;
+
+    /// <summary>A pen stroke through the given points.</summary>
+    public FreehandAnnotation AddStroke(int pageIndex, IEnumerable<PointF> points, string colour, float width, float opacity = PenOpacity)
+    {
+        var stroke = Stamp(new FreehandAnnotation { Points = [.. points], Color = colour, StrokeWidth = width, Opacity = opacity });
+        if (stroke.Points.Count < 2) throw new ArgumentException("A stroke needs two points or more.", nameof(points));
+        Apply(new Step([new AddAnnotationAction(pageIndex, stroke)], [], []));
+        Selected = stroke;
+        return stroke;
+    }
+
+    /// <summary>A rectangle drawn round something (unfilled).</summary>
+    public RectAnnotation AddRectangle(int pageIndex, float x, float y, float width, float height, string colour, float strokeWidth,
+        float opacity = RectangleOpacity)
+    {
+        var box = Stamp(new RectAnnotation { X = x, Y = y, W = width, H = height, Color = colour, StrokeWidth = strokeWidth, Opacity = opacity });
+        Apply(new Step([new AddAnnotationAction(pageIndex, box)], [], []));
+        Selected = box;
+        return box;
+    }
+
+    /// <summary>Records a resize already made on the page (<see cref="StrokeResize"/>) as one undoable step.</summary>
+    public void Resized(StrokeResize resize)
+    {
+        ArgumentNullException.ThrowIfNull(resize);
+        if (!resize.Resized) return;
+        Apply(new Step([new ResizeFreehandAction(resize.Stroke, resize.Before, [.. resize.Stroke.Points]), new TouchAction(resize.Stroke, _now())], [], []));
+    }
+
     private T Stamp<T>(T annotation) where T : Annotation
     {
         annotation.NativeId = Guid.NewGuid().ToString();

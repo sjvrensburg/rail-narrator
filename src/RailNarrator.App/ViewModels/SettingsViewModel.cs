@@ -634,6 +634,7 @@ public sealed class SettingsViewModel : ViewModelBase
             AnnotationAuthor = null,
             AnnotationColourNames = null,
             AnnotationColourIndices = null,
+            AnnotationThicknessIndices = null,
         });
 
     private static string? Blank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
