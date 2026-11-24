@@ -97,7 +97,8 @@ Not reused:
     compared by letters and digits only, lower-cased, ligatures spelled out, so line-end hyphens,
     spacing and punctuation the text layer disagrees about do not matter. Where the words occur
     more than once, an occurrence on word boundaries wins, then the nearest to where the note was
-    (page, then height). The mark gets the new character boxes and the passage that reads them now;
+    (page, then height); a quote under 12 letters must be found once (among whole-word
+    occurrences, if any), or it waits as not placed. The mark gets the new character boxes and the passage that reads them now;
   - keeps everything else as **not placed**: a mark whose words are gone, and a sticky note, text
     box, drawing or imported mark, which quotes no text. Nothing is placed by position or by a near
     match. A text is looked for first among the characters the narration reads (so a page
@@ -110,6 +111,9 @@ Not reused:
     when the notes placed from that page all agree, else the same page number. *Place as before*
     puts it, with its replies, at the same coordinates there (the reader's choice, never
     automatic), and refuses when that page is not in this version. *Discard* drops it.
+  - carries a reply with the note it answers (placed with it, or waiting with it), never as a
+    note of its own; records each version notes were brought from (`BroughtFrom`), so the same
+    version is never brought twice and a chosen PDF does not close the earlier version's offer;
   - gives every copy an id of its own (and its replies and group the matching ids), so the same
     note brought to a document twice is two annotations, never two under one /NM.
   Bringing notes over, placing one and discarding one are undoable steps. The earlier version is

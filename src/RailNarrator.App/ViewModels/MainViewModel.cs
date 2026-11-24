@@ -684,7 +684,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     {
         BringEarlierNotes = new RelayCommand(
             async () => { if (_review?.Earlier is { CarriedUtc: null } e) await BringNotesFromAsync(e.DocumentContentHash, null); },
-            () => _review?.Earlier is { CarriedUtc: null } && _snapshot is not null && !_carrying && !Busy, OnCommandError);
+            () => _review is { Earlier: { CarriedUtc: null } e } r && !r.BroughtFrom.Contains(e.DocumentContentHash) && _snapshot is not null && !_carrying && !Busy, OnCommandError);
         BringNotesFromFile = new RelayCommand(BringNotesFromFileAsync, () => _session is not null && _snapshot is not null && !_carrying && !Busy, OnCommandError);
         PlaceAsBefore = new RelayCommand<ReviewNoteItem>(item =>
         {
@@ -754,7 +754,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     private async Task BringNotesFromAsync(string hash, string? name)
     {
         if (_review is not { } review) return;
-        if (review.Earlier is { CarriedUtc: not null } e && e.DocumentContentHash == hash)
+        if (review.BroughtFrom.Contains(hash))
         {
             ShowNotice("The notes on that version were brought over already. Ctrl+Z undoes it, if it was the last change.");
             return;
@@ -768,7 +768,10 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         }
         if (ReviewCarryOver.CountNotes(loaded.Document) == 0)
         {
-            ShowNotice(name is null ? "The earlier version has no notes to bring over." : $"No notes are kept for {name}.");
+            ShowNotice(name is null
+                ? "The earlier version has no notes to bring over."
+                : $"No notes are kept for {name}. Notes are kept for the versions you annotated here; an annotated copy exported "
+                  + "from one is another file (open it to see its annotations, read-only).");
             return;
         }
         await BringNotesAsync(loaded.Document, hash, review);
@@ -786,7 +789,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             return;
         }
         if (_session is not { } session || _review is not { } review || _snapshot is not { } snapshot || _carrying) return;
-        if (review.Earlier is { CarriedUtc: not null } e && e.DocumentContentHash == hash) return;
+        if (review.BroughtFrom.Contains(hash)) return;
         _carrying = true;
         RefreshRevisionCommands();
         try
@@ -2992,6 +2995,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     private void RefreshCommands()
     {
+        // Busy is among their conditions too: a document's offer is set up while it is still loading.
+        RefreshRevisionCommands();
+        RefreshExportCommands();
         Play.RaiseCanExecuteChanged();
         Pause.RaiseCanExecuteChanged();
         PlayPause.RaiseCanExecuteChanged();

@@ -401,6 +401,40 @@ public sealed class InterpretationTests
         await WaitUntil(() => tts.Requests.Any(r => r.Text == "Second wording of the passage."), "the regenerated wording to be synthesised");
     }
 
+    [Fact]
+    public async Task AnEditMadeWhileTheModelIsAskedAgainStands()
+    {
+        var plan = await PlanAsync(Interpret);
+        bool regenerating = false;
+        using var asked = new ManualResetEventSlim();
+        using var answer = new ManualResetEventSlim();
+        var interpreter = new FakeInterpreter(_ =>
+        {
+            if (!Volatile.Read(ref regenerating)) return new MathInterpretationResult("First wording of the passage.", [], []);
+            asked.Set();
+            answer.Wait(TimeSpan.FromSeconds(10));
+            return new MathInterpretationResult("Second wording of the passage.", [], []);
+        });
+        await using var coordinator = new NarrationCoordinator(new FakeTtsProvider(), new FakeAudioTransport(),
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 3, LookaheadSeconds: 0),
+            resolver: new MathInterpretationResolver(interpreter, options: Interpret));
+        await coordinator.LoadPlanAsync(plan);
+        // Every passage interpreted first: the model is asked next by the regeneration and nothing else.
+        await WaitUntil(() => coordinator.Plan?.Segments.All(s => s.Provenance != ScriptProvenance.PendingInterpretation) == true,
+            "every interpretation");
+
+        string id = plan.Segments[1].Id;
+        Volatile.Write(ref regenerating, true);
+        var regeneration = Task.Run(() => coordinator.RegenerateSegmentAsync(id));
+        Assert.True(asked.Wait(TimeSpan.FromSeconds(10)), "the model was not asked again");
+        await coordinator.ApplyScriptEditAsync(id, "The reader's own wording.");
+        answer.Set();
+        var result = await regeneration;
+
+        Assert.Equal("The reader's own wording.", coordinator.Plan!.Segment(id)!.SpokenText);
+        Assert.Equal(ScriptProvenance.UserEdited, result?.Provenance);
+    }
+
     private static IReadOnlyList<ReadingUnit> LeadInUnits(string leadIn)
     {
         var a0 = SyntheticNarration.Anchor("b0", 0, new PageRect(72, 100, 500, 112));

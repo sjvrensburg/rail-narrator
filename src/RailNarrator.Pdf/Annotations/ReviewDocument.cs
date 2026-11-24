@@ -57,6 +57,9 @@ public sealed record EarlierVersion(string DocumentContentHash)
     public DateTimeOffset? CarriedUtc { get; init; }
 }
 
+/// <summary>What <c>earlier.json</c> holds: the earlier version at this path, and every version notes were brought from.</summary>
+public sealed record EarlierRecord(EarlierVersion? Earlier, IReadOnlyList<string> BroughtFrom);
+
 /// <summary>What <c>unplaced-links.json</c> holds: the links of the notes not placed, and each one's page in the earlier version.</summary>
 public sealed record UnplacedState(IReadOnlyList<ReviewLink> Links, IReadOnlyDictionary<string, int> EarlierPages);
 
@@ -71,7 +74,7 @@ public sealed class ReviewDocument
 {
     public ReviewDocument(string documentContentHash, string? sourcePath, AnnotationFile? file = null,
         IEnumerable<ReviewLink>? links = null, EarlierVersion? earlier = null, AnnotationFile? unplaced = null,
-        UnplacedState? unplacedState = null)
+        UnplacedState? unplacedState = null, IEnumerable<string>? broughtFrom = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(documentContentHash);
         DocumentContentHash = documentContentHash;
@@ -80,6 +83,7 @@ public sealed class ReviewDocument
         Links = links?.ToDictionary(l => l.NativeId, StringComparer.Ordinal) ?? new(StringComparer.Ordinal);
         Earlier = earlier;
         Unplaced = unplaced ?? new AnnotationFile();
+        BroughtFrom = broughtFrom?.ToHashSet(StringComparer.Ordinal) ?? new(StringComparer.Ordinal);
         UnplacedLinks = unplacedState?.Links.ToDictionary(l => l.NativeId, StringComparer.Ordinal) ?? new(StringComparer.Ordinal);
         UnplacedEarlierPages = unplacedState?.EarlierPages.ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal)
             ?? new(StringComparer.Ordinal);
@@ -87,6 +91,12 @@ public sealed class ReviewDocument
 
     /// <summary>The earlier version of this file whose notes may be (or were) brought over; null when there is none.</summary>
     public EarlierVersion? Earlier { get; set; }
+
+    /// <summary>
+    /// The versions (by content hash) whose notes have been brought to this document: the earlier
+    /// version at this path, or any PDF the reader chose. Notes are never brought from one twice.
+    /// </summary>
+    public HashSet<string> BroughtFrom { get; }
 
     /// <summary>
     /// Notes brought from an earlier version that could not be placed on this one (their text is not
@@ -241,16 +251,21 @@ public static class ReviewAnnotationJson
         return clone;
     }
 
-    public static string SerializeEarlier(EarlierVersion earlier)
-        => JsonSerializer.Serialize(new EarlierFile(1, earlier.DocumentContentHash, earlier.CarriedUtc), LinkFormat);
+    public static string SerializeEarlier(EarlierVersion? earlier, IEnumerable<string> broughtFrom)
+        => JsonSerializer.Serialize(new EarlierFile(2, earlier?.DocumentContentHash, earlier?.CarriedUtc, [.. broughtFrom.Order()]), LinkFormat);
 
     /// <summary>Null when <paramref name="json"/> is not an earlier-version file.</summary>
-    public static EarlierVersion? DeserializeEarlier(string json)
+    public static EarlierRecord? DeserializeEarlier(string json)
     {
         try
         {
             var file = JsonSerializer.Deserialize<EarlierFile>(json, LinkFormat);
-            return file is null || string.IsNullOrEmpty(file.Hash) ? null : new EarlierVersion(file.Hash) { CarriedUtc = file.CarriedUtc };
+            if (file is null) return null;
+            var earlier = string.IsNullOrEmpty(file.Hash) ? null : new EarlierVersion(file.Hash) { CarriedUtc = file.CarriedUtc };
+            var brought = file.BroughtFrom ?? [];
+            // Written before the set was kept: the earlier version brought over is one of them.
+            if (earlier is { CarriedUtc: not null } && !brought.Contains(earlier.DocumentContentHash)) brought.Add(earlier.DocumentContentHash);
+            return earlier is null && brought.Count == 0 ? null : new EarlierRecord(earlier, brought);
         }
         catch (JsonException) { return null; }
         catch (NotSupportedException) { return null; }
@@ -274,7 +289,7 @@ public static class ReviewAnnotationJson
 
     private sealed record LinkFile(int Version, List<ReviewLink> Links);
 
-    private sealed record EarlierFile(int Version, string Hash, DateTimeOffset? CarriedUtc);
+    private sealed record EarlierFile(int Version, string? Hash, DateTimeOffset? CarriedUtc, List<string>? BroughtFrom);
 
     private sealed record UnplacedFile(int Version, List<ReviewLink> Links, Dictionary<string, int>? EarlierPages);
 }

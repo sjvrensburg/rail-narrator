@@ -65,6 +65,8 @@ Since PR #10:
 
 ## Recently landed
 
+- **Second review's fixes** (`fix/review-findings-carry-over-ux`): carry-over no longer places a short quote found more than once, marks a caption inside a quoted sentence, leaves replies unlisted, or lets a chosen PDF close the earlier version's offer; the Bring notes menu items are refreshed after a load. In the coordinator, a regeneration no longer overwrites an edit made while the model was asked (a test holds it), and a script edit overtaken by another document no longer clears that document's cached audio. A settings file read once in error no longer blocks saving for the rest of the session.
+
 - **Fixes from a review of the whole code base** (`fix/review-findings-narration-settings-script-edit`): the save-narration notice now narrates the document it was shown for, even after another is opened (it took the open one's path, writing one document's narration over another's), and a failure before the job started no longer leaves Stop narration on a disposed token; a settings file that cannot be parsed is set aside, and one that cannot be read is not saved over, instead of the defaults replacing endpoints and keys at the first zoom; a script correction is applied to the plan under the coordinator's lock, so an interpretation resolved meanwhile is not dropped. The first is checked by reading the code (the App has no tests), the third by the existing coordinator suite only.
 
 - **Four reports narrated to audiobooks** (`fix/gui-test-findings`, `status.md` item 99): 248

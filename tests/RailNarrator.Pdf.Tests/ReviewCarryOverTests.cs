@@ -356,4 +356,87 @@ public sealed class ReviewCarryOverTests : IDisposable
         session.Undo();
         Assert.Equal([head, answer], document.Unplaced.Pages[3]);
     }
+
+    [Fact]
+    public void AReplyGoesWithTheNoteItAnswers_AndIsNotANoteOfItsOwn()
+    {
+        var (v1, plan1) = Version([First, Third]);
+        var earlier = new ReviewDocument(EarlierHash, null);
+        var before = new ReviewSession(earlier);
+        var placedNote = before.Highlight(Sentence(v1, plan1, "u0-0"), "Under which conditions?");
+        var cutNote = before.Highlight(Sentence(v1, plan1, "u0-1"), "Why drop them?");
+        earlier.File.Pages[0].Add(new TextNoteAnnotation { NativeId = "r1", X = 1, Y = 1, Text = "Agreed.", InReplyTo = placedNote.NativeId });
+        earlier.File.Pages[0].Add(new TextNoteAnnotation { NativeId = "r2", X = 1, Y = 1, Text = "Me too.", InReplyTo = cutNote.NativeId });
+        Assert.Equal(2, ReviewCarryOver.CountNotes(earlier));
+        var (v2, plan2) = Version([First]);
+
+        var carried = ReviewCarryOver.Match(earlier, plan2, v2);
+
+        Assert.Equal((1, 1), (carried.NotesPlaced, carried.NotesUnplaced));
+        var highlight = carried.Placed.Single(p => p.Annotation is HighlightAnnotation).Annotation;
+        Assert.Equal(highlight.NativeId, carried.Placed.Single(p => p.Annotation is TextNoteAnnotation).Annotation.InReplyTo);
+        var waiting = carried.Unplaced.Pages[0];
+        Assert.Equal(waiting.Single(a => a is HighlightAnnotation).NativeId, waiting.Single(a => a is TextNoteAnnotation).InReplyTo);
+    }
+
+    [Fact]
+    public void AShortQuoteFoundMoreThanOnceIsNotPlaced_ALongOneIs()
+    {
+        var (v1, plan1) = Version([First, Second]);
+        var earlier = new ReviewDocument(EarlierHash, null);
+        var before = new ReviewSession(earlier);
+        before.Markup(Words(v1, plan1, 0, "is"), AnnotationTool.Underline, "Which is?", "#00A000", 1f);
+        before.Markup(Words(v1, plan1, 0, "variance is bounded"), AnnotationTool.Highlight, "Proof?", "#FFFF00", 0.35f);
+
+        // "is" is a word three times in the revision; "variance is bounded" once.
+        var (v2, plan2) = Version(["This is new.", First, Second]);
+        var carried = ReviewCarryOver.Match(earlier, plan2, v2);
+
+        Assert.Equal("Proof?", Assert.Single(carried.Placed).Annotation.Contents);
+        Assert.Equal("Which is?", carried.Unplaced.Pages[0].Single().Contents);
+    }
+
+    [Fact]
+    public void TextTheNarrationDoesNotReadInsideAQuoteIsNotMarked()
+    {
+        // A caption between the two halves of a sentence on one page.
+        var page = Page(0, [new LineSpec("The estimator is", 100), new LineSpec("Figure 1: residuals.", 120), new LineSpec("consistent.", 140)]);
+        var v = new ExtractionSnapshot(new ExtractionIdentity("deadbeefcafebabe", 1), CoordinateFrameId.DisplayedPagePoints(),
+            ExtractionOptions.ModelFree, [page]);
+        var unit = new ReadingUnit("u0", ReadingUnitKind.Prose,
+            [Anchor("a0", 0, page.Lines[0].Rect, page.Lines[0].Text), Anchor("a1", 0, page.Lines[2].Rect, page.Lines[2].Text)],
+            "The estimator is consistent.", null, "", "", [], 0);
+        var plan = Plan([unit]);
+        var earlier = new ReviewDocument(EarlierHash, null);
+        new ReviewSession(earlier).Highlight(ReviewTarget.Find(plan, v, new PageTextCache(v), "s00000", ["a0"], false)!, "Proof?");
+
+        var carried = ReviewCarryOver.Match(earlier, plan, v);
+
+        var placed = (HighlightAnnotation)Assert.Single(carried.Placed).Annotation;
+        Assert.Equal([100f, 140f], placed.Rects.Select(r => r.Y));
+        Assert.Equal(2, Assert.Single(carried.PlacedLinks).Ranges.Count);
+    }
+
+    [Fact]
+    public async Task NotesFromAChosenPdfLeaveTheEarlierVersionsOfferStanding_AndAreRemembered()
+    {
+        var store = new ReviewAnnotationStore(_root);
+        var (v1, plan1) = Version([First]);
+        var other = new ReviewDocument("3333", null);
+        new ReviewSession(other).Highlight(Sentence(v1, plan1, "u0-0"), "From a copy.");
+
+        var document = new ReviewDocument(RevisedHash, null) { Earlier = new EarlierVersion(EarlierHash) };
+        var session = new ReviewSession(document);
+        session.CarryOver(ReviewCarryOver.Match(other, plan1, v1), "3333");
+
+        Assert.Null(document.Earlier!.CarriedUtc);
+        Assert.Equal(["3333"], document.BroughtFrom);
+        await store.SaveAsync(document);
+        var again = store.Load(RevisedHash, null).Document;
+        Assert.Equal((EarlierHash, (DateTimeOffset?)null), (again.Earlier!.DocumentContentHash, again.Earlier.CarriedUtc));
+        Assert.Equal(["3333"], again.BroughtFrom);
+
+        session.Undo();
+        Assert.Empty(document.BroughtFrom);
+    }
 }

@@ -76,7 +76,11 @@ public static class ReviewCarryOver
         var waiting = new List<(Group Group, bool Own)>();
         int notesPlaced = 0;
         var moved = new Dictionary<int, HashSet<int>>();
+        // Replies go where the note they answer goes, and are not notes of their own.
+        var replies = Replies(earlier.File).Select(r => (r.Page, r.Annotation, Own: true))
+            .Concat(Replies(earlier.Unplaced).Select(r => (r.Page, r.Annotation, Own: false))).ToList();
         var ownGroups = Groups(earlier.File, earlier.Links).ToList();
+        var placedAt = new Dictionary<string, int>(StringComparer.Ordinal);   // an earlier id placed → its page now
         // Copies get ids of their own: the same note brought to a document twice (from two versions
         // that both carry it) must not be two annotations under one /NM, which links are keyed by.
         var ids = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -107,7 +111,11 @@ public static class ReviewCarryOver
                 if (key.Length == 0 || stream is null) continue;
                 if (stream.Find(key, head.Page, oldTop, pages) is { } start) { ranges = stream.Ranges(start, start + key.Length); break; }
             }
-            var boxes = ranges.Select(r => (Range: r, Rects: pages.For(r.PageIndex)?.Rects(new TextRange(r.Start, r.Length)) ?? []))
+            // One annotation per page, boxed over each of its ranges there (a range per stretch of
+            // text the quote covers: text the narration does not read between them is not marked).
+            var boxes = ranges.GroupBy(r => r.PageIndex)
+                .Select(g => (Page: g.Key, Ranges: g.ToList(),
+                    Rects: g.SelectMany(r => pages.For(r.PageIndex)?.Rects(new TextRange(r.Start, r.Length)) ?? []).ToList()))
                 .Where(x => x.Rects.Count > 0).ToList();
 
             if (boxes.Count == 0 || link is null)
@@ -116,7 +124,7 @@ public static class ReviewCarryOver
                 continue;
             }
 
-            var first = boxes[0].Range;
+            var first = boxes[0].Ranges[0];
             var (segmentId, unitId) = ReviewTarget.Locate(plan, first.PageIndex, first.Start, first.Start + first.Length);
             // A note on a whole passage stays on the whole passage; one on a sentence or a range, on the sentence there now.
             if (!link.ByHand && link.UnitId is null) unitId = null;
@@ -130,10 +138,12 @@ public static class ReviewCarryOver
                 copy.Source = AnnotationSource.RailReader;
                 copy.Rects = [.. boxes[i].Rects];
                 groupId ??= boxes.Count > 1 ? copy.NativeId : null;
-                placed.Add(new PagedAnnotation(boxes[i].Range.PageIndex, copy));
+                placed.Add(new PagedAnnotation(boxes[i].Page, copy));
                 placedLinks.Add(new ReviewLink(copy.NativeId, segmentId, unitId, snapshot.Identity.ExtractionRevision,
-                    [boxes[i].Range], link.QuotedText, link.CreatedUtc) { GroupId = groupId, ByHand = link.ByHand });
+                    boxes[i].Ranges, link.QuotedText, link.CreatedUtc) { GroupId = groupId, ByHand = link.ByHand });
             }
+            foreach (var member in group.Members)
+                if (member.Annotation.NativeId is { } old) placedAt[old] = boxes[0].Page;
             notesPlaced++;
             // Pages of the earlier version only: a note it had not placed itself is by a still earlier one's page.
             if (own)
@@ -161,6 +171,28 @@ public static class ReviewCarryOver
                 if (member.Annotation.NativeId is { } old && group.Links.TryGetValue(old, out var l))
                     unplacedLinks.Add(l with { NativeId = copy.NativeId!, GroupId = l.GroupId is { } g ? NewId(g) : null });
             }
+        // A reply follows its thread's first note: onto the page it was placed on, else into the
+        // notes not placed beside it (Place as before and Discard take it along).
+        var parentOf = replies.Where(r => r.Annotation.NativeId is not null)
+            .ToDictionary(r => r.Annotation.NativeId!, r => r.Annotation.InReplyTo!, StringComparer.Ordinal);
+        string Root(string id)
+        {
+            for (int guard = 0; guard < 64 && parentOf.TryGetValue(id, out var up); guard++) id = up;
+            return id;
+        }
+        foreach (var (page, reply, _) in replies)
+        {
+            var copy = Copy(reply);
+            if (placedAt.TryGetValue(Root(reply.InReplyTo!), out int there))
+            {
+                placed.Add(new PagedAnnotation(there, copy));
+                continue;
+            }
+            int now = pageMap.TryGetValue(page, out int mapped) ? mapped : page;
+            if (!unplaced.Pages.TryGetValue(now, out var list)) unplaced.Pages[now] = list = [];
+            list.Add(copy);
+            earlierPages[copy.NativeId!] = page;
+        }
         return new CarriedNotes(placed, placedLinks, unplaced, unplacedLinks, notesPlaced, waiting.Count, pageMap, earlierPages);
     }
 
@@ -183,7 +215,10 @@ public static class ReviewCarryOver
         return (page, offset) => masks.TryGetValue(page, out var mask) && offset < mask.Length && mask[offset];
     }
 
-    /// <summary>How many notes a document has: a mark across a page break is one, and notes not placed count too.</summary>
+    /// <summary>
+    /// How many notes a document has: a mark across a page break is one, a reply is part of the
+    /// note it answers, and notes not placed count too.
+    /// </summary>
     public static int CountNotes(ReviewDocument document)
     {
         ArgumentNullException.ThrowIfNull(document);
@@ -192,14 +227,25 @@ public static class ReviewCarryOver
 
     private sealed record Group(IReadOnlyList<PagedAnnotation> Members, ReviewLink? Link, IReadOnlyDictionary<string, ReviewLink> Links);
 
-    /// <summary>The annotations made as one, in page order, each with its head's link.</summary>
+    /// <summary>The annotations that answer another in the same file (a thread's replies), with their pages.</summary>
+    private static List<PagedAnnotation> Replies(AnnotationFile file)
+    {
+        var ids = file.Pages.Values.SelectMany(p => p).Select(a => a.NativeId).OfType<string>().ToHashSet(StringComparer.Ordinal);
+        return file.Pages.OrderBy(p => p.Key)
+            .SelectMany(p => p.Value.Where(a => a.InReplyTo is { } parent && ids.Contains(parent)).Select(a => new PagedAnnotation(p.Key, a)))
+            .ToList();
+    }
+
+    /// <summary>The annotations made as one, in page order, each with its head's link; replies are not among them.</summary>
     private static IEnumerable<Group> Groups(AnnotationFile file, IReadOnlyDictionary<string, ReviewLink> links)
     {
+        var replies = Replies(file).Select(r => r.Annotation).ToHashSet(ReferenceEqualityComparer.Instance);
         var groups = new List<(string? Key, List<PagedAnnotation> Members)>();
         var byKey = new Dictionary<string, List<PagedAnnotation>>(StringComparer.Ordinal);
         foreach (var (page, list) in file.Pages.OrderBy(p => p.Key))
             foreach (var annotation in list)
             {
+                if (replies.Contains(annotation)) continue;
                 var link = annotation.NativeId is { } id && links.TryGetValue(id, out var l) ? l : null;
                 string? key = link?.GroupId;
                 if (key is not null && byKey.TryGetValue(key, out var members)) { members.Add(new PagedAnnotation(page, annotation)); continue; }
@@ -223,15 +269,22 @@ public static class ReviewCarryOver
     {
         private readonly string _letters;
         private readonly int[] _page, _offset;
-        private readonly bool[] _wordStart;
+        private readonly bool[] _wordStart, _gapBefore;
 
-        private DocumentLetters(string letters, int[] page, int[] offset, bool[] wordStart)
+        private DocumentLetters(string letters, int[] page, int[] offset, bool[] wordStart, bool[] gapBefore)
         {
             _letters = letters;
             _page = page;
             _offset = offset;
             _wordStart = wordStart;
+            _gapBefore = gapBefore;
         }
+
+        /// <summary>
+        /// Below this many letters, a quote found more than once is not placed: "x", "1" or "the"
+        /// is found again near where it was whether or not the words it was on are still there.
+        /// </summary>
+        public const int Unambiguous = 12;
 
         public static string KeyOf(string quote)
         {
@@ -248,14 +301,20 @@ public static class ReviewCarryOver
             var page = new List<int>();
             var offset = new List<int>();
             var wordStart = new List<bool>();
+            var gapBefore = new List<bool>();
             foreach (var p in snapshot.Pages.OrderBy(p => p.PageIndex))
             {
                 string text = p.Text;
-                bool inWord = false;
+                bool inWord = false, skippedInk = false;
                 for (int i = 0; i < text.Length; i++)
                 {
                     char c = text[i];
-                    if (keep is not null && !keep(p.PageIndex, i)) { inWord = false; continue; }
+                    if (keep is not null && !keep(p.PageIndex, i))
+                    {
+                        inWord = false;
+                        skippedInk |= char.IsLetterOrDigit(c) || PageQuote.IsUnmapped(c);
+                        continue;
+                    }
                     if (char.IsLetterOrDigit(c)) Emit(char.ToLowerInvariant(c).ToString(), i);
                     else if (PageQuote.IsUnmapped(c) && !PageQuote.IsLineEndHyphen(text, i)
                              && ligatures.TryGetValue(c, out var spelled) && PageQuote.InsideAWord(text, i))
@@ -275,36 +334,48 @@ public static class ReviewCarryOver
                             page.Add(p.PageIndex);
                             offset.Add(at);
                             wordStart.Add(!inWord);
+                            gapBefore.Add(skippedInk);
+                            skippedInk = false;
                             inWord = true;
                         }
                     }
                 }
             }
-            return new DocumentLetters(sb.ToString(), [.. page], [.. offset], [.. wordStart]);
+            return new DocumentLetters(sb.ToString(), [.. page], [.. offset], [.. wordStart], [.. gapBefore]);
         }
 
         /// <summary>
         /// The occurrence of <paramref name="key"/> to place a note on: on word boundaries if any
-        /// is, then the nearest to where it was. Null when the words are not in this version.
+        /// is, then the nearest to where it was. Null when the words are not in this version, or
+        /// when a short quote is found more than once (among the occurrences on word boundaries,
+        /// if there are any): which one it was on would be a guess.
         /// </summary>
         public int? Find(string key, int oldPage, float oldTop, PageTextCache pages)
         {
             int? best = null;
             (int Aligned, int Pages, float Height) bestScore = (int.MaxValue, int.MaxValue, float.MaxValue);
+            int alignedCount = 0, count = 0;
             for (int at = _letters.IndexOf(key, StringComparison.Ordinal); at >= 0;
                  at = at + 1 < _letters.Length ? _letters.IndexOf(key, at + 1, StringComparison.Ordinal) : -1)
             {
                 int end = at + key.Length;
                 bool aligned = _wordStart[at] && (end == _letters.Length || _wordStart[end]);
+                count++;
+                if (aligned) alignedCount++;
                 float top = pages.For(_page[at]) is { } index && _offset[at] < index.Text.CharBoxes.Count
                     ? index.Text.CharBoxes[_offset[at]].Top : 0;
                 var score = (aligned ? 0 : 1, Math.Abs(_page[at] - oldPage), Math.Abs(top - oldTop));
                 if (score.CompareTo(bestScore) < 0) { bestScore = score; best = at; }
             }
+            if (key.Length < Unambiguous && (alignedCount > 0 ? alignedCount : count) > 1) return null;
             return best;
         }
 
-        /// <summary>The page text the letters from <paramref name="start"/> to <paramref name="end"/> came from, per page.</summary>
+        /// <summary>
+        /// The page text the letters from <paramref name="start"/> to <paramref name="end"/> came
+        /// from: a range per page, split where text left out of this stream (a caption, a footer)
+        /// lies between two letters, so that text is not marked with them.
+        /// </summary>
         public IReadOnlyList<LinkedRange> Ranges(int start, int end)
         {
             var ranges = new List<LinkedRange>();
@@ -312,7 +383,7 @@ public static class ReviewCarryOver
             while (k < end)
             {
                 int page = _page[k], first = _offset[k], last = _offset[k];
-                for (; k < end && _page[k] == page; k++)
+                for (k++; k < end && _page[k] == page && !_gapBefore[k]; k++)
                 {
                     first = Math.Min(first, _offset[k]);
                     last = Math.Max(last, _offset[k]);

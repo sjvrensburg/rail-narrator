@@ -339,8 +339,10 @@ public sealed class SettingsStore
         {
             try
             {
-                if (!File.Exists(_path)) return RailNarratorSettings.Default;
+                if (!File.Exists(_path)) { _saveBlocked = false; return RailNarratorSettings.Default; }
                 var loaded = JsonSerializer.Deserialize<RailNarratorSettings>(File.ReadAllText(_path), Options);
+                // Read after all (a read that failed once, a file set aside): saving may go on.
+                _saveBlocked = false;
                 // A hand-edited or truncated file must not stop the application starting; the defaults
                 // are usable and the corruption is reported rather than hidden.
                 return loaded ?? RailNarratorSettings.Default;
