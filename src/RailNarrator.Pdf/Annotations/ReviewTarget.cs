@@ -138,8 +138,19 @@ public sealed record ReviewTarget(
             page.Rects.AddRange(boxes);
         }
 
+        // Anchors may be as small as a word. Joined into one band per line, as the narration's own
+        // highlight draws the passage (HighlightLines.Passage): a gutter, or a word of the passage
+        // that is not in the target, is never bridged.
+        var segmentBoxes = units.SelectMany(u => u.Anchors).ToList();
         var pages = byPage.Where(p => p.Value.Rects.Count > 0)
-            .Select(p => new ReviewTargetPage(p.Key, p.Value.Rects, p.Value.Ranges)).ToList();
+            .Select(p =>
+            {
+                var own = p.Value.Rects.Select(r => new PageRect(r.X, r.Y, r.X + r.W, r.Y + r.H)).ToList();
+                var context = segmentBoxes.Where(a => a.PageIndex == p.Key).SelectMany(a => a.Rects).Concat(own).ToList();
+                var joined = HighlightLines.Passage(own, context)
+                    .Select(r => new HighlightRect(r.Left, r.Top, r.Width, r.Height)).ToList();
+                return new ReviewTargetPage(p.Key, joined, p.Value.Ranges);
+            }).ToList();
         if (pages.Count == 0) return null;
         string quoted = string.Join(" ", chosen.Select(QuoteOf).Where(t => t.Length > 0));
         return new ReviewTarget(segment.Id, sentence?.Id, pages, quoted, snapshot.Identity.ExtractionRevision);

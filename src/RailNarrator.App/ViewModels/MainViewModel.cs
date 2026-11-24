@@ -1252,6 +1252,17 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         if (reason is not null) StatusMessage = reason;
     }
 
+    /// <summary>
+    /// The document is being left (closed, another opened, the application quit) with the note card
+    /// open: what the reader wrote is kept, as Enter would keep it. An empty card is simply closed.
+    /// </summary>
+    private void KeepDraftOnLeaving()
+    {
+        if (_draft is null) return;
+        if (!string.IsNullOrWhiteSpace(NoteEditorText)) CommitNote(resume: false);
+        else CloseNoteEditor();
+    }
+
     private void CommitNote(bool resume)
     {
         if (_draft is not { } draft || _session is null) return;
@@ -1603,6 +1614,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         if (!HasDocument || IsLoading) return;
         _pendingStartSegmentId = null;
         await SavePositionAsync();
+        KeepDraftOnLeaving();
         await FlushReviewAsync();
         await Coordinator.StopAsync();
         DetachReview();
@@ -1995,6 +2007,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         {
             // The document being replaced keeps its place, even if the new one fails to open.
             await SavePositionAsync();
+            KeepDraftOnLeaving();
             await FlushReviewAsync();
             await Coordinator.StopAsync();
 
@@ -2858,6 +2871,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             kokoro.FellBackToCpu -= OnKokoroFellBack;
         }
         await SavePositionAsync();
+        KeepDraftOnLeaving();
         DetachReview();
         await FlushReviewAsync();
     }

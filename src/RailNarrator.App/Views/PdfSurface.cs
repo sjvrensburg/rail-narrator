@@ -870,6 +870,10 @@ public sealed class PdfSurface : Control
             // Annotate mode: the left button marks text and selects; it never reads from there or pans.
             if (vm.AnnotatePress(CurrentPage, notePageX, notePageY, e.ClickCount >= 2, properties.IsEraser))
             {
+                // Marking the page while it is read: the camera holds still under the pointer (and
+                // resumes as after browsing), or a drag would slide with the reading.
+                CancelGlide();
+                vm.NotifyManualNavigation();
                 _annotating = true;
                 e.Pointer.Capture(this);
                 e.Handled = true;
