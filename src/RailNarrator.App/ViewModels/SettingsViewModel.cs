@@ -631,6 +631,7 @@ public sealed class SettingsViewModel : ViewModelBase
             SidebarSection = "Outline",
             ShowAnnotations = true,
             ExpandAllNotes = false,
+            ShowPdfAnnotations = true,
             AnnotationAuthor = null,
             AnnotationColourNames = null,
             AnnotationColourIndices = null,

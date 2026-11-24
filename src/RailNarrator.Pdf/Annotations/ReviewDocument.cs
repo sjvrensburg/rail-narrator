@@ -90,6 +90,31 @@ public sealed class ReviewDocument
     public IReadOnlyList<Annotation> PageAnnotations(int pageIndex)
         => File.Pages.TryGetValue(pageIndex, out var list) ? list : [];
 
+    private Dictionary<int, List<Annotation>> _fromPdf = [];
+
+    /// <summary>
+    /// Annotations the PDF itself carries (a co-reviewer's comments, say), shown read-only. They are
+    /// never saved into this document's file and never edited here; an exported copy keeps them
+    /// because it is written from the PDF's own bytes.
+    /// </summary>
+    public IReadOnlyList<Annotation> PdfAnnotations(int pageIndex)
+        => _fromPdf.TryGetValue(pageIndex, out var list) ? list : [];
+
+    /// <summary>Every page that has annotations the PDF itself carries.</summary>
+    public IEnumerable<(int Page, IReadOnlyList<Annotation> Annotations)> AllPdfAnnotations
+        => _fromPdf.OrderBy(p => p.Key).Select(p => (p.Key, (IReadOnlyList<Annotation>)p.Value));
+
+    /// <summary>True for an annotation the PDF itself carries, which is not this document's to change.</summary>
+    public bool IsFromPdf(Annotation annotation)
+        => _fromPdf.Values.Any(list => list.Any(a => ReferenceEquals(a, annotation)));
+
+    /// <summary>Shows the PDF's own annotations (or none). A change of view: nothing is saved.</summary>
+    public void SetPdfAnnotations(AnnotationFile? file)
+    {
+        _fromPdf = file?.Pages.Where(p => p.Value.Count > 0).ToDictionary(p => p.Key, p => p.Value) ?? [];
+        MarkViewChanged();
+    }
+
     public void MarkChanged()
     {
         Version++;

@@ -84,7 +84,8 @@ public sealed class AnnotationLayer
         }
         if (_pages.TryGetValue(pageIndex, out var cached) && cached.Version == _document.Version) return cached;
 
-        var live = _document.PageAnnotations(pageIndex);
+        // The PDF's own annotations first, under the reader's.
+        var live = _document.PdfAnnotations(pageIndex).Concat(_document.PageAnnotations(pageIndex)).ToList();
         var copies = new List<Annotation>(live.Count);
         Annotation? selectedCopy = null;
         foreach (var annotation in live)

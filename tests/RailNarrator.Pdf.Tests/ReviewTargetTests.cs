@@ -70,10 +70,42 @@ public sealed class ReviewTargetTests
         Assert.Equal(Line1, target.QuotedText);
         var page = Assert.Single(target.Pages);
         var box = Assert.Single(page.Rects);
-        // Line 1 is at y = 120; the box is over its glyphs, padded a point either side.
-        Assert.Equal(120, box.Y);
+        // Line 1's glyphs are at y = 120; the band takes its line's top from the anchors' line box,
+        // which starts a point higher, as the narration's highlight does.
+        Assert.Equal(119, box.Y);
         Assert.Equal(LeftMargin - 1, box.X);
         Assert.Equal([new LinkedRange(0, Line0.Length + 1, Line1.Length)], page.Ranges);
+    }
+
+    [Fact]
+    public void WordSizedAnchorsAreJoinedIntoOneBandPerLine_NotAcrossAWordOfAnotherSentence()
+    {
+        // As a real paper's plan has them: a sentence's anchors one per word.
+        var page = Page(0, [new LineSpec("Alpha beta gamma. Delta epsilon.", 100), new LineSpec("Zeta eta.", 120)]);
+        var snapshot = new ExtractionSnapshot(Identity, CoordinateFrameId.DisplayedPagePoints(), ExtractionOptions.ModelFree, [page]);
+        SourceAnchor Word(string id, string word, int from = 0)
+        {
+            int start = page.Text.IndexOf(word, from, StringComparison.Ordinal);
+            var first = page.Chars.First(c => c.Index == start).Rect;
+            var last = page.Chars.First(c => c.Index == start + word.Length - 1).Rect;
+            return Anchor(id, 0, new PageRect(first.Left, first.Top, last.Right, last.Bottom), new TextRange(start, word.Length));
+        }
+        var first = new ReadingUnit("u0", ReadingUnitKind.Prose,
+            [Word("w0", "Alpha"), Word("w1", "beta"), Word("w2", "gamma.")], "Alpha beta gamma.", null, "", "", [], 0);
+        var second = new ReadingUnit("u1", ReadingUnitKind.Prose,
+            [Word("w3", "Delta"), Word("w4", "epsilon."), Word("w5", "Zeta"), Word("w6", "eta.")], "Delta epsilon. Zeta eta.", null, "", "", [], 0);
+        NarrationSegment Seg(string id, params ReadingUnit[] u) => new(id, u.Select(x => x.Id).ToList(), ReadingUnitKind.Prose, "x", "en-GB",
+            [new SourceLink(new TextRange(0, 1), u.SelectMany(x => x.AnchorIds).ToList())], MathMode.Interpret, ScriptProvenance.SourceVerbatim, [], 1);
+        var plan = new NarrationPlan(new NarrationPlanHeader("p", Identity, "en-GB", MathMode.Interpret, NarrationVersions.MathPrompt, null,
+            NarrationFilterSettings.Default), [first, second], [Seg("s0", first, second)]);
+
+        var sentence = ReviewTarget.Find(plan, snapshot, new PageTextCache(snapshot), "s0", ["w1"], wholePassage: false)!;
+        var band = Assert.Single(sentence.Pages.Single().Rects);
+        Assert.True(band.X < LeftMargin && band.X + band.W < page.Chars.First(c => c.Index == page.Text.IndexOf("Delta", StringComparison.Ordinal)).Rect.Left,
+            "one band from Alpha to gamma., not reaching Delta");
+
+        var passage = ReviewTarget.Find(plan, snapshot, new PageTextCache(snapshot), "s0", null, wholePassage: true)!;
+        Assert.Equal(2, passage.Pages.Single().Rects.Count);   // one band per line
     }
 
     [Fact]
@@ -83,7 +115,7 @@ public sealed class ReviewTargetTests
         {
             Assert.Null(target.UnitId);
             Assert.Equal(Line0 + " " + Line1, target.QuotedText);
-            Assert.Equal([100f, 120f], Assert.Single(target.Pages).Rects.Select(r => r.Y));
+            Assert.Equal([99f, 119f], Assert.Single(target.Pages).Rects.Select(r => r.Y));
         }
     }
 
@@ -93,8 +125,8 @@ public sealed class ReviewTargetTests
         var target = Find("s1", ["a2"]);
 
         Assert.Equal([0, 1], target.Pages.Select(p => p.PageIndex));
-        Assert.Equal(700, Assert.Single(target.Pages[0].Rects).Y);
-        Assert.Equal(80, Assert.Single(target.Pages[1].Rects).Y);
+        Assert.Equal(699, Assert.Single(target.Pages[0].Rects).Y);
+        Assert.Equal(79, Assert.Single(target.Pages[1].Rects).Y);
         Assert.Equal(Line2 + " " + Over, target.QuotedText);
     }
 

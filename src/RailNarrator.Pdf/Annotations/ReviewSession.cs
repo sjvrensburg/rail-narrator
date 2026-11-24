@@ -1,5 +1,6 @@
 using RailReader.Core;
 using RailReader.Core.Models;
+using RailReader.Core.Services;
 
 namespace RailNarrator.Pdf.Annotations;
 
@@ -167,6 +168,41 @@ public sealed class ReviewSession
         ArgumentNullException.ThrowIfNull(resize);
         if (!resize.Resized) return;
         Apply(new Step([new ResizeFreehandAction(resize.Stroke, resize.Before, [.. resize.Stroke.Points]), new TouchAction(resize.Stroke, _now())], [], []));
+    }
+
+    /// <summary>
+    /// Adds annotations exported from RailReader2 (or from here), skipping any this document
+    /// already has (Core's <c>MergeInto</c> with <c>skipEquivalent</c>: the same /NM on the same page,
+    /// or the same annotation by content), as one undoable step.
+    /// </summary>
+    /// <returns>How many were added and how many were already here.</returns>
+    public (int Added, int Skipped) Import(AnnotationFile imported)
+    {
+        ArgumentNullException.ThrowIfNull(imported);
+        int offered = imported.Pages.Values.Sum(p => p.Count);
+        // Merged into copies of what is here, so the ones that are new can be told apart and added
+        // with Core's undo actions rather than by the merge itself.
+        var scratch = new AnnotationFile();
+        var copies = new HashSet<Annotation>(ReferenceEqualityComparer.Instance);
+        foreach (var (page, list) in Document.File.Pages)
+        {
+            var copy = list.Select(ReviewAnnotationJson.Clone).ToList();
+            foreach (var c in copy) copies.Add(c);
+            scratch.Pages[page] = copy;
+        }
+        AnnotationService.MergeInto(scratch, imported, skipEquivalent: true);
+
+        var added = new List<IUndoAction>();
+        foreach (var (page, list) in scratch.Pages.OrderBy(p => p.Key))
+            foreach (var annotation in list.Where(a => !copies.Contains(a)))
+            {
+                annotation.NativeId ??= Guid.NewGuid().ToString();
+                // Ours now: written into an exported copy like any annotation made here.
+                annotation.Source = AnnotationSource.RailReader;
+                added.Add(new AddAnnotationAction(page, annotation));
+            }
+        if (added.Count > 0) Apply(new Step(added, [], []));
+        return (added.Count, offered - added.Count);
     }
 
     private T Stamp<T>(T annotation) where T : Annotation

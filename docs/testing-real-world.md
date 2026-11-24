@@ -73,6 +73,14 @@ server. The model's `inference.yml` is looked for beside it as `<name>_inference
 
 ## Driving the GUI without taking over the desktop
 
+- **A file dialog escapes the nested compositor.** Avalonia asks xdg-desktop-portal on the
+  *session* D-Bus for Open and Save dialogs, and the portal draws them on the real desktop. For a
+  test that opens one, launch the application under `dbus-run-session -- env …`: with no portal on
+  its private bus, Avalonia shows its GTK dialog inside the nested display.
+- **A PDF that already carries annotations**: `railmark paper.pdf --apply-markup plan.json -o
+  reviewed.pdf` writes native highlights, underlines, strikeouts, squiggles and notes (underlines
+  and squiggles as 2-point strips at the baseline, as some other tools write them).
+
 - **Display.** Run the app in a second, headless compositor so the real pointer is left alone:
   `WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 labwc -C <empty dir> -s "sh -c 'env | grep DISPLAY > env.sh'"`,
   then `wlr-randr --output HEADLESS-1 --custom-mode 1920x1080`. The app runs under Xwayland, so

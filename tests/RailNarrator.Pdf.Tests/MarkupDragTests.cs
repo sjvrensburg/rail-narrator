@@ -129,6 +129,24 @@ public sealed class MarkupDragTests
     }
 
     [Fact]
+    public void TheWordsUnderAMarkupsBoxesAreItsQuote()
+    {
+        var page = Index();
+        // "estimator" on the first line (columns 4 to 12) and "Its" on the second (0 to 2).
+        var rects = new[]
+        {
+            new HighlightRect(LeftMargin + 4 * 5.5f - 1, 99, 9 * 5.5f + 2, 12),
+            new HighlightRect(LeftMargin - 1, 119, 3 * 5.5f + 2, 12),
+        };
+        Assert.Equal("estimator Its", PageQuote.UnderRects(page, rects, new Dictionary<char, string>()));
+        // An underline written as a thin strip at the baseline (railmark, Acrobat) quotes the same words;
+        // a full-height box never reaches the line above, 10 points of leading away.
+        Assert.Equal("estimator", PageQuote.UnderRects(page, [new HighlightRect(LeftMargin + 4 * 5.5f - 1, 109.5f, 9 * 5.5f + 2, 2)], new Dictionary<char, string>()));
+        Assert.Equal("Its", PageQuote.UnderRects(page, [new HighlightRect(LeftMargin - 1, 118, 3 * 5.5f + 2, 12)], new Dictionary<char, string>()));
+        Assert.Equal("", PageQuote.UnderRects(page, [new HighlightRect(300, 300, 50, 10)], new Dictionary<char, string>()));
+    }
+
+    [Fact]
     public void EachMarkupKindIsMadeAndRecolouredAsOneStep_AndHandMarksAreNotWhatWasJustRead()
     {
         var page0 = Page(0, [new LineSpec(First, 100)]);
