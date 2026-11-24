@@ -135,6 +135,7 @@ Recorded in `docs/decisions/`, each with the measurement that drove it:
 - **[ADR-0011](docs/decisions/ADR-0011-formula-model.md)** — PP-FormulaNet_plus-M as a formula model for display equations, in-process on the CPU: its LaTeX given to the language model with or in place of the page image, read by rule when there is no interpretation, and checked against the page's text layer; 80 equations of one paper in 72 s, 15 of them compared with the page
 - **[ADR-0012](docs/decisions/ADR-0012-saved-narration.md)** — a whole document narrated once to a file beside the PDF (script, Opus audio, timings) and played from it with no model and no engine; an M4B audiobook with chapters from it
 - **[ADR-0013](docs/decisions/ADR-0013-engine-word-timing.md)** — word timing from the speech engine itself, beside the aligner: Phonon from the attention head that follows its text (30 ms mean from the aligner), Kokoro from its phoneme durations (16 ms)
+- **[ADR-0014](docs/decisions/ADR-0014-review-annotations.md)** — review annotations: pause, note what was just read, carry on; RailReader2's tools through Core's model, kept by content hash beside (never in) the PDF, exported as Markdown, an annotated copy or RailReader2 JSON, and carried to a revised PDF by the words they are on
 
 ## Guarantees worth stating plainly
 
@@ -152,6 +153,8 @@ Recorded in `docs/decisions/`, each with the measurement that drove it:
   whole sentence or equation and the diagnostics say so. Interpolating by character
   count would look measured and be wrong.
 - **Highlights are never written into your PDF.** They are transient overlays.
+- **Your notes are never written into your PDF either.** They are kept in the data
+  directory by the PDF's content hash; Review ▸ Export writes an annotated *copy*.
 - **Your settings are not shared with RailReader2.** Core's `AppConfig` hard-codes
   `~/.config/railreader2` and creates it on access; this app uses its own XDG
   directories and an inert annotation store.

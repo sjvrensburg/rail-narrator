@@ -47,6 +47,20 @@ public sealed record ReviewLink(
 }
 
 /// <summary>
+/// The version of the same file (the same path) that the reader annotated before this one, by its
+/// content hash: its notes can be brought over by their quoted text (<see cref="ReviewCarryOver"/>).
+/// </summary>
+/// <param name="DocumentContentHash">The earlier version's hash: where its notes are kept, untouched.</param>
+public sealed record EarlierVersion(string DocumentContentHash)
+{
+    /// <summary>When its notes were brought over; null while they have not been.</summary>
+    public DateTimeOffset? CarriedUtc { get; init; }
+}
+
+/// <summary>What <c>unplaced-links.json</c> holds: the links of the notes not placed, and each one's page in the earlier version.</summary>
+public sealed record UnplacedState(IReadOnlyList<ReviewLink> Links, IReadOnlyDictionary<string, int> EarlierPages);
+
+/// <summary>
 /// The reader's annotations on one document, with their links. Owned and changed on the UI thread.
 /// </summary>
 /// <remarks>
@@ -56,14 +70,40 @@ public sealed record ReviewLink(
 public sealed class ReviewDocument
 {
     public ReviewDocument(string documentContentHash, string? sourcePath, AnnotationFile? file = null,
-        IEnumerable<ReviewLink>? links = null)
+        IEnumerable<ReviewLink>? links = null, EarlierVersion? earlier = null, AnnotationFile? unplaced = null,
+        UnplacedState? unplacedState = null)
     {
         ArgumentException.ThrowIfNullOrEmpty(documentContentHash);
         DocumentContentHash = documentContentHash;
         SourcePath = sourcePath;
         File = file ?? new AnnotationFile();
         Links = links?.ToDictionary(l => l.NativeId, StringComparer.Ordinal) ?? new(StringComparer.Ordinal);
+        Earlier = earlier;
+        Unplaced = unplaced ?? new AnnotationFile();
+        UnplacedLinks = unplacedState?.Links.ToDictionary(l => l.NativeId, StringComparer.Ordinal) ?? new(StringComparer.Ordinal);
+        UnplacedEarlierPages = unplacedState?.EarlierPages.ToDictionary(p => p.Key, p => p.Value, StringComparer.Ordinal)
+            ?? new(StringComparer.Ordinal);
     }
+
+    /// <summary>The earlier version of this file whose notes may be (or were) brought over; null when there is none.</summary>
+    public EarlierVersion? Earlier { get; set; }
+
+    /// <summary>
+    /// Notes brought from an earlier version that could not be placed on this one (their text is not
+    /// here, or they were tied to no text), by the page of this version "Place as before" puts them
+    /// on. Kept until the reader
+    /// places or discards them; never drawn, never exported into a PDF.
+    /// </summary>
+    public AnnotationFile Unplaced { get; }
+
+    /// <summary>The links of <see cref="Unplaced"/>, as they were in the earlier version.</summary>
+    public Dictionary<string, ReviewLink> UnplacedLinks { get; }
+
+    /// <summary>Each note of <see cref="Unplaced"/>, by id: its page in the version it came from (for the reader only).</summary>
+    public Dictionary<string, int> UnplacedEarlierPages { get; }
+
+    /// <summary>True when notes from an earlier version are waiting to be placed or discarded.</summary>
+    public bool HasUnplaced => Unplaced.Pages.Values.Any(p => p.Count > 0);
 
     /// <summary>SHA-256 of the PDF's bytes: the key the annotations are stored under.</summary>
     public string DocumentContentHash { get; }
@@ -201,5 +241,40 @@ public static class ReviewAnnotationJson
         return clone;
     }
 
+    public static string SerializeEarlier(EarlierVersion earlier)
+        => JsonSerializer.Serialize(new EarlierFile(1, earlier.DocumentContentHash, earlier.CarriedUtc), LinkFormat);
+
+    /// <summary>Null when <paramref name="json"/> is not an earlier-version file.</summary>
+    public static EarlierVersion? DeserializeEarlier(string json)
+    {
+        try
+        {
+            var file = JsonSerializer.Deserialize<EarlierFile>(json, LinkFormat);
+            return file is null || string.IsNullOrEmpty(file.Hash) ? null : new EarlierVersion(file.Hash) { CarriedUtc = file.CarriedUtc };
+        }
+        catch (JsonException) { return null; }
+        catch (NotSupportedException) { return null; }
+    }
+
+    public static string SerializeUnplaced(IEnumerable<ReviewLink> links, IReadOnlyDictionary<string, int> earlierPages)
+        => JsonSerializer.Serialize(new UnplacedFile(1, [.. links], earlierPages.ToDictionary(p => p.Key, p => p.Value)), LinkFormat);
+
+    /// <summary>Null when <paramref name="json"/> is not a file of unplaced notes' links.</summary>
+    public static UnplacedState? DeserializeUnplaced(string json)
+    {
+        try
+        {
+            var file = JsonSerializer.Deserialize<UnplacedFile>(json, LinkFormat);
+            if (file?.Links is null || file.Links.Any(l => string.IsNullOrEmpty(l.NativeId))) return null;
+            return new UnplacedState(file.Links, file.EarlierPages ?? []);
+        }
+        catch (JsonException) { return null; }
+        catch (NotSupportedException) { return null; }
+    }
+
     private sealed record LinkFile(int Version, List<ReviewLink> Links);
+
+    private sealed record EarlierFile(int Version, string Hash, DateTimeOffset? CarriedUtc);
+
+    private sealed record UnplacedFile(int Version, List<ReviewLink> Links, Dictionary<string, int>? EarlierPages);
 }

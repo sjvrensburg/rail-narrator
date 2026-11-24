@@ -1,6 +1,6 @@
 # ADR-0014: Review annotations
 
-**Status:** accepted, not yet implemented · **Date:** 2026-11-24 · **Follows:** ADR-0001, ADR-0012
+**Status:** accepted, implemented (2026-11-24) · **Date:** 2026-11-24 · **Follows:** ADR-0001, ADR-0012
 
 ## Decision
 
@@ -88,9 +88,35 @@ Not reused:
 - **Painting draws a copy.** Undo actions change annotation objects in place, and the draw runs
   on the render thread. So the layer draws a deep copy of each page's annotations, made on the
   UI thread when they change.
-- **A revised PDF has another hash.** A path index lets the reader carry notes over to the new
-  version. A note is carried over only where its quoted text is found again, and the rest are
-  listed as not placed: nothing is guessed.
+- **A revised PDF has another hash.** `index.json` remembers the hash each path last had. A
+  document with nothing of its own, opened at a path that had another hash with notes, is offered
+  that earlier version's notes (Review ▸ Bring notes from the earlier version, and a notice); a
+  revision saved under another name is chosen by hand (Review ▸ Bring notes from another version
+  of this PDF…, matched by the chosen file's hash). `ReviewCarryOver`:
+  - places a text markup only where its link's quoted text is found again in the new extraction,
+    compared by letters and digits only, lower-cased, ligatures spelled out, so line-end hyphens,
+    spacing and punctuation the text layer disagrees about do not matter. Where the words occur
+    more than once, an occurrence on word boundaries wins, then the nearest to where the note was
+    (page, then height). The mark gets the new character boxes and the passage that reads them now;
+  - keeps everything else as **not placed**: a mark whose words are gone, and a sticky note, text
+    box, drawing or imported mark, which quotes no text. Nothing is placed by position or by a near
+    match. A text is looked for first among the characters the narration reads (so a page
+    number or running head between the halves of a sentence across a page break does not hide
+    it), then in all the page text. Not-placed notes are kept in the new document's
+    `unplaced.json` (Core's format) with their links and earlier pages in `unplaced-links.json`
+    (`earlier.json` holds only which version and when), listed at the end of Review notes, and
+    exported in their own Markdown section; never drawn, never written into a PDF copy;
+  - keeps each not-placed note under the page it would go on: the page its earlier page became,
+    when the notes placed from that page all agree, else the same page number. *Place as before*
+    puts it, with its replies, at the same coordinates there (the reader's choice, never
+    automatic), and refuses when that page is not in this version. *Discard* drops it.
+  - gives every copy an id of its own (and its replies and group the matching ids), so the same
+    note brought to a document twice is two annotations, never two under one /NM.
+  Bringing notes over, placing one and discarding one are undoable steps. The earlier version is
+  read with `Peek`, which never sets a file aside: one that cannot be read is reported, not moved.
+- **A saved narration (ADR-0012) carries no annotations.** `paper.narration` holds the plan and
+  audio; notes stay in the data directory, keyed by the PDF's hash, and the headless `narrate` and
+  `export` commands neither read nor write them.
 
 ## Consequences
 
@@ -99,5 +125,10 @@ Not reused:
 - The exported copy appends annotations to the original's bytes, so annotations already in the
   PDF (a co-reviewer's, say) are kept. A signed PDF's copy is no longer validly signed, and the
   export says so.
-- This ADR records a decision and its basis. Measurements are added as the work lands, phase by
-  phase.
+- Notes follow a revision only by the words they are on. A sentence the author reworded, even by
+  one word, leaves its note not placed rather than on the nearest text.
+- Verified in the GUI (2026-11-24) on a 27-page journal article revised with `qpdf` (cover page
+  and last page dropped): of six notes, the N highlight and a hand mark ending mid-word were
+  placed on the same words one page earlier; the pen stroke, two boxes and a note on the dropped
+  page were not placed; *Place as before* put the pen circle back round the same keywords on the
+  page its page became. A revision at another path took the same notes through the file chooser.

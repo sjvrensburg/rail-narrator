@@ -13,7 +13,11 @@ namespace RailNarrator.Pdf.Annotations;
 /// <param name="Note">What was written; null when nothing was.</param>
 /// <param name="Author">Who signed it, if anyone.</param>
 /// <param name="FromPdf">Carried by the PDF itself (a co-reviewer's), not made here.</param>
-public sealed record ExportedNote(int Page, string Kind, string? Category, string Quote, string? Note, string? Author, bool FromPdf);
+public sealed record ExportedNote(int Page, string Kind, string? Category, string Quote, string? Note, string? Author, bool FromPdf)
+{
+    /// <summary>Brought from an earlier version of the PDF and not placed on this one; <see cref="Page"/> is its page there.</summary>
+    public bool Unplaced { get; init; }
+}
 
 /// <summary>The reader's notes as Markdown: in page and reading order, each with the text it is on.</summary>
 public static class ReviewMarkdown
@@ -41,13 +45,15 @@ public static class ReviewMarkdown
         ArgumentNullException.ThrowIfNull(notes);
         var md = new StringBuilder();
         md.Append("# Review notes: ").Append(Escape(title)).Append("\n\n");
-        int own = notes.Count(n => !n.FromPdf);
+        int own = notes.Count(n => !n.FromPdf && !n.Unplaced);
+        int inThePdf = notes.Count(n => n.FromPdf), unplaced = notes.Count(n => n.Unplaced);
         md.Append(date.ToString("d MMMM yyyy", CultureInfo.InvariantCulture)).Append(" · ")
           .Append(own == 1 ? "1 annotation" : $"{own} annotations");
-        if (notes.Count > own) md.Append($", and {notes.Count - own} already in the PDF");
+        if (inThePdf > 0) md.Append($", and {inThePdf} already in the PDF");
+        if (unplaced > 0) md.Append($", and {unplaced} from an earlier version not placed in this one");
         md.Append("\n");
 
-        foreach (var group in notes.Where(n => !n.FromPdf).GroupBy(n => n.Page))
+        foreach (var group in notes.Where(n => !n.FromPdf && !n.Unplaced).GroupBy(n => n.Page))
         {
             md.Append("\n## Page ").Append(group.Key + 1).Append("\n");
             foreach (var note in group) Entry(md, note);
@@ -58,14 +64,20 @@ public static class ReviewMarkdown
             md.Append("\n## Already in the PDF\n");
             foreach (var note in inPdf) Entry(md, note, withPage: true);
         }
+        var notPlaced = notes.Where(n => n.Unplaced).ToList();
+        if (notPlaced.Count > 0)
+        {
+            md.Append("\n## From an earlier version, not found in this one\n");
+            foreach (var note in notPlaced) Entry(md, note, withPage: true, pageWord: "earlier page ");
+        }
         return md.ToString();
     }
 
-    private static void Entry(StringBuilder md, ExportedNote note, bool withPage = false)
+    private static void Entry(StringBuilder md, ExportedNote note, bool withPage = false, string pageWord = "page ")
     {
         md.Append("\n**").Append(note.Kind);
         if (note.Category is { Length: > 0 } category) md.Append(" · ").Append(Escape(category));
-        if (withPage) md.Append(" · page ").Append(note.Page + 1);
+        if (withPage) md.Append(" · ").Append(pageWord).Append(note.Page + 1);
         md.Append("**");
         if (note.Author is { Length: > 0 } author) md.Append(" (").Append(Escape(author)).Append(')');
         md.Append("\n");
