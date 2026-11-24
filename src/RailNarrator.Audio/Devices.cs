@@ -458,6 +458,12 @@ public sealed class FakeAudioOutputDevice : IAudioOutputDevice
     /// <summary>Throw this message from <see cref="Write"/> to simulate a device failure.</summary>
     public string? FailWritesWith { get; set; }
 
+    /// <summary>
+    /// How long each <see cref="Write"/> takes, as a device whose buffer is full makes the writer
+    /// wait. Keeps the engine's writer inside a write, so an operation that stops it has to wait.
+    /// </summary>
+    public TimeSpan WriteLatency { get; set; }
+
     /// <summary>Throw this message from <see cref="Open"/> to simulate an unusable device.</summary>
     public string? FailOpenWith { get; set; }
 
@@ -535,6 +541,7 @@ public sealed class FakeAudioOutputDevice : IAudioOutputDevice
             DeviceFailed?.Invoke(reason);
             throw new InvalidOperationException(reason);
         }
+        if (WriteLatency > TimeSpan.Zero) Thread.Sleep(WriteLatency);
         lock (_gate)
         {
             SettleAutoAdvance();

@@ -38,6 +38,40 @@ public sealed class EngineLockingTests
     }
 
     /// <summary>
+    /// Two stops in a row, the second followed at once by a load and play (two quick seeks). The
+    /// first stop waits for the writer to leave a slow write; the second used to find no writer and
+    /// return at once, and the first then flushed and emptied the engine under the clip the second
+    /// had started, which left the coordinator playing an idle transport (the Windows runner's
+    /// stress-test failure). Stops, loads and pauses now run in order, each to its end.
+    /// </summary>
+    [Fact]
+    public async Task AnEarlierStopCannotEmptyAClipLoadedAfterALaterOne()
+    {
+        var device = new FakeAudioOutputDevice(new AudioFormat(24000, 1, SampleFormat.Float32LittleEndian))
+        {
+            Devices = [new AudioDeviceInfo("0", "Fake", true, 24000, 1, 0.01)],
+        };
+        await using var engine = new AudioPlaybackEngine(device, new AudioEngineOptions(PreferredDeviceRate: 24000));
+        await engine.LoadAsync("s0", SyntheticNarration.Clip("s0", 24000, 24000), SyntheticNarration.TonePcm(24000, 24000));
+        await engine.PlayAsync();
+        device.WriteLatency = TimeSpan.FromMilliseconds(300);
+        await Task.Delay(50);   // the writer is now inside a 300 ms write
+
+        Task first = engine.StopAsync();
+        Task secondThenPlay = Task.Run(async () =>
+        {
+            await engine.StopAsync();
+            device.WriteLatency = TimeSpan.Zero;
+            await engine.LoadAsync("s1", SyntheticNarration.Clip("s1", 24000, 24000), SyntheticNarration.TonePcm(24000, 24000));
+            await engine.PlayAsync();
+        });
+        await Task.WhenAll(first, secondThenPlay).WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(PlaybackState.Playing, engine.State);
+        Assert.Equal("s1", engine.CurrentSegmentId);
+    }
+
+    /// <summary>
     /// The real coordinator driving the real engine, with a simulated UI thread that runs the frame
     /// tick and seeks on every passage change. Before the fix this stopped within a few dozen
     /// transitions on most runs; it is a stress test, so a pass is evidence rather than proof — the
