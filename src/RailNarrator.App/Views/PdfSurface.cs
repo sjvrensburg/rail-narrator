@@ -682,6 +682,7 @@ public sealed class PdfSurface : Control
             }
             DrawAnnotations(context, bounds);
             DrawHighlights(context);
+            DrawNoteTarget(context);
             DrawPreparing(context);
             if (_failed.TryGetValue(SharpKey(CurrentPage), out string? failure)) DrawRenderError(context, failure);
         }
@@ -713,10 +714,44 @@ public sealed class PdfSurface : Control
     private void DrawAnnotations(DrawingContext context, Rect bounds)
     {
         if (_viewModel is not { ShowAnnotations: true, AnnotationLayer: { } layer }) return;
-        var snapshot = layer.ForPage(CurrentPage);
+        var snapshot = layer.ForPage(CurrentPage, _viewModel.ReviewSession?.Selected);
         if (snapshot.Count == 0) return;
         context.Custom(new AnnotationDraw(bounds, snapshot, new PageTransform(Zoom, _offsetX, _offsetY),
             RailReader.Renderer.Skia.AnnotationRenderer.IsDarkBackdrop(_colourEffect), expandAllNotes: false));
+    }
+
+    /// <summary>
+    /// While a note is being written on what was just read, that text is outlined, so it is plain
+    /// what the note will be on. Above the narration highlight: it is what the reader is looking at.
+    /// </summary>
+    private void DrawNoteTarget(DrawingContext context)
+    {
+        if (_viewModel?.NoteTarget is not { } target) return;
+        if (target.Pages.FirstOrDefault(p => p.PageIndex == CurrentPage) is not { } page) return;
+        var transform = new PageTransform(Zoom, _offsetX, _offsetY);
+        var accent = this.TryFindResource("SystemAccentColor", ActualThemeVariant, out var value) && value is Color c
+            ? c : Color.FromRgb(0x2F, 0x80, 0xED);
+        var pen = new Pen(new SolidColorBrush(accent), 2);
+        var fill = new SolidColorBrush(Color.FromArgb(40, accent.R, accent.G, accent.B));
+        foreach (var rect in page.Rects)
+        {
+            var (x0, y0) = transform.ToScreen(rect.X, rect.Y);
+            var (x1, y1) = transform.ToScreen(rect.X + rect.W, rect.Y + rect.H);
+            context.DrawRectangle(fill, pen, new Rect(x0, y0, Math.Max(1, x1 - x0), Math.Max(1, y1 - y0)), 2, 2);
+        }
+    }
+
+    /// <summary>
+    /// The screen rectangle around the part of <paramref name="target"/> on the page shown, for the
+    /// note card to be placed beside; null when none of it is on this page.
+    /// </summary>
+    public Rect? ScreenBoundsOf(RailNarrator.Pdf.Annotations.ReviewTarget target)
+    {
+        if (target.Pages.FirstOrDefault(p => p.PageIndex == CurrentPage) is not { Rects.Count: > 0 } page) return null;
+        var transform = new PageTransform(Zoom, _offsetX, _offsetY);
+        var (x0, y0) = transform.ToScreen(page.Rects.Min(r => r.X), page.Rects.Min(r => r.Y));
+        var (x1, y1) = transform.ToScreen(page.Rects.Max(r => r.X + r.W), page.Rects.Max(r => r.Y + r.H));
+        return new Rect(x0, y0, x1 - x0, y1 - y0);
     }
 
     private void DrawHighlights(DrawingContext context)
@@ -804,6 +839,14 @@ public sealed class PdfSurface : Control
         Focus();
         var point = e.GetPosition(this);
         var properties = e.GetCurrentPoint(this).Properties;
+
+        if (properties.IsLeftButtonPressed && _viewModel is { } vm && _source is not null)
+        {
+            // A note's icon, or the mark of a highlight's note, is the reader's own: a click there
+            // opens it (a double click edits it) and does not start reading.
+            var (notePageX, notePageY) = new PageTransform(Zoom, _offsetX, _offsetY).ToPage(point.X, point.Y);
+            if (vm.ClickAnnotation(CurrentPage, notePageX, notePageY, e.ClickCount >= 2)) { e.Handled = true; return; }
+        }
 
         if (properties.IsLeftButtonPressed && _viewModel?.Plan is { } plan && _source is not null)
         {

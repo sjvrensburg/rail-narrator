@@ -112,6 +112,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         Previous = new RelayCommand(() => { _pendingStartSegmentId = null; return _services.Coordinator.PreviousSegmentAsync(); }, CanRead, OnCommandError, allowWhileRunning: true);
         Replay = new RelayCommand(() => { _pendingStartSegmentId = null; return _services.Coordinator.ReplaySegmentAsync(); }, CanRead, OnCommandError, allowWhileRunning: true);
         ToggleFollow = new RelayCommand(CycleFollowMode, null, OnCommandError);
+        SetUpReview();
         ResumeFollow = new RelayCommand(() => _services.Coordinator.ResumeFollow(), () => FollowSuspended, OnCommandError);
         ZoomIn = new RelayCommand(() => ApplyZoom(Zoom * 1.25), () => HasDocument, OnCommandError);
         ZoomOut = new RelayCommand(() => ApplyZoom(Zoom / 1.25), () => HasDocument, OnCommandError);
@@ -467,12 +468,278 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         }
     }
 
+    private ReviewSession? _session;
+    private PageTextCache? _pageText;
+    private ActiveCue? _lastCue;
+    private NoteDraft? _draft;
+    private string _noteEditorText = "";
+
+    /// <summary>Editing the open document's annotations; null with no document.</summary>
+    public ReviewSession? ReviewSession => _session;
+
+    /// <summary>The sidebar's Review notes: every annotation, in page and reading order.</summary>
+    public ObservableCollection<ReviewNoteItem> ReviewNotes { get; } = [];
+
+    public bool HasReviewNotes => ReviewNotes.Count > 0;
+
+    /// <summary>A note being written: on what was just read, or the note of an annotation already made.</summary>
+    /// <param name="Target">What a new note goes on; null when editing.</param>
+    /// <param name="Existing">The annotation whose note is edited; null for a new one.</param>
+    private sealed record NoteDraft(ReviewTarget? Target, Annotation? Existing, string Quote);
+
+    public bool IsNoteEditorOpen => _draft is not null;
+
+    /// <summary>The note card's text box.</summary>
+    public string NoteEditorText { get => _noteEditorText; set => Set(ref _noteEditorText, value); }
+
+    /// <summary>What the note is on, quoted on the card.</summary>
+    public string NoteEditorQuote => _draft?.Quote ?? "";
+
+    public string NoteEditorTitle => _draft?.Existing is not null ? "Edit note" : "Note on what was just read";
+
+    /// <summary>
+    /// Where the note being written goes, per page, for the page to outline it while the card is
+    /// open (and for the card to be placed beside it). Null when no new note is being written.
+    /// </summary>
+    public ReviewTarget? NoteTarget => _draft?.Target;
+
+    /// <summary>The note card opened: the window places it and gives it the keyboard.</summary>
+    public event Action? NoteEditorOpened;
+
+    public RelayCommand NoteOnSentence { get; private set; } = null!;
+    public RelayCommand NoteOnPassage { get; private set; } = null!;
+    public RelayCommand HighlightSentence { get; private set; } = null!;
+    public RelayCommand HighlightPassage { get; private set; } = null!;
+    public RelayCommand SaveNote { get; private set; } = null!;
+    public RelayCommand SaveNoteAndResume { get; private set; } = null!;
+    public RelayCommand CancelNote { get; private set; } = null!;
+    public RelayCommand UndoAnnotation { get; private set; } = null!;
+    public RelayCommand RedoAnnotation { get; private set; } = null!;
+    public RelayCommand DeleteSelectedAnnotation { get; private set; } = null!;
+    public RelayCommand<ReviewNoteItem> OpenReviewNote { get; private set; } = null!;
+    public RelayCommand<ReviewNoteItem> EditReviewNote { get; private set; } = null!;
+    public RelayCommand<ReviewNoteItem> DeleteReviewNote { get; private set; } = null!;
+
+    private void SetUpReview()
+    {
+        bool CanNote() => _session is not null && Plan is not null && !IsNoteEditorOpen;
+        NoteOnSentence = new RelayCommand(() => BeginNoteAsync(wholePassage: false), CanNote, OnCommandError);
+        NoteOnPassage = new RelayCommand(() => BeginNoteAsync(wholePassage: true), CanNote, OnCommandError);
+        HighlightSentence = new RelayCommand(() => HighlightJustRead(wholePassage: false), CanNote, OnCommandError);
+        HighlightPassage = new RelayCommand(() => HighlightJustRead(wholePassage: true), CanNote, OnCommandError);
+        SaveNote = new RelayCommand(() => CommitNote(resume: false), () => IsNoteEditorOpen, OnCommandError);
+        SaveNoteAndResume = new RelayCommand(() => CommitNote(resume: true), () => IsNoteEditorOpen, OnCommandError);
+        CancelNote = new RelayCommand(() => CloseNoteEditor(), () => IsNoteEditorOpen, OnCommandError);
+        UndoAnnotation = new RelayCommand(() => _session?.Undo(), () => _session?.CanUndo == true && !IsNoteEditorOpen, OnCommandError);
+        RedoAnnotation = new RelayCommand(() => _session?.Redo(), () => _session?.CanRedo == true && !IsNoteEditorOpen, OnCommandError);
+        DeleteSelectedAnnotation = new RelayCommand(() => { if (_session?.Selected is { } a) _session.Delete(a); },
+            () => _session?.Selected is not null && !IsNoteEditorOpen, OnCommandError);
+        OpenReviewNote = new RelayCommand<ReviewNoteItem>(GoToReviewNote);
+        EditReviewNote = new RelayCommand<ReviewNoteItem>(item => OpenNoteEditorFor(item.Annotation));
+        DeleteReviewNote = new RelayCommand<ReviewNoteItem>(item => _session?.Delete(item.Annotation));
+    }
+
+    private void RefreshReviewCommands()
+    {
+        foreach (var command in new[] { NoteOnSentence, NoteOnPassage, HighlightSentence, HighlightPassage, SaveNote,
+                     SaveNoteAndResume, CancelNote, UndoAnnotation, RedoAnnotation, DeleteSelectedAnnotation })
+            command.RaiseCanExecuteChanged();
+    }
+
+    /// <summary>
+    /// What was just read: the sentence of the last cue heard (or its whole passage), else the
+    /// passage the reader is at. Null when there is nothing to put a note on.
+    /// </summary>
+    private ReviewTarget? JustRead(bool wholePassage)
+    {
+        if (_session is null || _pageText is null || Plan is not { } plan || _snapshot is not { } snapshot) return null;
+        if (_lastCue is { } cue && cue.Generation == Coordinator.Generation && plan.Segment(cue.SegmentId) is not null)
+            return ReviewTarget.Find(plan, snapshot, _pageText, cue.SegmentId, cue.AnchorIds, wholePassage);
+        var position = Coordinator.Snapshot;
+        if (position.SegmentId is not { } segmentId) return null;
+        return ReviewTarget.Find(plan, snapshot, _pageText, segmentId, position.ActiveAnchorIds, wholePassage);
+    }
+
+    /// <summary>
+    /// N (Shift+N for the passage): pauses, outlines what was just read and opens the note card.
+    /// Saving keeps it paused (the reader chose so, ADR-0014); Ctrl+Enter saves and reads on.
+    /// </summary>
+    private async Task BeginNoteAsync(bool wholePassage)
+    {
+        // Found before pausing: the pause must not move what "just read" means.
+        if (JustRead(wholePassage) is not { } target)
+        {
+            StatusMessage = "Nothing has been read yet to put a note on.";
+            return;
+        }
+        if (_playback.IsAudible) await Coordinator.PauseAsync();
+        // Already marked: its note is the one to write or change.
+        if (_session?.MadeOn(target) is { } existing) { OpenNoteEditorFor(existing); return; }
+        OpenNoteEditor(new NoteDraft(target, null, target.QuotedText), "");
+    }
+
+    /// <summary>H (Shift+H for the passage): highlights what was just read, without stopping.</summary>
+    private void HighlightJustRead(bool wholePassage)
+    {
+        if (_session is null) return;
+        if (JustRead(wholePassage) is not { } target)
+        {
+            StatusMessage = "Nothing has been read yet to highlight.";
+            return;
+        }
+        if (_session.MadeOn(target) is { } existing)
+        {
+            _session.Selected = existing;
+            StatusMessage = wholePassage ? "This passage is already highlighted." : "This sentence is already highlighted.";
+            return;
+        }
+        _session.Highlight(target);
+        StatusMessage = wholePassage ? "Passage highlighted." : "Sentence highlighted.";
+    }
+
+    /// <summary>Opens the note card on an annotation already made (its group's first, which holds the note).</summary>
+    public void OpenNoteEditorFor(Annotation annotation)
+    {
+        if (_session is null || IsNoteEditorOpen) return;
+        var head = _session.Head(annotation);
+        _session.Selected = head;
+        string text = head is TextNoteAnnotation note ? note.EffectiveContents : head.Contents ?? "";
+        OpenNoteEditor(new NoteDraft(null, head, _session.LinkOf(head)?.QuotedText ?? ""), text);
+    }
+
+    private void OpenNoteEditor(NoteDraft draft, string text)
+    {
+        _draft = draft;
+        NoteEditorText = text;
+        OnPropertyChanged(nameof(IsNoteEditorOpen));
+        OnPropertyChanged(nameof(NoteEditorQuote));
+        OnPropertyChanged(nameof(NoteEditorTitle));
+        OnPropertyChanged(nameof(NoteTarget));
+        RefreshReviewCommands();
+        InvalidateSurface?.Invoke();
+        NoteEditorOpened?.Invoke();
+    }
+
+    private void CloseNoteEditor(string? reason = null)
+    {
+        if (_draft is null) return;
+        _draft = null;
+        NoteEditorText = "";
+        OnPropertyChanged(nameof(IsNoteEditorOpen));
+        OnPropertyChanged(nameof(NoteTarget));
+        RefreshReviewCommands();
+        InvalidateSurface?.Invoke();
+        if (reason is not null) StatusMessage = reason;
+    }
+
+    private void CommitNote(bool resume)
+    {
+        if (_draft is not { } draft || _session is null) return;
+        string text = NoteEditorText;
+        if (draft.Existing is { } existing) _session.SetNote(existing, text);
+        else if (draft.Target is { } target && !string.IsNullOrWhiteSpace(text)) _session.Highlight(target, text);
+        CloseNoteEditor(string.IsNullOrWhiteSpace(text) && draft.Existing is null ? "No note written; nothing was added." : null);
+        if (resume && !_playback.IsAudible && CanRead())
+        {
+            // Read on with the page clear: a selected note's popup would sit over the text being read.
+            _session.Selected = null;
+            RunObserved(StartReadingAsync(), "Could not read on");
+        }
+    }
+
+    /// <summary>
+    /// A note chosen in the list: a request to read. Playing, the reading moves there; otherwise
+    /// its page is shown and the next Play starts there, as the outline does.
+    /// </summary>
+    private void GoToReviewNote(ReviewNoteItem item)
+    {
+        if (_session is null) return;
+        _session.Selected = item.Annotation;
+        PageRequested?.Invoke(item.PageIndex);
+        if (item.SegmentId is not { } segmentId || Plan?.Segment(segmentId) is null) return;
+        if (_playback.IsAudible)
+        {
+            _pendingStartSegmentId = null;
+            RunObserved(Coordinator.GoToSegmentAsync(segmentId), "Could not move to that note");
+            return;
+        }
+        _pendingStartSegmentId = segmentId;
+        StatusMessage = $"Play reads from the note on page {item.PageIndex + 1}.";
+    }
+
+    /// <summary>
+    /// A click on the page, in page points: a note's icon opens or closes it, a highlight's note
+    /// mark selects it (which shows its note), a double click edits. True when the click was
+    /// taken; otherwise the selection is cleared and the click is the page's (click to read).
+    /// </summary>
+    public bool ClickAnnotation(int pageIndex, double pageX, double pageY, bool doubleClick)
+    {
+        if (_session is not { } session || _review is not { } review || !ShowAnnotations) return false;
+        float x = (float)pageX, y = (float)pageY;
+        var onPage = review.PageAnnotations(pageIndex);
+        for (int i = onPage.Count - 1; i >= 0; i--)
+        {
+            var annotation = onPage[i];
+            bool hit = annotation switch
+            {
+                TextNoteAnnotation => RailReader.Core.Services.AnnotationGeometry.HitTest(annotation, x, y),
+                TextMarkupAnnotation { Contents.Length: > 0 } markup =>
+                    RailReader.Renderer.Skia.AnnotationRenderer.GetMarkupCommentGlyphRect(markup) is { } glyph
+                    && glyph.Contains(x, y),
+                _ => false,
+            };
+            if (!hit) continue;
+            if (doubleClick) { OpenNoteEditorFor(annotation); return true; }
+            if (annotation is TextNoteAnnotation note)
+            {
+                note.IsExpanded = !note.IsExpanded;
+                review.MarkViewChanged();
+            }
+            session.Selected = ReferenceEquals(session.Selected, annotation) && annotation is not TextNoteAnnotation ? null : annotation;
+            return true;
+        }
+        session.Selected = null;
+        return false;
+    }
+
+    private void RebuildReviewNotes()
+    {
+        ReviewNotes.Clear();
+        if (_session is { } session && _review is { } review)
+        {
+            var order = Plan?.Segments.Select((s, i) => (s.Id, i)).ToDictionary(x => x.Id, x => x.i) ?? [];
+            var items = new List<(ReviewNoteItem Item, int Segment, float Top, float Left)>();
+            foreach (var (page, list) in review.File.Pages)
+                foreach (var annotation in list)
+                {
+                    var link = session.LinkOf(annotation);
+                    if (link?.GroupId is { } group && group != annotation.NativeId) continue;   // shown with its group's first
+                    var bounds = RailReader.Core.Services.AnnotationGeometry.GetAnnotationBounds(annotation);
+                    string? note = annotation is TextNoteAnnotation n ? n.EffectiveContents : annotation.Contents;
+                    var item = new ReviewNoteItem(annotation, page, link?.SegmentId, link?.QuotedText ?? "",
+                        string.IsNullOrWhiteSpace(note) ? null : note);
+                    int segment = link?.SegmentId is { } id && order.TryGetValue(id, out int at) ? at : int.MaxValue;
+                    items.Add((item, segment, bounds?.Top ?? 0, bounds?.Left ?? 0));
+                }
+            foreach (var x in items.OrderBy(x => x.Item.PageIndex).ThenBy(x => x.Segment).ThenBy(x => x.Top).ThenBy(x => x.Left))
+                ReviewNotes.Add(x.Item);
+        }
+        OnPropertyChanged(nameof(HasReviewNotes));
+    }
+
     private void AttachReview(ReviewLoadResult loaded)
     {
         DetachReview();
         _review = loaded.Document;
         _annotationLayer = new AnnotationLayer(loaded.Document);
         _review.Changed += OnReviewChanged;
+        _review.ViewChanged += OnReviewViewChanged;
+        if (_snapshot is { } snapshot) _pageText = new PageTextCache(snapshot);
+        _session = new ReviewSession(loaded.Document);
+        _session.SelectionChanged += OnReviewSelectionChanged;
+        _lastCue = null;
+        RebuildReviewNotes();
+        RefreshReviewCommands();
         _lastAnnotationSaveError = null;
         if (loaded.Problem is { } problem)
         {
@@ -483,15 +750,36 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     private void DetachReview()
     {
-        if (_review is not null) _review.Changed -= OnReviewChanged;
+        CloseNoteEditor("The note was not saved: the document changed.");
+        if (_review is not null)
+        {
+            _review.Changed -= OnReviewChanged;
+            _review.ViewChanged -= OnReviewViewChanged;
+        }
+        if (_session is not null) _session.SelectionChanged -= OnReviewSelectionChanged;
         _review = null;
         _annotationLayer = null;
+        _session = null;
+        _pageText = null;
+        _lastCue = null;
+        RebuildReviewNotes();
+        RefreshReviewCommands();
+    }
+
+    private void OnReviewViewChanged() => InvalidateSurface?.Invoke();
+
+    private void OnReviewSelectionChanged()
+    {
+        DeleteSelectedAnnotation.RaiseCanExecuteChanged();
+        InvalidateSurface?.Invoke();
     }
 
     /// <summary>Every change is saved as it is made, and shown.</summary>
     private void OnReviewChanged()
     {
         if (_review is { } review) _ = SaveReviewAsync(review);
+        RebuildReviewNotes();
+        RefreshReviewCommands();
         InvalidateSurface?.Invoke();
     }
 
@@ -1639,6 +1927,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         void Apply()
         {
             if (cue.Generation != Coordinator.Generation) return;
+            _lastCue = cue;
             TimingSummary = cue.Granularity == CueGranularity.Word ? "Word highlighting · aligned to speech"
                 : $"{cue.Granularity} highlighting" + (cue.Diagnostics.Count > 0 ? ": " + cue.Diagnostics[0] : "");
             InvalidateSurface?.Invoke();

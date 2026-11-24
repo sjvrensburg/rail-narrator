@@ -34,7 +34,14 @@ public sealed record ReviewLink(
     int ExtractionRevision,
     IReadOnlyList<LinkedRange> Ranges,
     string QuotedText,
-    DateTimeOffset CreatedUtc);
+    DateTimeOffset CreatedUtc)
+{
+    /// <summary>
+    /// The annotations made together as one: a sentence across a page break is one annotation per
+    /// page, and they are kept, edited and removed as one. The first one's id; null when alone.
+    /// </summary>
+    public string? GroupId { get; init; }
+}
 
 /// <summary>
 /// The reader's annotations on one document, with their links. Owned and changed on the UI thread.
@@ -84,6 +91,19 @@ public sealed class ReviewDocument
     {
         Version++;
         Changed?.Invoke();
+    }
+
+    /// <summary>Raised when only how the annotations look has changed (a note opened): repaint, nothing to save.</summary>
+    public event Action? ViewChanged;
+
+    /// <summary>
+    /// For a change that is not kept (a note's popup opened or closed): the drawn copy is made again,
+    /// and nothing is saved.
+    /// </summary>
+    public void MarkViewChanged()
+    {
+        Version++;
+        ViewChanged?.Invoke();
     }
 }
 

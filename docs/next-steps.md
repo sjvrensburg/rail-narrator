@@ -51,11 +51,12 @@ Since PR #10:
 - **Simpler window** (PR #16): one Play/Pause button (Cancel while preparing), the script panel
   hidden by default, and RailReader's colour filters on the toolbar, in View and on the C key.
 
-- **Review annotations, phase 1 of 7 landed** (ADR-0014, `status.md` item 100): annotations are
-  kept by content hash in the data directory in Core's format and drawn on the page; nothing
-  creates one yet. Next: pause and note what was just read (N, Shift+N, H, Shift+H) with a
-  Review notes section in the sidebar; then markup tools, sticky notes, pen, and export
-  (Markdown, annotated PDF copy, RailReader2 JSON). The PDF is never modified.
+- **Review annotations, phases 1 and 2 of 7 landed** (ADR-0014, `status.md` items 100–101):
+  annotations are kept by content hash in the data directory in Core's format and drawn on the
+  page; N pauses and notes the sentence just read, H highlights it, and the sidebar's Review
+  notes lists them. Next: an annotate mode with drag-select markup (phase 3), sticky notes and
+  free text (4), pen and rectangle (5), export as Markdown, annotated PDF copy and RailReader2
+  JSON (6), and notes carried to a revised PDF (7). The PDF is never modified.
 
 ## Recently landed
 

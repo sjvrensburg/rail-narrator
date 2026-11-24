@@ -106,6 +106,16 @@
         <MenuItem Header="_Sidebar: outline, script, maths review, notes" ToggleType="CheckBox"
                   IsChecked="{Binding SidebarVisible, Mode=TwoWay}" InputGesture="F6" />
       </MenuItem>
+      <MenuItem Header="_Review">
+        <MenuItem Header="_Note on what was just read…" Command="{Binding NoteOnSentence}" InputGesture="N" />
+        <MenuItem Header="Note on the whole _passage…" Command="{Binding NoteOnPassage}" InputGesture="Shift+N" />
+        <MenuItem Header="_Highlight what was just read" Command="{Binding HighlightSentence}" InputGesture="H" />
+        <MenuItem Header="Highlight the whole p_assage" Command="{Binding HighlightPassage}" InputGesture="Shift+H" />
+        <Separator />
+        <MenuItem Header="_Undo" Command="{Binding UndoAnnotation}" InputGesture="Ctrl+Z" />
+        <MenuItem Header="_Redo" Command="{Binding RedoAnnotation}" InputGesture="Ctrl+Shift+Z" />
+        <MenuItem Header="_Delete the selected annotation" Command="{Binding DeleteSelectedAnnotation}" InputGesture="Delete" />
+      </MenuItem>
       <MenuItem Header="_Maths">
         <MenuItem Header="Mark this passage as _maths" Command="{Binding MarkAsMaths}" />
         <MenuItem Header="Restore this passage as _prose" Command="{Binding RestoreAsProse}" />
@@ -212,6 +222,19 @@
 
           <Border Classes="toolSep" />
 
+          <Button Classes="toolBtn borderless" Command="{Binding NoteOnSentence}"
+                  ToolTip.Tip="Pause and write a note on the sentence just read (N; Shift+N for the passage)"
+                  AutomationProperties.Name="Note on what was just read">
+            <c:Icon Data="{StaticResource IconMessageSquarePlus}" />
+          </Button>
+          <Button Classes="toolBtn borderless" Command="{Binding HighlightSentence}"
+                  ToolTip.Tip="Highlight the sentence just read, without stopping (H; Shift+H for the passage)"
+                  AutomationProperties.Name="Highlight what was just read">
+            <c:Icon Data="{StaticResource IconHighlighter}" />
+          </Button>
+
+          <Border Classes="toolSep" />
+
           <c:Icon Data="{StaticResource IconPalette}" VerticalAlignment="Center" Margin="2,0,0,0"
                   ToolTip.Tip="Colour filter for the page" />
           <ComboBox ItemsSource="{Binding ColourEffects}" SelectedItem="{Binding SelectedColourEffect}" MinWidth="150"
@@ -303,7 +326,7 @@
     <Grid Name="ContentGrid" ColumnDefinitions="300,Auto,*">
       <Border Name="Sidebar" Grid.Column="0" Background="{DynamicResource SystemControlBackgroundAltHighBrush}"
               AutomationProperties.Name="Sidebar">
-        <Grid Name="Accordion" RowDefinitions="*,Auto,Auto,Auto">
+        <Grid Name="Accordion" RowDefinitions="*,Auto,Auto,Auto,Auto">
           <Expander Grid.Row="0" Name="OutlineSection" Classes="accordion" Header="Outline">
             <Panel>
               <TreeView Name="OutlineTree" ItemsSource="{Binding Outline}" IsVisible="{Binding HasOutline}"
@@ -365,7 +388,35 @@
               </ScrollViewer>
             </Panel>
           </Expander>
-          <Expander Grid.Row="3" Name="NotesSection" Classes="accordion" Header="Notes and diagnostics">
+          <Expander Grid.Row="3" Name="ReviewSection" Classes="accordion" Header="Review notes">
+            <Panel>
+              <TextBlock IsVisible="{Binding !HasReviewNotes}" TextWrapping="Wrap" Classes="secondary" Margin="4"
+                         Text="No notes yet. While listening, press N to pause and write a note on the sentence just read, or H to highlight it." />
+              <ListBox Name="ReviewNotesList" ItemsSource="{Binding ReviewNotes}" IsVisible="{Binding HasReviewNotes}"
+                       SelectionChanged="OnReviewNoteSelectionChanged" AutomationProperties.Name="Review notes">
+                <ListBox.ItemTemplate>
+                  <DataTemplate x:DataType="vm:ReviewNoteItem">
+                    <Grid ColumnDefinitions="Auto,*" AutomationProperties.Name="{Binding Description}">
+                      <Border Grid.Column="0" Width="6" CornerRadius="3" Margin="0,2,8,2" Background="{Binding Swatch}" />
+                      <StackPanel Grid.Column="1" Spacing="2">
+                        <TextBlock Text="{Binding PageLabel}" Classes="secondary" FontSize="11" />
+                        <TextBlock Text="{Binding Note}" IsVisible="{Binding HasNote}" TextWrapping="Wrap" FontWeight="SemiBold" />
+                        <TextBlock Text="{Binding Quote}" IsVisible="{Binding HasQuote}" TextWrapping="Wrap" MaxLines="3"
+                                   TextTrimming="CharacterEllipsis" FontStyle="Italic" Opacity="0.85" FontSize="12" />
+                        <StackPanel Orientation="Horizontal" Spacing="4">
+                          <Button Content="Edit note" Classes="borderless" FontSize="11" Padding="4,1"
+                                  Command="{Binding $parent[ListBox].((vm:MainViewModel)DataContext).EditReviewNote}" CommandParameter="{Binding}" />
+                          <Button Content="Delete" Classes="borderless" FontSize="11" Padding="4,1"
+                                  Command="{Binding $parent[ListBox].((vm:MainViewModel)DataContext).DeleteReviewNote}" CommandParameter="{Binding}" />
+                        </StackPanel>
+                      </StackPanel>
+                    </Grid>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+            </Panel>
+          </Expander>
+          <Expander Grid.Row="4" Name="NotesSection" Classes="accordion" Header="Diagnostics">
             <ScrollViewer>
               <StackPanel Spacing="4">
                 <TextBlock Text="{Binding SpeechProviderSummary, StringFormat=Speech providers: {0}}" FontSize="11" />
@@ -457,7 +508,7 @@
           </StackPanel>
 
           <Border Height="1" Background="{DynamicResource SystemControlForegroundBaseLowBrush}" Margin="0,24,0,8" />
-          <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto" ColumnSpacing="16" RowSpacing="6"
+          <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" ColumnSpacing="16" RowSpacing="6"
                 HorizontalAlignment="Center">
             <TextBlock Grid.Row="0" Text="Space" FontWeight="SemiBold" />
             <TextBlock Grid.Row="0" Grid.Column="1" Text="Play or pause" />
@@ -465,13 +516,38 @@
             <TextBlock Grid.Row="1" Grid.Column="1" Text="Previous or next passage; click a passage to read from it" />
             <TextBlock Grid.Row="2" Text="F6" FontWeight="SemiBold" />
             <TextBlock Grid.Row="2" Grid.Column="1" Text="Sidebar: the outline, the script and maths review" />
-            <TextBlock Grid.Row="3" Text="C" FontWeight="SemiBold" />
-            <TextBlock Grid.Row="3" Grid.Column="1" Text="Cycle colour filters for comfort" />
-            <TextBlock Grid.Row="4" Text="F1" FontWeight="SemiBold" />
-            <TextBlock Grid.Row="4" Grid.Column="1" Text="Every keyboard shortcut" />
+            <TextBlock Grid.Row="3" Text="N  ·  H" FontWeight="SemiBold" />
+            <TextBlock Grid.Row="3" Grid.Column="1" Text="Pause and note the sentence just read · highlight it" />
+            <TextBlock Grid.Row="4" Text="C" FontWeight="SemiBold" />
+            <TextBlock Grid.Row="4" Grid.Column="1" Text="Cycle colour filters for comfort" />
+            <TextBlock Grid.Row="5" Text="F1" FontWeight="SemiBold" />
+            <TextBlock Grid.Row="5" Grid.Column="1" Text="Every keyboard shortcut" />
           </Grid>
         </StackPanel>
       </ScrollViewer>
+      <!-- The note card: written while paused, beside the text it is on (outlined on the page). Enter
+           saves and stays paused, Ctrl+Enter saves and reads on, Shift+Enter starts a new line,
+           Escape gives up. Placed in code-behind. -->
+      <Border Name="NoteCard" IsVisible="{Binding IsNoteEditorOpen}" Classes="overlayCard" BorderThickness="1"
+              HorizontalAlignment="Left" VerticalAlignment="Top" Width="400" Padding="14,12" CornerRadius="8">
+        <StackPanel Spacing="8">
+          <TextBlock Text="{Binding NoteEditorTitle}" FontWeight="SemiBold" />
+          <TextBlock Text="{Binding NoteEditorQuote}" FontStyle="Italic" Opacity="0.85" FontSize="12"
+                     TextWrapping="Wrap" MaxLines="3" TextTrimming="CharacterEllipsis" />
+          <TextBox Name="NoteEditorBox" Text="{Binding NoteEditorText, Mode=TwoWay}" AcceptsReturn="True"
+                   TextWrapping="Wrap" MinHeight="72" MaxHeight="220" PlaceholderText="Your note"
+                   AutomationProperties.Name="Note" />
+          <Grid ColumnDefinitions="*,Auto">
+            <TextBlock Grid.Column="0" Classes="secondary" FontSize="11" VerticalAlignment="Center" TextWrapping="Wrap"
+                       Text="Enter saves · Ctrl+Enter saves and reads on · Esc cancels" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+              <Button Content="Cancel" Command="{Binding CancelNote}" />
+              <Button Content="Save" Classes="primary" Command="{Binding SaveNote}" />
+            </StackPanel>
+          </Grid>
+        </StackPanel>
+      </Border>
+
       <Border IsVisible="{Binding IsPreparing}" IsHitTestVisible="False"
               HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,16,0,0"
               Padding="16,10" CornerRadius="8" MinWidth="320"
