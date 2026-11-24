@@ -95,7 +95,7 @@ public sealed class ReviewAnnotationStore
             blocked |= unread;
         }
 
-        EarlierVersion? earlier = null;
+        EarlierRecord? earlier = null;
         string earlierPath = Path.Combine(dir, EarlierFile);
         if (File.Exists(earlierPath))
         {
@@ -120,7 +120,7 @@ public sealed class ReviewAnnotationStore
 
         // The same path under another hash: the PDF was revised since it was annotated. Offered only
         // to a document with nothing of its own yet; once known, the offer is kept in earlier.json.
-        var found = earlier;
+        var found = earlier?.Earlier;
         if (found is null && !readOnly && pdfPath is not null && !blocked
             && (file is null || file.Pages.Values.All(p => p.Count == 0)) && (links is null || links.Count == 0)
             && LastHashFor(pdfPath) is { } last && last != documentContentHash
@@ -138,7 +138,7 @@ public sealed class ReviewAnnotationStore
             }
             if (blocked) problems.Add("Changes to this document's annotations will not be saved until it is opened again.");
         }
-        var document = new ReviewDocument(documentContentHash, pdfPath, file, links, found, unplaced, unplacedState);
+        var document = new ReviewDocument(documentContentHash, pdfPath, file, links, found, unplaced, unplacedState, earlier?.BroughtFrom);
         return new ReviewLoadResult(document, problems.Count == 0 ? null : string.Join(" ", problems));
     }
 
@@ -159,7 +159,9 @@ public sealed class ReviewAnnotationStore
         string annotations = ReviewAnnotationJson.Serialize(document.File);
         string links = ReviewAnnotationJson.SerializeLinks(document.Links.Values.OrderBy(l => l.CreatedUtc));
         string? sourcePath = document.SourcePath;
-        string? earlier = document.Earlier is { } e ? ReviewAnnotationJson.SerializeEarlier(e) : null;
+        string? earlier = document.Earlier is not null || document.BroughtFrom.Count > 0
+            ? ReviewAnnotationJson.SerializeEarlier(document.Earlier, document.BroughtFrom)
+            : null;
         // Notes not placed are kept as long as there are any, whatever became of the record of
         // where they came from (an earlier.json that could not be read, say).
         bool hasUnplaced = document.HasUnplaced;

@@ -670,6 +670,9 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         lock (_gate)
         {
             if (_plan is not { } current || current.Header != plan.Header) return null;
+            // The reader may have corrected this passage while the model was asked: the edit stands.
+            var now = current.Segment(segmentId);
+            if (now is null || now.ScriptRevision != segment.ScriptRevision || now.Provenance != segment.Provenance) return now;
             _plan = current with { Segments = current.Segments.Select(s => s.Id == segmentId ? fresh : s).ToList() };
         }
         long gen = AdvanceGeneration();
@@ -694,6 +697,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     public async Task ApplyScriptEditAsync(string segmentId, string newSpokenText, CancellationToken ct = default)
     {
         ThrowIfDisposed();
+        string documentHash;
         // Built from the plan as it is under the lock: an interpretation resolved meanwhile (written
         // under the same lock) is kept, not replaced by a copy taken before it arrived.
         lock (_gate)
@@ -710,6 +714,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
                 SourceLinks = [new SourceLink(new TextRange(0, newSpokenText.Length), segments[index].AnchorIds)],
             };
             _plan = current with { Segments = segments };
+            documentHash = current.Header.Extraction.DocumentContentHash;
         }
 
         long gen = AdvanceGeneration();
@@ -723,8 +728,11 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         if (_audio.State == PlaybackState.Paused) await _audio.StopAsync(ct).ConfigureAwait(false);
         // A queued clip may be the edited passage in its old words.
         else await _audio.ClearQueuedAsync(ct).ConfigureAwait(false);
+        // Overtaken while the transport stopped (another document, another edit): this edit's
+        // document is no longer the one loaded, and its cache is not this one's to clear.
+        if (gen != Generation) return;
         if (_assetStore is not null)
-            await _assetStore.InvalidateAsync(_plan!.Header.Extraction.DocumentContentHash, ct).ConfigureAwait(false);
+            await _assetStore.InvalidateAsync(documentHash, ct).ConfigureAwait(false);
         StartPreparation(gen);
         PublishSnapshotOnly();
     }

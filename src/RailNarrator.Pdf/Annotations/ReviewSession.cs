@@ -218,20 +218,25 @@ public sealed class ReviewSession
         foreach (var (page, list) in carried.Unplaced.Pages.OrderBy(p => p.Key))
             foreach (var annotation in list)
                 actions.Add(new OnFile(Document.Unplaced, new AddAnnotationAction(page, annotation)));
+        // Only the earlier version at this path is recorded as brought over: notes from a PDF the
+        // reader chose leave that offer standing.
         var before = Document.Earlier;
-        var after = new EarlierVersion(earlierHash) { CarriedUtc = _now() };
+        var after = before?.DocumentContentHash == earlierHash ? before with { CarriedUtc = _now() } : before;
+        bool newSource = !Document.BroughtFrom.Contains(earlierHash);
         var links = carried.UnplacedLinks.ToList();
         var pages = carried.UnplacedEarlierPages.ToList();
         actions.Add(new HostAction(
             () =>
             {
                 Document.Earlier = after;
+                if (newSource) Document.BroughtFrom.Add(earlierHash);
                 foreach (var l in links) Document.UnplacedLinks[l.NativeId] = l;
                 foreach (var (id, page) in pages) Document.UnplacedEarlierPages[id] = page;
             },
             () =>
             {
                 Document.Earlier = before;
+                if (newSource) Document.BroughtFrom.Remove(earlierHash);
                 foreach (var l in links) Document.UnplacedLinks.Remove(l.NativeId);
                 foreach (var (id, _) in pages) Document.UnplacedEarlierPages.Remove(id);
             }));
