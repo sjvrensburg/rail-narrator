@@ -192,6 +192,11 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     private int _segmentIndex = -1;
     private long _generation;
     private CancellationTokenSource? _prepareCts;
+    /// <summary>
+    /// Cancelled when the generation advances (<see cref="AdvanceGeneration"/>), so that work done for
+    /// one generation alone stops when it is overtaken. Guarded by <see cref="_gate"/>.
+    /// </summary>
+    private CancellationTokenSource _generationCts = new();
     private Task? _prepareLoop;
     private bool _disposed;
     private bool _followSuspended;
@@ -1545,9 +1550,20 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             }
             catch (OperationCanceledException) { }
         });
+        // The passage is wanted only while this generation lasts. The caller's token is often none
+        // (a seek from the window, a passage completing): synthesised with it, every seek overtaken
+        // by the next kept its passage queued at an engine that speaks one at a time, and sixty quick
+        // presses of Next left the reader in silence for up to 45 s.
+        using var wanted = CancellationTokenSource.CreateLinkedTokenSource(ct, GenerationToken(generation));
         try
         {
-            return await EnsureSegmentReadyAsync(index, generation, ct).ConfigureAwait(false);
+            return await EnsureSegmentReadyAsync(index, generation, wanted.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Overtaken (by a seek, a new document, a voice change): that operation stops here
+            // quietly, as every other overtaken operation does.
+            return false;
         }
         finally
         {
@@ -1905,6 +1921,8 @@ public sealed class NarrationCoordinator : IAsyncDisposable
 
     private long AdvanceGeneration()
     {
+        CancellationTokenSource overtaken;
+        long generation;
         lock (_gate)
         {
             _inflight.Clear();
@@ -1912,8 +1930,22 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             _pendingFollow = null;
             _queuedSegmentId = null;
             _lastFollowAt = double.NegativeInfinity;
-            return Interlocked.Increment(ref _generation);
+            overtaken = _generationCts;
+            _generationCts = new CancellationTokenSource();
+            generation = Interlocked.Increment(ref _generation);
         }
+        // Outside the lock: cancellation runs the callbacks registered on the token.
+        overtaken.Cancel();
+        return generation;
+    }
+
+    /// <summary>
+    /// A token cancelled when <paramref name="generation"/> is overtaken; already cancelled if it has
+    /// been. Not disposed when it is replaced, since waits may still hold it.
+    /// </summary>
+    private CancellationToken GenerationToken(long generation)
+    {
+        lock (_gate) return generation == Generation ? _generationCts.Token : new CancellationToken(canceled: true);
     }
 
     private void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
@@ -1923,6 +1955,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         if (_disposed) return;
         _disposed = true;
         _prepareCts?.Cancel();
+        lock (_gate) _generationCts.Cancel();
         _interpretCts?.Cancel();
         _lifetime.Cancel();
         try { if (_prepareLoop is not null) await _prepareLoop.ConfigureAwait(false); }
