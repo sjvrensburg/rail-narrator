@@ -126,6 +126,8 @@
           <MenuItem Header="Export annotations for _RailReader2…" Command="{Binding ExportAnnotationsJson}" />
           <MenuItem Header="_Import annotations…" Command="{Binding ImportAnnotationsJson}" />
         </MenuItem>
+        <MenuItem Header="Bring notes from the _earlier version" Command="{Binding BringEarlierNotes}" />
+        <MenuItem Header="Bring notes from another _version of this PDF…" Command="{Binding BringNotesFromFile}" />
         <Separator />
         <MenuItem Header="_Annotate mode" ToggleType="CheckBox" IsChecked="{Binding AnnotateMode, Mode=TwoWay}" InputGesture="Ctrl+E" />
         <MenuItem Header="_Tool">
@@ -479,7 +481,7 @@
                     <Grid ColumnDefinitions="Auto,*" AutomationProperties.Name="{Binding Description}">
                       <Border Grid.Column="0" Width="6" CornerRadius="3" Margin="0,2,8,2" Background="{Binding Swatch}" />
                       <StackPanel Grid.Column="1" Spacing="2">
-                        <TextBlock Text="{Binding PageLabel}" Classes="secondary" FontSize="11" />
+                        <TextBlock Text="{Binding PageLabel}" Classes="secondary" FontSize="11" TextWrapping="Wrap" />
                         <TextBlock Text="{Binding Note}" IsVisible="{Binding HasNote}" TextWrapping="Wrap" FontWeight="SemiBold" />
                         <TextBlock Text="{Binding Quote}" IsVisible="{Binding HasQuote}" TextWrapping="Wrap" MaxLines="3"
                                    TextTrimming="CharacterEllipsis" FontStyle="Italic" Opacity="0.85" FontSize="12" />
@@ -488,6 +490,14 @@
                                   Command="{Binding $parent[ListBox].((vm:MainViewModel)DataContext).EditReviewNote}" CommandParameter="{Binding}" />
                           <Button Content="Delete" Classes="borderless" FontSize="11" Padding="4,1"
                                   Command="{Binding $parent[ListBox].((vm:MainViewModel)DataContext).DeleteReviewNote}" CommandParameter="{Binding}" />
+                        </StackPanel>
+                        <StackPanel Orientation="Horizontal" Spacing="4" IsVisible="{Binding Unplaced}">
+                          <Button Content="Place as before" Classes="borderless" FontSize="11" Padding="4,1"
+                                  ToolTip.Tip="Put it on this version where it was on the earlier one"
+                                  Command="{Binding $parent[ListBox].((vm:MainViewModel)DataContext).PlaceAsBefore}" CommandParameter="{Binding}" />
+                          <Button Content="Discard" Classes="borderless" FontSize="11" Padding="4,1"
+                                  ToolTip.Tip="Leave it out of this version (the earlier version keeps it)"
+                                  Command="{Binding $parent[ListBox].((vm:MainViewModel)DataContext).DiscardUnplaced}" CommandParameter="{Binding}" />
                         </StackPanel>
                       </StackPanel>
                     </Grid>

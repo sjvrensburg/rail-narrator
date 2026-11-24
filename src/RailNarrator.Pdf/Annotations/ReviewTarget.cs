@@ -52,20 +52,20 @@ public sealed record ReviewTarget(
         int end = Math.Clamp(range.End, start, text.Length);
         string quote = PageQuote.Of(text, start, end, ligatures ?? new Dictionary<char, string>());
 
-        string? segmentId = null, unitId = null;
-        if (plan is not null)
-        {
-            var unit = plan.Units.FirstOrDefault(u => u.Anchors.Any(a => a.PageIndex == page.PageIndex
-                && a.SourceCharRange is { } r && r.Start < end && start < r.End));
-            if (unit is not null)
-            {
-                unitId = unit.Id;
-                segmentId = plan.Segments.FirstOrDefault(s => s.ReadingUnitIds.Contains(unit.Id))?.Id;
-            }
-        }
+        var (segmentId, unitId) = Locate(plan, page.PageIndex, start, end);
         return new ReviewTarget(segmentId, unitId,
             [new ReviewTargetPage(page.PageIndex, rects, [new LinkedRange(page.PageIndex, start, end - start)])],
             quote, snapshot.Identity.ExtractionRevision) { ByHand = true };
+    }
+
+    /// <summary>The passage and sentence that read a range of a page's text, if any does: the first unit with an anchor over it.</summary>
+    internal static (string? SegmentId, string? UnitId) Locate(NarrationPlan? plan, int pageIndex, int start, int end)
+    {
+        if (plan is null) return (null, null);
+        var unit = plan.Units.FirstOrDefault(u => u.Anchors.Any(a => a.PageIndex == pageIndex
+            && a.SourceCharRange is { } r && r.Start < end && start < r.End));
+        if (unit is null) return (null, null);
+        return (plan.Segments.FirstOrDefault(s => s.ReadingUnitIds.Contains(unit.Id))?.Id, unit.Id);
     }
 
     /// <summary>Marked by hand over a range of text, not on what was just read: never the same mark as one made by N or H.</summary>
@@ -275,12 +275,12 @@ public static class PageQuote
         }
     }
 
-    private static bool IsUnmapped(char c) => UnmappedGlyphResolver.IsUnmapped(c) && !char.IsWhiteSpace(c);
+    internal static bool IsUnmapped(char c) => UnmappedGlyphResolver.IsUnmapped(c) && !char.IsWhiteSpace(c);
 
-    private static bool IsLineEndHyphen(string text, int i)
+    internal static bool IsLineEndHyphen(string text, int i)
         => text[i] == LineEndHyphen && i > 0 && char.IsLetter(text[i - 1])
            && (i + 1 == text.Length || text[i + 1] is '\n' or '\r');
 
-    private static bool InsideAWord(string text, int i)
+    internal static bool InsideAWord(string text, int i)
         => (i > 0 && char.IsLetter(text[i - 1])) || (i + 1 < text.Length && char.IsLetter(text[i + 1]));
 }

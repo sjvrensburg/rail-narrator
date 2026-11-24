@@ -205,6 +205,88 @@ public sealed class ReviewSession
         return (added.Count, offered - added.Count);
     }
 
+    /// <summary>
+    /// Brings an earlier version's notes over (<see cref="ReviewCarryOver.Match"/>) as one undoable
+    /// step: the placed ones onto this document, the rest into <see cref="ReviewDocument.Unplaced"/>,
+    /// and the earlier version recorded as brought over. Undone, the offer stands again.
+    /// </summary>
+    public void CarryOver(CarriedNotes carried, string earlierHash)
+    {
+        ArgumentNullException.ThrowIfNull(carried);
+        ArgumentException.ThrowIfNullOrEmpty(earlierHash);
+        var actions = carried.Placed.Select(p => (IUndoAction)new AddAnnotationAction(p.Page, p.Annotation)).ToList();
+        foreach (var (page, list) in carried.Unplaced.Pages.OrderBy(p => p.Key))
+            foreach (var annotation in list)
+                actions.Add(new OnFile(Document.Unplaced, new AddAnnotationAction(page, annotation)));
+        var before = Document.Earlier;
+        var after = new EarlierVersion(earlierHash) { CarriedUtc = _now(), PageMap = carried.PageMap };
+        var links = carried.UnplacedLinks.ToList();
+        actions.Add(new HostAction(
+            () => { Document.Earlier = after; foreach (var l in links) Document.UnplacedLinks[l.NativeId] = l; },
+            () => { Document.Earlier = before; foreach (var l in links) Document.UnplacedLinks.Remove(l.NativeId); }));
+        Apply(new Step(actions, carried.PlacedLinks, []));
+    }
+
+    /// <summary>
+    /// Puts a note brought from an earlier version, and the others made with it, on this document
+    /// where it was there: the same place, on the page its page became when other notes on it were
+    /// found by their text (<see cref="EarlierVersion.PageNow"/>), else the same page number. The
+    /// reader's choice, for a note whose words could not be found. It is no longer linked to a passage.
+    /// </summary>
+    public void PlaceAsBefore(Annotation unplaced)
+    {
+        ArgumentNullException.ThrowIfNull(unplaced);
+        var group = UnplacedGroup(unplaced);
+        if (group.Count == 0) return;
+        var oldLinks = group.Select(g => g.Annotation.NativeId is { } id && Document.UnplacedLinks.TryGetValue(id, out var l) ? l : null)
+            .OfType<ReviewLink>().ToList();
+        // Kept as a mark on the words it quoted, but its ranges and passage belong to the other version.
+        var newLinks = oldLinks.Select(l => l with { SegmentId = null, UnitId = null, Ranges = [], ByHand = true }).ToList();
+        var actions = new List<IUndoAction>();
+        foreach (var (page, annotation) in group)
+        {
+            actions.Add(new OnFile(Document.Unplaced, new RemoveAnnotationAction(page, annotation)));
+            actions.Add(new AddAnnotationAction(PageNow(page), annotation));
+        }
+        actions.Add(UnplacedLinksRemoved(oldLinks));
+        Apply(new Step(actions, newLinks, []));
+        Selected = group[0].Annotation;
+    }
+
+    /// <summary>Discards a note brought from an earlier version that could not be placed (undoable; the earlier version keeps it).</summary>
+    public void Discard(Annotation unplaced)
+    {
+        ArgumentNullException.ThrowIfNull(unplaced);
+        var group = UnplacedGroup(unplaced);
+        if (group.Count == 0) return;
+        var oldLinks = group.Select(g => g.Annotation.NativeId is { } id && Document.UnplacedLinks.TryGetValue(id, out var l) ? l : null)
+            .OfType<ReviewLink>().ToList();
+        var actions = group.Select(g => (IUndoAction)new OnFile(Document.Unplaced, new RemoveAnnotationAction(g.Page, g.Annotation))).ToList();
+        actions.Add(UnplacedLinksRemoved(oldLinks));
+        Apply(new Step(actions, [], []));
+    }
+
+    /// <summary>The page of this document a note not placed from <paramref name="earlierPage"/> would be placed on.</summary>
+    public int PageNow(int earlierPage) => Document.Earlier?.PageNow(earlierPage) ?? earlierPage;
+
+    /// <summary>The link of a note not placed, as it was in the earlier version.</summary>
+    public ReviewLink? UnplacedLinkOf(Annotation annotation)
+        => annotation.NativeId is { } id && Document.UnplacedLinks.TryGetValue(id, out var link) ? link : null;
+
+    private IUndoAction UnplacedLinksRemoved(IReadOnlyList<ReviewLink> links) => new HostAction(
+        () => { foreach (var l in links) Document.UnplacedLinks.Remove(l.NativeId); },
+        () => { foreach (var l in links) Document.UnplacedLinks[l.NativeId] = l; });
+
+    private List<(int Page, Annotation Annotation)> UnplacedGroup(Annotation annotation)
+    {
+        var all = Document.Unplaced.Pages.OrderBy(p => p.Key).SelectMany(p => p.Value.Select(a => (Page: p.Key, Annotation: a))).ToList();
+        var self = all.Where(x => ReferenceEquals(x.Annotation, annotation)).ToList();
+        if (self.Count == 0 || UnplacedLinkOf(annotation)?.GroupId is not { } group) return self;
+        var members = Document.UnplacedLinks.Values.Where(l => l.GroupId == group).Select(l => l.NativeId).ToHashSet(StringComparer.Ordinal);
+        return all.Where(x => x.Annotation.NativeId is { } id && members.Contains(id))
+            .OrderBy(x => x.Annotation.NativeId == group ? 0 : 1).ToList();
+    }
+
     private T Stamp<T>(T annotation) where T : Annotation
     {
         annotation.NativeId = Guid.NewGuid().ToString();
@@ -349,6 +431,22 @@ public sealed class ReviewSession
             annotation.Color = colour;
             annotation.ColorComponents = null;
         }
+    }
+
+    /// <summary>One of Core's actions done on another file than the document's (the notes not placed).</summary>
+    private sealed class OnFile(AnnotationFile target, IUndoAction inner) : IUndoAction
+    {
+        public void Undo(AnnotationFile file) => inner.Undo(target);
+
+        public void Redo(AnnotationFile file) => inner.Redo(target);
+    }
+
+    /// <summary>A change to what the document keeps beside its annotations.</summary>
+    private sealed class HostAction(Action redo, Action undo) : IUndoAction
+    {
+        public void Undo(AnnotationFile file) => undo();
+
+        public void Redo(AnnotationFile file) => redo();
     }
 
     /// <summary>Stamps the modification time, and puts the old one back on undo.</summary>

@@ -10,12 +10,22 @@ namespace RailNarrator.App.ViewModels;
 /// <param name="Quote">The document's text it is on; empty for a mark not made on text.</param>
 /// <param name="Note">What the reader wrote; null for a highlight without a note.</param>
 /// <param name="FromPdf">Carried by the PDF itself (a co-reviewer's), shown read-only.</param>
-public sealed record ReviewNoteItem(Annotation Annotation, int PageIndex, string? SegmentId, string Quote, string? Note, bool FromPdf = false)
+/// <param name="Unplaced">
+/// Brought from an earlier version of the PDF and not placed on this one; <paramref name="PageIndex"/>
+/// is its page there.
+/// </param>
+public sealed record ReviewNoteItem(Annotation Annotation, int PageIndex, string? SegmentId, string Quote, string? Note,
+    bool FromPdf = false, bool Unplaced = false)
 {
-    public string PageLabel => $"Page {PageIndex + 1} · {Kind}" + (FromPdf ? " · in the PDF" + (Annotation.Author is { Length: > 0 } a ? $", {a}" : "") : "");
+    /// <summary>For a note not placed, the page of this version "Place as before" puts it on.</summary>
+    public int PageNow { get; init; }
 
-    /// <summary>The reader's own, which may be edited and deleted here.</summary>
-    public bool IsOwn => !FromPdf;
+    public string PageLabel => Unplaced
+        ? $"Not placed · was on page {PageIndex + 1}" + (PageNow != PageIndex ? $", now page {PageNow + 1}" : "") + $" · {Kind}"
+        : $"Page {PageIndex + 1} · {Kind}" + (FromPdf ? " · in the PDF" + (Annotation.Author is { Length: > 0 } a ? $", {a}" : "") : "");
+
+    /// <summary>The reader's own, on this version, which may be edited and deleted here.</summary>
+    public bool IsOwn => !FromPdf && !Unplaced;
 
     /// <summary>What the annotation is, in the reader's words: a drawing has no quote or note to show.</summary>
     public string Kind => RailNarrator.Pdf.Annotations.ReviewMarkdown.KindOf(Annotation);

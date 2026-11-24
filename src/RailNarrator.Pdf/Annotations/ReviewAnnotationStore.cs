@@ -16,7 +16,10 @@ public sealed record ReviewLoadResult(ReviewDocument Document, string? Problem);
 /// <para>
 /// <c>&lt;root&gt;/&lt;sha256&gt;/annotations.json</c> is Core's annotation format, so RailReader2 can read it.
 /// <c>links.json</c> beside it is Rail Narrator's own. <c>&lt;root&gt;/index.json</c> remembers which hash
-/// each path last had, so notes on a PDF that has since been revised can be found again.
+/// each path last had, so notes on a PDF that has since been revised can be found again: a document
+/// whose path last had another hash is given that <see cref="EarlierVersion"/>, kept in
+/// <c>earlier.json</c> with the links of the notes that could not be placed, which are in
+/// <c>unplaced.json</c> (Core's format). The earlier version's own files are only ever read.
 /// </para>
 /// <para>
 /// Nothing here may lose the reader's work. Every file is written under a temporary name and renamed
@@ -31,6 +34,8 @@ public sealed class ReviewAnnotationStore
     private const string AnnotationsFile = "annotations.json";
     private const string LinksFile = "links.json";
     private const string IndexFile = "index.json";
+    private const string EarlierFile = "earlier.json";
+    private const string UnplacedFile = "unplaced.json";
 
     private readonly string _root;
     private readonly SemaphoreSlim _writeGate = new(1, 1);
@@ -77,6 +82,31 @@ public sealed class ReviewAnnotationStore
             blocked |= unread;
         }
 
+        EarlierState? earlier = null;
+        string earlierPath = Path.Combine(dir, EarlierFile);
+        if (File.Exists(earlierPath))
+        {
+            earlier = ReadOrQuarantine(earlierPath, ReviewAnnotationJson.DeserializeEarlier, problems, "record of the earlier version", out bool unread);
+            blocked |= unread;
+        }
+        AnnotationFile? unplaced = null;
+        string unplacedPath = Path.Combine(dir, UnplacedFile);
+        if (File.Exists(unplacedPath))
+        {
+            unplaced = ReadOrQuarantine(unplacedPath, ReviewAnnotationJson.Deserialize, problems, "notes not placed from the earlier version", out bool unread);
+            blocked |= unread;
+            if (unplaced is not null) unplaced.Pages ??= [];
+        }
+
+        // The same path under another hash: the PDF was revised since it was annotated. Offered only
+        // to a document with nothing of its own yet; once known, the offer is kept in earlier.json.
+        var found = earlier?.Earlier;
+        if (found is null && pdfPath is not null && !blocked
+            && (file is null || file.Pages.Values.All(p => p.Count == 0)) && (links is null || links.Count == 0)
+            && LastHashFor(pdfPath) is { } last && last != documentContentHash
+            && File.Exists(Path.Combine(DirectoryFor(last), AnnotationsFile)))
+            found = new EarlierVersion(last);
+
         // A file that is there but could not be read at all is still the reader's work: nothing is
         // saved over it this session.
         lock (_versions)
@@ -85,7 +115,7 @@ public sealed class ReviewAnnotationStore
             else _blocked.Remove(documentContentHash);
         }
         if (blocked) problems.Add("Changes to this document's annotations will not be saved until it is opened again.");
-        var document = new ReviewDocument(documentContentHash, pdfPath, file, links);
+        var document = new ReviewDocument(documentContentHash, pdfPath, file, links, found, unplaced, earlier?.UnplacedLinks);
         return new ReviewLoadResult(document, problems.Count == 0 ? null : string.Join(" ", problems));
     }
 
@@ -106,6 +136,8 @@ public sealed class ReviewAnnotationStore
         string annotations = ReviewAnnotationJson.Serialize(document.File);
         string links = ReviewAnnotationJson.SerializeLinks(document.Links.Values.OrderBy(l => l.CreatedUtc));
         string? sourcePath = document.SourcePath;
+        string? earlier = document.Earlier is { } e ? ReviewAnnotationJson.SerializeEarlier(e, document.UnplacedLinks.Values.OrderBy(l => l.CreatedUtc)) : null;
+        string? unplaced = document.Earlier is not null ? ReviewAnnotationJson.Serialize(document.Unplaced) : null;
 
         lock (_versions)
         {
@@ -122,6 +154,17 @@ public sealed class ReviewAnnotationStore
                     Directory.CreateDirectory(dir);
                     WriteAtomically(Path.Combine(dir, AnnotationsFile), annotations);
                     WriteAtomically(Path.Combine(dir, LinksFile), links);
+                    if (earlier is not null && unplaced is not null)
+                    {
+                        WriteAtomically(Path.Combine(dir, UnplacedFile), unplaced);
+                        WriteAtomically(Path.Combine(dir, EarlierFile), earlier);
+                    }
+                    else
+                    {
+                        // No earlier version any more (bringing its notes over was undone).
+                        File.Delete(Path.Combine(dir, EarlierFile));
+                        File.Delete(Path.Combine(dir, UnplacedFile));
+                    }
                     if (sourcePath is not null) Remember(sourcePath, hash);
                     lock (_versions) _written[hash] = version;
                 }
