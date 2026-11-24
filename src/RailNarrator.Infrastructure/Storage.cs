@@ -255,6 +255,9 @@ public sealed record RailNarratorSettings
     /// <summary>Each markup tool's colour, by tool name, as an index into the five; a tool not named has Core's default.</summary>
     public IReadOnlyDictionary<string, int>? AnnotationColourIndices { get; init; }
 
+    /// <summary>The pen's and the rectangle's line, by tool name, as an index into Core's three thicknesses (thin, normal, thick).</summary>
+    public IReadOnlyDictionary<string, int>? AnnotationThicknessIndices { get; init; }
+
     /// <summary>Dark theme for the window. Light by default, as RailReader2.</summary>
     public bool DarkMode { get; init; }
 

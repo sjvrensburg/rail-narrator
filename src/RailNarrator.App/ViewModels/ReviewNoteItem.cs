@@ -11,7 +11,21 @@ namespace RailNarrator.App.ViewModels;
 /// <param name="Note">What the reader wrote; null for a highlight without a note.</param>
 public sealed record ReviewNoteItem(Annotation Annotation, int PageIndex, string? SegmentId, string Quote, string? Note)
 {
-    public string PageLabel => $"Page {PageIndex + 1}";
+    public string PageLabel => $"Page {PageIndex + 1} · {Kind}";
+
+    /// <summary>What the annotation is, in the reader's words: a drawing has no quote or note to show.</summary>
+    public string Kind => Annotation switch
+    {
+        HighlightAnnotation => "Highlight",
+        UnderlineAnnotation => "Underline",
+        StrikeOutAnnotation => "Struck out",
+        SquigglyAnnotation => "Squiggle",
+        TextNoteAnnotation => "Sticky note",
+        FreeTextAnnotation => "Text box",
+        FreehandAnnotation => "Pen",
+        RectAnnotation => "Box",
+        _ => "Annotation",
+    };
 
     public bool HasNote => !string.IsNullOrEmpty(Note);
 
@@ -23,5 +37,5 @@ public sealed record ReviewNoteItem(Annotation Annotation, int PageIndex, string
         : Brushes.Gold;
 
     /// <summary>For a screen reader: the whole entry in one sentence.</summary>
-    public string Description => $"{PageLabel}. " + (HasNote ? $"Note: {Note}. " : "Highlight. ") + (HasQuote ? $"On: {Quote}" : "");
+    public string Description => $"{PageLabel}. " + (HasNote ? $"Note: {Note}. " : "") + (HasQuote ? $"On: {Quote}" : "");
 }

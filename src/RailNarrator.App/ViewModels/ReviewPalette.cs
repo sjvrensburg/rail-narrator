@@ -27,7 +27,8 @@ public static class ReviewPalette
     public static int DefaultIndexFor(AnnotationTool tool) => tool switch
     {
         AnnotationTool.Underline or AnnotationTool.Squiggly => 1,
-        AnnotationTool.StrikeOut => 2,
+        AnnotationTool.StrikeOut or AnnotationTool.Pen => 2,
+        AnnotationTool.Rectangle => 3,
         AnnotationTool.FreeText => 4,
         _ => 0,
     };
@@ -37,8 +38,13 @@ public static class ReviewPalette
     {
         AnnotationTool.Highlight => 0.35f,
         AnnotationTool.TextNote => 0.9f,
+        AnnotationTool.Pen => 0.8f,
+        AnnotationTool.Rectangle => 0.5f,
         _ => 1f,
     };
+
+    /// <summary>Core's three line thicknesses, in points: thin, normal, thick.</summary>
+    public static IReadOnlyList<float> Thicknesses => AnnotationInteractionHandler.ThicknessPresets;
 
     public static IBrush Brush(int index) => new SolidColorBrush(Color.Parse(Hex(index)));
 }
