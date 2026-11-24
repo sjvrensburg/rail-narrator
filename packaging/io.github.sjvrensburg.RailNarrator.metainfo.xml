@@ -49,6 +49,11 @@
   </provides>
 
   <releases>
+    <release version="0.1.2" date="2026-11-24">
+      <description>
+        <p>Fixes two playback problems: a long silence after skipping through many passages quickly, and reading stopping after the voice was changed several times in a row.</p>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-11-24">
       <description>
         <p>An AppImage for Linux and an installer for Windows, and Phonon's speech model downloadable from inside the application.</p>
