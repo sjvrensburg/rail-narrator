@@ -81,6 +81,7 @@ public partial class MainWindow : Window
         _viewModel.RestartRequested += Restart;
         _viewModel.PageRequested += page => Surface.ShowPageFromTop(page);
         SetUpSidebar();
+        SetUpNoteCard();
         SetUpFileDrop();
         SetUpFlows();
     }
@@ -237,7 +238,7 @@ public partial class MainWindow : Window
     /// </summary>
     private void SetUpSidebar()
     {
-        _sections.AddRange([(OutlineSection, "Outline"), (ScriptSection, "Script"), (MathsSection, "MathsReview"), (NotesSection, "Notes")]);
+        _sections.AddRange([(OutlineSection, "Outline"), (ScriptSection, "Script"), (MathsSection, "MathsReview"), (ReviewSection, "Review"), (NotesSection, "Notes")]);
         string open = _services.CurrentSettings.SidebarSection;
         foreach (var (section, name) in _sections)
         {
@@ -319,6 +320,86 @@ public partial class MainWindow : Window
     private void OnOutlineSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
         if (OutlineTree.SelectedItem is OutlineItem item) _viewModel.OpenOutlineItem(item);
+    }
+
+    /// <summary>
+    /// A note chosen in the Review notes list. As the outline: the selection changes only when the
+    /// reader chooses (the list is rebuilt, never synced to the reading), so this does not seek on
+    /// its own.
+    /// </summary>
+    private void OnReviewNoteSelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        if (ReviewNotesList.SelectedItem is ReviewNoteItem item) _viewModel.OpenReviewNote.Execute(item);
+    }
+
+    // ---- the note card -------------------------------------------------------------------------
+
+    private void SetUpNoteCard()
+    {
+        _viewModel.NoteEditorOpened += () =>
+        {
+            if (_viewModel.NoteTarget is { } target && Surface.ScreenBoundsOf(target) is null)
+                Surface.GoToPage(target.FirstPage);
+            // After layout, so the page shown and the card's own size are known.
+            Avalonia.Threading.Dispatcher.UIThread.Post(() =>
+            {
+                PlaceNoteCard();
+                NoteEditorBox.Focus();
+                NoteEditorBox.CaretIndex = NoteEditorBox.Text?.Length ?? 0;
+            }, Avalonia.Threading.DispatcherPriority.Loaded);
+        };
+        NoteEditorBox.AddHandler(KeyDownEvent, OnNoteEditorKeyDown, RoutingStrategies.Tunnel);
+        _viewModel.PropertyChanged += (_, e) =>
+        {
+            // The card gone: the keyboard goes back to the page, so Space plays again.
+            if (e.PropertyName == nameof(MainViewModel.IsNoteEditorOpen) && !_viewModel.IsNoteEditorOpen) Surface.Focus();
+        };
+    }
+
+    /// <summary>Below the text the note is on, else above it, else at the foot of the page; inside the reading area.</summary>
+    private void PlaceNoteCard()
+    {
+        if (Surface.Parent is not Control area) return;
+        NoteCard.Measure(Avalonia.Size.Infinity);
+        double width = NoteCard.DesiredSize.Width, height = NoteCard.DesiredSize.Height;
+        double areaW = area.Bounds.Width, areaH = area.Bounds.Height;
+        const double gap = 10, edge = 8;
+        double x, y;
+        if (_viewModel.NoteTarget is { } target && Surface.ScreenBoundsOf(target) is { } text)
+        {
+            x = text.Left;
+            y = text.Bottom + gap + height <= areaH - edge ? text.Bottom + gap
+                : text.Top - gap - height >= edge ? text.Top - gap - height
+                : areaH - height - edge;
+        }
+        else
+        {
+            x = (areaW - width) / 2;
+            y = areaH - height - 2 * edge;
+        }
+        x = Math.Clamp(x, edge, Math.Max(edge, areaW - width - edge));
+        y = Math.Clamp(y, edge, Math.Max(edge, areaH - height - edge));
+        NoteCard.Margin = new Avalonia.Thickness(x, y, 0, 0);
+    }
+
+    private void OnNoteEditorKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.Escape)
+        {
+            _viewModel.CancelNote.Execute(null);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Enter && e.KeyModifiers == KeyModifiers.None)
+        {
+            _viewModel.SaveNote.Execute(null);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Enter && e.KeyModifiers == KeyModifiers.Control)
+        {
+            _viewModel.SaveNoteAndResume.Execute(null);
+            e.Handled = true;
+        }
+        // Shift+Enter: the text box's own new line.
     }
 
     private SettingsWindow? _settingsWindow;
@@ -484,8 +565,9 @@ public partial class MainWindow : Window
     /// </remarks>
     private void OnPreviewKeyDown(object? sender, KeyEventArgs e)
     {
-        if (e.KeyModifiers != KeyModifiers.None) return;
         var focused = FocusManager?.GetFocusedElement();
+        if (HandleReviewKey(e, focused)) { e.Handled = true; return; }
+        if (e.KeyModifiers != KeyModifiers.None) return;
 
         if (e.Key == Key.Space)
         {
@@ -523,6 +605,35 @@ public partial class MainWindow : Window
                 || MainMenu.IsOpen || IsInsideOpenDropDown(focused)) return;
             if (Surface.HandleNavigationKey(e.Key)) e.Handled = true;
         }
+    }
+
+    /// <summary>
+    /// The annotation keys (ADR-0014): N and H on what was just read (Shift for the whole
+    /// passage), Ctrl+Z and Ctrl+Shift+Z (or Ctrl+Y) to undo and redo, Delete for the selected
+    /// annotation. None of them while typing or in a menu: here and not as window key bindings,
+    /// which fire inside a text box and would take its own undo.
+    /// </summary>
+    private bool HandleReviewKey(KeyEventArgs e, Avalonia.Input.IInputElement? focused)
+    {
+        if (focused is TextBox || MainMenu.IsOpen || IsInsideOpenDropDown(focused)) return false;
+        var mods = e.KeyModifiers;
+        bool shift = mods == KeyModifiers.Shift, plain = mods == KeyModifiers.None;
+        bool ctrl = mods == KeyModifiers.Control, ctrlShift = mods == (KeyModifiers.Control | KeyModifiers.Shift);
+        RelayCommand? command = e.Key switch
+        {
+            Key.N when plain => _viewModel.NoteOnSentence,
+            Key.N when shift => _viewModel.NoteOnPassage,
+            Key.H when plain => _viewModel.HighlightSentence,
+            Key.H when shift => _viewModel.HighlightPassage,
+            Key.Z when ctrl => _viewModel.UndoAnnotation,
+            Key.Z when ctrlShift => _viewModel.RedoAnnotation,
+            Key.Y when ctrl => _viewModel.RedoAnnotation,
+            Key.Delete when plain => _viewModel.DeleteSelectedAnnotation,
+            _ => null,
+        };
+        if (command is null || !command.CanExecute(null)) return false;
+        command.Execute(null);
+        return true;
     }
 
     private static bool IsInsideOpenDropDown(Avalonia.Input.IInputElement? focused)
