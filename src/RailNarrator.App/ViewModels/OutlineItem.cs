@@ -43,7 +43,8 @@ public sealed class OutlineItem
 }
 
 /// <summary>A notice in the status bar with an optional action, as RailReader2's status toasts.</summary>
-public sealed record StatusNotice(string Text, string? ActionLabel = null, Action? Action = null)
+/// <param name="Lasting">Stays until the reader dismisses it; notices raised meanwhile wait behind it.</param>
+public sealed record StatusNotice(string Text, string? ActionLabel = null, Action? Action = null, bool Lasting = false)
 {
     public bool HasAction => ActionLabel is not null && Action is not null;
 }

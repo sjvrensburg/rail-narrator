@@ -5,6 +5,7 @@ using RailNarrator.Domain;
 using RailNarrator.Infrastructure;
 using RailNarrator.Inference;
 using RailNarrator.Pdf;
+using RailNarrator.Pdf.Annotations;
 using RailNarrator.Speech;
 
 namespace RailNarrator.App.Composition;
@@ -78,6 +79,9 @@ public sealed class ServiceRegistry : IAsyncDisposable
     public required NarrationCoordinator Coordinator { get; init; }
     public required DiskSpeechAssetStore AssetStore { get; init; }
     public required DiskPlanStore PlanStore { get; init; }
+
+    /// <summary>The reader's own annotations, kept by content hash in the data directory (ADR-0014).</summary>
+    public required ReviewAnnotationStore ReviewAnnotations { get; init; }
     public required RecentDocumentsStore Recent { get; init; }
     public required ModelDownloader Models { get; init; }
     public required SidecarManager? Sidecar { get; init; }
@@ -163,6 +167,7 @@ public sealed class ServiceRegistry : IAsyncDisposable
 
         var assetStore = new DiskSpeechAssetStore();
         var planStore = new DiskPlanStore();
+        var reviewAnnotations = new ReviewAnnotationStore(Path.Combine(XdgPaths.Data, "annotations"));
         var models = new ModelDownloader();
 
         // ---- speech --------------------------------------------------------------------
@@ -381,6 +386,7 @@ public sealed class ServiceRegistry : IAsyncDisposable
             Coordinator = coordinator,
             AssetStore = assetStore,
             PlanStore = planStore,
+            ReviewAnnotations = reviewAnnotations,
             Models = models,
             Sidecar = sidecar,
             MathVerbaliser = verbaliser,

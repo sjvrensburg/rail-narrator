@@ -680,6 +680,7 @@ public sealed class PdfSurface : Control
                     context.FillRectangle(new SolidColorBrush(Color.FromRgb(paper.Red, paper.Green, paper.Blue)), destination);
                 }
             }
+            DrawAnnotations(context, bounds);
             DrawHighlights(context);
             DrawPreparing(context);
             if (_failed.TryGetValue(SharpKey(CurrentPage), out string? failure)) DrawRenderError(context, failure);
@@ -704,6 +705,19 @@ public sealed class PdfSurface : Control
         => context.DrawText(new FormattedText($"Render error: {message}",
             System.Globalization.CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
             new Typeface("DejaVu Sans"), 13, Brushes.OrangeRed), new Point(8, 8));
+
+    /// <summary>
+    /// The reader's own annotations (ADR-0014), under the narration highlight so the passage being
+    /// read stays plain. Drawn from a copy made here, on the UI thread, when they last changed.
+    /// </summary>
+    private void DrawAnnotations(DrawingContext context, Rect bounds)
+    {
+        if (_viewModel is not { ShowAnnotations: true, AnnotationLayer: { } layer }) return;
+        var snapshot = layer.ForPage(CurrentPage);
+        if (snapshot.Count == 0) return;
+        context.Custom(new AnnotationDraw(bounds, snapshot, new PageTransform(Zoom, _offsetX, _offsetY),
+            RailReader.Renderer.Skia.AnnotationRenderer.IsDarkBackdrop(_colourEffect), expandAllNotes: false));
+    }
 
     private void DrawHighlights(DrawingContext context)
     {
