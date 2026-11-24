@@ -321,7 +321,9 @@ public static class TextNormaliser
     /// expanding a symbol inside an expression produces a string that is neither the expression nor
     /// a faithful reading of it.
     /// </remarks>
-    public static TransformedText ExpandForSpeech(string input, IReadOnlyDictionary<string, string>? dictionary = null)
+    /// <param name="heading">The text is a heading: a number that opens it is its section number,
+    /// so "3.10 Summary" is section three point ten, where in a sentence 3.10 is a decimal.</param>
+    public static TransformedText ExpandForSpeech(string input, IReadOnlyDictionary<string, string>? dictionary = null, bool heading = false)
     {
         ArgumentNullException.ThrowIfNull(input);
         var table = SpeechExpansions.BuildTable(dictionary);
@@ -329,6 +331,12 @@ public static class TextNormaliser
         var mappings = new List<TextMapping>(input.Length);
 
         int i = 0;
+        if (heading && EnglishNumbers.SectionNumberAt(input, 0, minimumParts: 2) is { } section)
+        {
+            mappings.Add(new TextMapping(new TextRange(0, section.Words.Length), new TextRange(0, section.Length)));
+            sb.Append(section.Words);
+            i = section.Length;
+        }
         while (i < input.Length)
         {
             if (Dois.At(input, i) is int doiLength)
@@ -458,6 +466,9 @@ internal static class MathsLetters
             codePoint = char.ConvertToUtf32(text[offset], text[offset + 1]);
             length = 2;
         }
+        // Half a pair: the second half of a character already passed over, or one a text layer left
+        // on its own. It is no letter, and it is not a code point to convert either.
+        else if (char.IsLowSurrogate(text[offset])) return null;
         string plain = IsStyled(codePoint)
             ? char.ConvertFromUtf32(codePoint).Normalize(System.Text.NormalizationForm.FormKC)
             : char.ConvertFromUtf32(codePoint);
@@ -561,6 +572,9 @@ internal static class EnglishNumbers
         var match = System.Text.RegularExpressions.Regex.Match(text[offset..], @"^[+-]?(?:[0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)(?:\.[0-9]+)?");
         if (!match.Success || offset + match.Length < text.Length && (char.IsLetterOrDigit(text[offset + match.Length]) || text[offset + match.Length] == '_')) return null;
         if (IdentifierAt(text, offset) is { } identifier) return identifier;
+        // A section number, "3.2.1": each part a number of its own. Read as a decimal it came out
+        // "three point two" with ".1" left for the engine to make what it could of.
+        if (SectionNumberAt(text, offset, minimumParts: 3) is { } section) return section;
         // Four characters are not four digits: "0.75" and "-100" match the same length.
         if (match.Length == 4 && match.Value.All(char.IsAsciiDigit) && IsYearContext(text, offset, 4)
             && int.Parse(match.Value, System.Globalization.CultureInfo.InvariantCulture) is >= 1100 and <= 1999 and var year)
@@ -574,6 +588,16 @@ internal static class EnglishNumbers
         if (parts.Length == 2) words += " point " + string.Join(" ", parts[1].Select(c => Small[c - '0']));
         return (match.Length, prefix + words);
     }
+    /// <summary>A dotted number read part by part: "3.2.1" as "three point two point one".</summary>
+    public static (int Length, string Words)? SectionNumberAt(string text, int offset, int minimumParts)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(text[offset..],
+            @"^[0-9]{1,3}(?:\.[0-9]{1,3}){" + (minimumParts - 1) + @",}(?![0-9A-Za-z_])");
+        return match.Success
+            ? (match.Length, string.Join(" point ", match.Value.Split('.').Select(part => Integer(long.Parse(part, System.Globalization.CultureInfo.InvariantCulture)))))
+            : null;
+    }
+
     /// <summary>"nineteen eighty-nine", "nineteen oh five", "nineteen hundred". Only 1100–1999 are read
     /// this way: "two thousand twelve" is an ordinary reading of 2012 and needs no special case.</summary>
     private static string Year(int year)

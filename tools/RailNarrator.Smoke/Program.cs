@@ -55,7 +55,7 @@ internal static class Program
               speak   <pdf> [--provider kokoro|zonos3|fake] [--model PATH] [--voice V] [--threads N] [--gpu-model PATH]
                                            synthesise the plan with a real provider and report
                                            measured latency, RTF, peak and format
-              audio   [--device N] [--silent] enumerate devices and report the presentation clock
+              audio   [--device N] [--silent] [--clicks] enumerate devices and report the presentation clock
               providers [--kokoro-model PATH] [--zonos-url URL]
                                            probe each provider's capabilities and run a self-test
               all     [--kokoro-model PATH]
@@ -355,6 +355,42 @@ internal static class Program
 
     // ---- audio --------------------------------------------------------------------
 
+    /// <summary>
+    /// A loopback check of the presentation clock: a 10 ms tone each second, and the wall-clock time at
+    /// which the device says each one's first frame was presented. Record the output (its monitor, or a
+    /// microphone) with wall-clock stamps beside this and the two times of a click should agree.
+    /// </summary>
+    private static void Clicks(PortAudioOutputDevice device, AudioFormat format)
+    {
+        const int seconds = 8, chunk = 512;
+        int rate = format.SampleRate, burst = rate / 100;
+        var buffer = new byte[chunk * format.BytesPerFrame];
+        long written = 0, total = (long)seconds * rate;
+        int next = 1;
+        while (next < seconds)
+        {
+            if (written < total && device.QueuedFrames < rate / 2)
+            {
+                for (int i = 0; i < chunk; i++)
+                {
+                    long frame = written + i, inSecond = frame % rate;
+                    float sample = frame >= rate && inSecond < burst ? (float)(0.5 * Math.Sin(2 * Math.PI * 1000 * inSecond / rate)) : 0;
+                    for (int c = 0; c < format.Channels; c++)
+                        BitConverter.TryWriteBytes(buffer.AsSpan((i * format.Channels + c) * 4, 4), sample);
+                }
+                written += device.Write(buffer, chunk);
+            }
+            else Thread.Sleep(1);
+            if (device.PresentedFrames >= (long)next * rate)
+            {
+                Console.WriteLine($"click {next} presented at {DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0:F3}");
+                next++;
+            }
+        }
+        Console.WriteLine($"reported output latency: {device.ReportedLatencySeconds * 1000:F1} ms; host underflows: {device.UnderflowCount}");
+        device.Pause();
+    }
+
     private static int Audio(string[] args)
     {
         string? version;
@@ -390,6 +426,7 @@ internal static class Program
             if (device is PortAudioOutputDevice pa) Console.WriteLine($"device buffer capacity: {pa.BufferCapacityFrames} frames ({pa.BufferCapacityFrames * 1000.0 / format.SampleRate:F1} ms)");
 
             device.Start();
+            if (args.Contains("--clicks")) { Clicks(device, format); return 0; }
             var sw = Stopwatch.StartNew();
             int total = 0;
             const int chunk = 512;

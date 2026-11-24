@@ -1408,3 +1408,118 @@ threads meeting.
     With the speech cache warm, saving the two pages again took 16 s (10 s of it encoding). An audiobook of the same 9 min was
     exported in 11.5 s.
 
+97. **The day's features driven in the window, with the reader's key** (`fix/gui-test-findings`,
+    2026-11-23; with the reader's leave, Claude `claude-opus-5-5` through Anthropic's API with the
+    address as the reader typed it, "…/v1/messages"). On a virtual display (Xvfb, input by XTEST),
+    an isolated profile copied from the reader's settings, the patched Phonon library, and audio
+    sent to a null sink and recorded from it, so nothing was heard: what follows was seen in
+    screenshots and measured in recordings, not listened to. The machine was still
+    power-limited (item 96). Two pages of `nbag025.pdf`, 51 passages, 10 with maths.
+    - *A narration without a window*: all 10 maths passages interpreted by Claude, 41 of 51
+      passages word-timed by Phonon's attention (the interpreted ones are not timed by word), in
+      180 s, which is the speaking time alone (173 to 202 s in item 96). With the speech cached
+      and the interpretations cleared it took 80 s, so the model's time, about 70 s, was spent
+      beside the speaking and not after it: the interpret-ahead change of item 96, measured.
+    - *Reading*: Play gave sound at the sink within two seconds and Pause stopped it (19 s of
+      speech, then silence, in the recording); words were highlighted one at a time from
+      Phonon's own timing with no aligner run; a passage Claude interpreted was highlighted whole
+      in violet while it played; Ctrl+Q ended the process and the position was saved.
+    - *Models and endpoints ▸ Test text LLM endpoint*: "The text LLM endpoint in use responded."
+    - *File ▸ Save narration with document…*: the question, progress with Stop, "Narration saved
+      beside the document (9 min, 2.8 MB)", Reload to play from it; after the reload "Playing the
+      narration saved with the document", sound and word highlighting from the file. Stop during
+      a second narration: "Narration stopped", and the saved file's time unchanged.
+    - *File ▸ Export audiobook (M4B)…*: "Audiobook saved as maths.m4b beside the document
+      (4.3 MB, 4 chapters)"; ffprobe lists the four chapters and 531.7 s.
+    - *A key the endpoint refuses*: the notice "Maths not interpreted: Claude refused the API
+      key, or none is set." before Play; its button opened Settings on Maths; Save narration
+      stopped with the reason and no file, and Narrate anyway saved one.
+    - *Settings ▸ Reading ▸ Word timing from*: the list, the choice written to the settings file
+      (mode 0600), and the restart line.
+    - *Kokoro*: Download Kokoro with word timing asked first (163 MB, Apache-2.0, huggingface.co),
+      fetched the file with the manifest's digest into the profile's models directory and the
+      menu then said installed; with the engine's timing chosen it was used without a path being
+      set, words were highlighted one at a time, and 13 of 15 clips made were stored with
+      `NativeDuration` timing from `kokoro-session`.
+    Two defects found and fixed:
+    - *The line under a list in Settings described the choice before.* Every list whose
+      description is bound as `Choice.Description` (nine of them) saved the choice without saying
+      that the property changed. Seen fixed in the window.
+    - *A narration saved after a reading had fallen back on its maths under-counted it.* The
+      count of maths read as printed was taken from what the plan still had pending, and the
+      reading in the window had already fallen back on seven of ten passages, so the file said 4
+      not interpreted. It is now told from the passages themselves (10 in the same run: 2 by rule,
+      8 as printed), and the question before a narration says how many passages of this reading
+      were not interpreted and that reloading tries them again.
+    *Not verified:* by ear, anything; that the highlighted word is the word sounding, beyond its
+    being the right word for the time elapsed in the screenshots; the reader's own install,
+    which still has the unpatched Phonon library; a whole paper.
+
+98. **Phonon's word timing in the window, measured against the sound** (`fix/gui-test-findings`,
+    2026-11-23, after `tools/setup-phonon.sh` rebuilt the reader's own library with the timing
+    patch; `PhononProviderTests` pass against that install, the real model timing every word).
+    Same rig as item 97 (virtual display, silent sink recorded with wall-clock stamps, nothing
+    heard), the same two pages, `WordTiming` `Engine`, speech made afresh by the rebuilt library.
+    - *Every passage read as printed was timed by the engine*: the clips of the first passages
+      were stored `ModelAttention` with a cue for every word, and no aligner ran.
+    - *The words agree with the aligner's.* The same clips were then aligned by MFA: over 190
+      words Phonon's starts are a median 9 ms after the aligner's, median difference either way
+      23 ms, 90th percentile 64 ms.
+    - *The application takes up a word when it sounds.* From the application's own log against
+      the recording, 61 of 61 words of the first four passages were taken up a median 72 ms after
+      their sound reached the sink (10th to 90th percentile, 7 ms before to 164 ms after), on a
+      rig drawing a frame every 241 ms: the reading is polled once a frame, so this is within a
+      frame, not an offset. The same figure was got with the aligner's timing.
+    - *The playback clock is right.* `rail-narrator-smoke audio --clicks` (new: a 10 ms tone each
+      second, and the time the device says each was presented) against the same recording: the
+      device's presentation time is 3 to 5 ms before the tone's arrival at the sink's monitor,
+      14 clicks of 14.
+    *Not verified:* what is seen on the reader's screen. On the rig the highlight on screen
+    trailed the sound by about 0.7 s (frame-by-frame capture, the same with the aligner's
+    timing), which is its four frames a second: a virtual display (Xvfb) is drawn in software whatever GPU
+    the machine has, on a processor held near 1.1 GHz while the laptop is fed 67.5 W (15 V, 4.5 A)
+    by a monitor over USB-C. It
+    says nothing of a display drawing sixty; nor anything after the sink (the output hardware's
+    own delay, which a monitor cannot see); nor by ear.
+
+99. **Four honours reports narrated to audiobooks, and what they found** (`fix/gui-test-findings`,
+    2026-11-23; `rail-narrator narrate … --m4b` with the reader's settings: Phonon with its own
+    word timing, Heron, the formula model, Claude `claude-opus-5-5` for the maths; the laptop on
+    its own charger, so not power-limited as in items 96 to 98). 248 pages:
+
+    | Document | Pages | Passages | Audio | Chapters | Maths interpreted | Narrating |
+    |---|---|---|---|---|---|---|
+    | Potsane | 49 | 811 | 106 min | 58 | 128 | 629 s |
+    | Nqophiso | 60 | 871 | 123 min | 74 | 94 | 734 s |
+    | Lekala | 61 | 582 | 78 min | 60 | 18 | 464 s |
+    | Clustering daily solar irradiance | 78 | 879 | 113 min | 51 | 160 | 12 min |
+
+    No maths passage was read by rule, as printed or announced unreadable; each audiobook's
+    length equals its narration's to the millisecond. Speech and interpretation together ran at
+    about ten times real time. The times are of the second run, with the interpretations of the
+    first already cached for the first three.
+    - *Checked, the scripts*: read through for each (headings in order, references skipped,
+      tables and code listings announced and not read, no passage over 900 characters), and a
+      sample of the model's readings against the source text of their equations in two of them.
+    - *Checked, the audio*: 30 passages of each audiobook chosen at random (a third of them
+      maths readings), cut from the M4B at the passage's place, recognised by Whisper small.en
+      and compared with the script: word error rate 2.7 %, 3.7 %, 2.7 % and 4.1 %, most of it the
+      comparison's ("50Hz" for "fifty Hz", "4.3.1" for the words). A passage is therefore where the
+      file says it is and says what the script says.
+    Four defects found and fixed (`NarrationVersions.ProsePipeline` → `prose/11-contents-section-numbers`):
+    - *A document that could not be planned.* A low surrogate standing alone in the text layer
+      made `MathsLetters.At` throw, and the fourth document stopped before speaking.
+    - *Contents were read aloud*: a title, a row of dots and a page number, for two pages or
+      more of each report. `ContentsPages` now skips a page of entries led by dots to a page
+      number, a front-matter page of entries that end in rising page numbers with no leaders in
+      the text layer, the same lines where a few run on to another page, and a list of figures or
+      tables under its heading (over the page only through blocks that still end in a page number
+      or hold several "Figure N:" entries). A list of abbreviations is still read.
+    - *Section numbers*: "3.2.1" was read "three point two.1" and a heading's "3.10" as "three
+      point one zero"; a number of three parts or more, and the number that opens a heading, are
+      read part by part.
+    *Seen and left:* an acronym is said as the engine guesses ("SBHAR"); Phonon repeated the last
+    words of a passage in 2 of some 165 sampled; a word hyphenated over a line in the PDF's own
+    text loses its hyphen ("smartphonebased"). *Not verified:* by ear; the passages not sampled;
+    the model's maths readings beyond the sample.
+

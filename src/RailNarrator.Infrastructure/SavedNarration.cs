@@ -14,7 +14,7 @@ namespace RailNarrator.Infrastructure;
 /// <param name="DocumentContentHash">SHA-256 of the PDF it narrates. A narration never plays over another document.</param>
 /// <param name="ByRule">Maths passages read as notation by rule, because no model interpreted them.</param>
 /// <param name="Unread">Passages announced as unreadable.</param>
-/// <param name="AsPrinted">Sentences with maths read as the page prints them, because no model interpreted them.</param>
+/// <param name="AsPrinted">Passages with maths read as the page prints them, because no model interpreted them.</param>
 public sealed record SavedNarrationManifest(
     int Format,
     string DocumentContentHash,
@@ -232,6 +232,7 @@ public sealed class SavedNarrationWriter : IDisposable
     {
         ArgumentNullException.ThrowIfNull(plan);
         var spoken = _segments.ToDictionary(s => s.Id);
+        var maths = plan.Units.Where(u => u.IsMaths || u.ContainsMaths).Select(u => u.Id).ToHashSet(StringComparer.Ordinal);
         var final = plan with { Segments = plan.Segments.Select(s => spoken.GetValueOrDefault(s.Id, s)).ToList() };
         var manifest = new SavedNarrationManifest(
             SavedNarrationManifest.CurrentFormat, plan.Header.Extraction.DocumentContentHash, documentName, DateTimeOffset.UtcNow,
@@ -239,9 +240,11 @@ public sealed class SavedNarrationWriter : IDisposable
             Interpreted: _segments.Count(s => s.Provenance == ScriptProvenance.ModelGenerated),
             ByRule: _segments.Count(s => s.Provenance == ScriptProvenance.LocalRule),
             Unread: _segments.Count(s => s.Provenance == ScriptProvenance.FailureAnnouncement),
-            // Maths the plan left for a model that came back as the page prints it.
-            AsPrinted: plan.Segments.Count(s => s.Provenance == ScriptProvenance.PendingInterpretation
-                && spoken.TryGetValue(s.Id, out var said) && said.Provenance is ScriptProvenance.SourceVerbatim or ScriptProvenance.PendingInterpretation),
+            // Maths that is read as the page prints it. Told from the passage itself, not from what
+            // the plan still had pending: a reading in the window falls back on its maths before a
+            // narration starts, and those passages arrive here already as printed.
+            AsPrinted: final.Segments.Count(s => s.Provenance is ScriptProvenance.SourceVerbatim or ScriptProvenance.PendingInterpretation
+                && s.ReadingUnitIds.Any(id => maths.Contains(id))),
             WordTimed: _wordTimed);
         using (var s = _zip.CreateEntry("plan.json", CompressionLevel.Optimal).Open())
             JsonSerializer.Serialize(s, final, SavedNarrationJson.Options);

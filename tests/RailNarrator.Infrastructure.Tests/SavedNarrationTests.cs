@@ -208,7 +208,9 @@ public sealed class SavedNarrationTests : IDisposable
         var plan = Paper();
         // The planner leaves a sentence with maths for the model, holding the sentence as printed.
         var segments = plan.Segments.Select((s, i) => i == 3 ? s with { Provenance = ScriptProvenance.PendingInterpretation } : s).ToList();
-        plan = plan with { Segments = segments };
+        // And one the reading in the window had already fallen back on: as printed, nothing pending.
+        var units = plan.Units.Select((u, i) => i is 3 or 5 ? u with { ContainsMaths = true } : u).ToList();
+        plan = plan with { Segments = segments, Units = units };
         var resolver = new MathInterpretationResolver(new Unreachable());
         return (plan, new NarrationEngines(tts, null, null, resolver, NarrationCoordinatorOptions.Default));
     }
@@ -238,7 +240,8 @@ public sealed class SavedNarrationTests : IDisposable
 
         Assert.Equal(6, manifest.Passages);
         Assert.Equal(0, manifest.Interpreted);
-        Assert.Equal(1, manifest.AsPrinted);
+        // Both: the one left for the model, and the one that arrived already read as printed.
+        Assert.Equal(2, manifest.AsPrinted);
         using var saved = SavedNarration.TryOpen(path, plan.Header.Extraction.DocumentContentHash, out _);
         Assert.NotNull(saved);
         // Saved as spoken, so playing it back asks no model.

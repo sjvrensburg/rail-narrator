@@ -41,7 +41,7 @@ public static class NarrationVersions
     public const string LocalMathReader = "local-math/1";
 
     /// <summary>Bump when the prose normalisation pipeline changes.</summary>
-    public const string ProsePipeline = "prose/10-equation-labels";
+    public const string ProsePipeline = "prose/11-contents-section-numbers";
 }
 
 /// <summary>Planner configuration.</summary>
@@ -237,7 +237,7 @@ public sealed class NarrationPlanner
             .Then(t => TextNormaliser.Compose(t, TextNormaliser.ExpandLigatures(t.Text)))
             .Then(t => dropCitations ? TextNormaliser.Compose(t, TextNormaliser.DropCitations(t.Text)) : t)
             .Then(t => TextNormaliser.Compose(t, TextNormaliser.CollapseWhitespace(t.Text)))
-            .Then(t => TextNormaliser.Compose(t, TextNormaliser.ExpandForSpeech(t.Text, _options.PronunciationDictionary)));
+            .Then(t => TextNormaliser.Compose(t, TextNormaliser.ExpandForSpeech(t.Text, _options.PronunciationDictionary, heading: unit.Kind == ReadingUnitKind.Heading)));
 
         string text = spoken.Text.Trim();
         int trim = LeadingTrim(spoken.Text);

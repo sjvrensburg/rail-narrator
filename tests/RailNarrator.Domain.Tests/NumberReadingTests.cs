@@ -23,6 +23,31 @@ public sealed class NumberReadingTests
     public void YearsInYearContexts_AreReadAsYears(string text, string expected)
         => Assert.Equal(expected, Spoken(text));
 
+    [Theory]
+    [InlineData("3.2.1 Support Vector Machines", "three point two point one Support Vector Machines")]
+    [InlineData("3.5.2.1 Wilcoxon signed-rank test", "three point five point two point one Wilcoxon signed-rank test")]
+    [InlineData("see Section 4.1.3.", "see Section four point one point three.")]
+    [InlineData("3.2 Baseline model", "three point two Baseline model")]
+    [InlineData("a value of 0.75 was used", "a value of zero point seven five was used")]
+    public void SectionNumbers_AreReadPartByPart(string text, string expected)
+        => Assert.Equal(expected, Spoken(text));
+
+    [Theory]
+    [InlineData("the mean \uD835\uDF07 of 12 days")]         // a styled mu
+    [InlineData("an emoji \uD83D\uDE00 in a caption")]       // a pair that is no letter
+    [InlineData("half a pair \uDF07 left by a text layer")]
+    [InlineData("\uD835 the other half")]
+    public void TextWithSurrogates_IsPutIntoWordsWithoutFailing(string text)
+        => Assert.False(string.IsNullOrWhiteSpace(Spoken(text)));
+
+    [Fact]
+    public void AHeadingsNumberIsItsSectionNumber()
+    {
+        Assert.Equal("three point ten Summary", TextNormaliser.ExpandForSpeech("3.10 Summary", heading: true).Text);
+        Assert.Equal("two point five. Summary of literature", TextNormaliser.ExpandForSpeech("2.5. Summary of literature", heading: true).Text);
+        Assert.Equal("a gain of three point one zero points", TextNormaliser.ExpandForSpeech("a gain of 3.10 points").Text);
+    }
+
     [Fact]
     public void AYearAfterEtAl_IsReadAsAYear()
         => Assert.Contains("nineteen ninety four extended it.", Spoken("Bollerslev et al. 1994 extended it."));
