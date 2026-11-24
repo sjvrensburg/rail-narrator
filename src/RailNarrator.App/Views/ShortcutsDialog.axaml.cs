@@ -33,6 +33,7 @@ public partial class ShortcutsDialog : Window
             ("N", "In annotate mode, with an annotation selected: write its note"),
             ("Escape", "Leave annotate mode"),
             ("Middle drag", "Pan the page, in annotate mode too"),
+            ("Drag (Select tool)", "Move a sticky note, a text box or a drawing; double-click to edit its words"),
         ]),
         ("Following", [
             ("Ctrl+F", "Follow the reading on or off"),

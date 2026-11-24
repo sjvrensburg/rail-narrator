@@ -51,12 +51,15 @@ Since PR #10:
 - **Simpler window** (PR #16): one Play/Pause button (Cancel while preparing), the script panel
   hidden by default, and RailReader's colour filters on the toolbar, in View and on the C key.
 
-- **Review annotations, phases 1 to 3 of 7 landed** (ADR-0014, `status.md` items 100–102):
+- **Review annotations, phases 1 to 4 of 7 landed** (ADR-0014, `status.md` items 100–103):
   annotations are kept by content hash in the data directory in Core's format and drawn on the
   page; N pauses and notes the sentence just read, H highlights it, the sidebar's Review notes
-  lists them, and annotate mode (Ctrl+E) marks text by hand in five named colours. Next: sticky
-  notes and free text (4), pen and rectangle (5), export as Markdown, annotated PDF copy and
-  RailReader2 JSON (6), and notes carried to a revised PDF (7). The PDF is never modified.
+  lists them, annotate mode (Ctrl+E) marks text by hand in five named colours, and sticky notes
+  and text boxes go anywhere on the page and move. Next: pen and rectangle (5), export as
+  Markdown, annotated PDF copy and RailReader2 JSON (6), and notes carried to a revised PDF (7).
+  The PDF is never modified. Open question: a note in the right margin shows its text cut off
+  at fit-width (Core draws it to the icon's right); a Core option to draw it leftwards would
+  settle it.
 
 ## Recently landed
 

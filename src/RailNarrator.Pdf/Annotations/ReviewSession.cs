@@ -102,6 +102,51 @@ public sealed class ReviewSession
         return made[0].Annotation;
     }
 
+    /// <summary>Core's opacity for a sticky note.</summary>
+    public const float NoteOpacity = 0.9f;
+
+    /// <summary>A text box's default size, in points, when it is placed with a click rather than dragged out.</summary>
+    public const float DefaultTextWidth = 180, DefaultTextHeight = 48;
+
+    /// <summary>A sticky note at a point of a page, not tied to any text (the icon's centre).</summary>
+    public TextNoteAnnotation AddNote(int pageIndex, float x, float y, string text, string colour = DefaultColour)
+    {
+        var note = Stamp(new TextNoteAnnotation { X = x, Y = y, Text = text.Trim(), Color = colour, Opacity = NoteOpacity });
+        Apply(new Step([new AddAnnotationAction(pageIndex, note)], [], []));
+        Selected = note;
+        return note;
+    }
+
+    /// <summary>Text written on the page in a box (a PDF FreeText annotation).</summary>
+    public FreeTextAnnotation AddText(int pageIndex, float x, float y, float width, float height, string text, string colour)
+    {
+        var box = Stamp(new FreeTextAnnotation { X = x, Y = y, W = width, H = height, Contents = text.Trim(), Color = colour, Opacity = 1f });
+        Apply(new Step([new AddAnnotationAction(pageIndex, box)], [], []));
+        Selected = box;
+        return box;
+    }
+
+    /// <summary>
+    /// Records a move already made on the page (<see cref="AnnotationMove"/>) as one undoable step.
+    /// Nothing is recorded when it did not move.
+    /// </summary>
+    public void Moved(AnnotationMove move)
+    {
+        ArgumentNullException.ThrowIfNull(move);
+        if (!move.Moved) return;
+        var after = PositionSnapshot.Capture(move.Annotation);
+        Apply(new Step([new MoveAnnotationAction(move.Annotation, move.Before, after), new TouchAction(move.Annotation, _now())], [], []));
+    }
+
+    private T Stamp<T>(T annotation) where T : Annotation
+    {
+        annotation.NativeId = Guid.NewGuid().ToString();
+        annotation.Source = AnnotationSource.RailReader;
+        annotation.Author = Author;
+        annotation.CreatedUtc = _now();
+        return annotation;
+    }
+
     /// <summary>Sets an annotation's note; an empty text removes it.</summary>
     public void SetNote(Annotation annotation, string? text)
     {

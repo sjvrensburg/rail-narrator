@@ -630,6 +630,7 @@ public sealed class SettingsViewModel : ViewModelBase
             SidebarWidth = 300,
             SidebarSection = "Outline",
             ShowAnnotations = true,
+            ExpandAllNotes = false,
             AnnotationAuthor = null,
             AnnotationColourNames = null,
             AnnotationColourIndices = null,

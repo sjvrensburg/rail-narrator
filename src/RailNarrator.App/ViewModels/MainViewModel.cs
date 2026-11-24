@@ -85,6 +85,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         _highlightHighContrast = services.CurrentSettings.HighlightHighContrast;
         _transcriptVisible = services.CurrentSettings.SidebarVisible;
         _showAnnotations = services.CurrentSettings.ShowAnnotations;
+        _expandAllNotes = services.CurrentSettings.ExpandAllNotes;
 
         foreach (string note in services.StartupNotes) Notes.Add(note);
 
@@ -486,7 +487,11 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     /// <summary>A note being written: on what was just read, or the note of an annotation already made.</summary>
     /// <param name="Target">What a new note goes on; null when editing.</param>
     /// <param name="Existing">The annotation whose note is edited; null for a new one.</param>
-    private sealed record NoteDraft(ReviewTarget? Target, Annotation? Existing, string Quote);
+    /// <param name="Placement">Where a new sticky note or text box goes, when it is placed by hand.</param>
+    private sealed record NoteDraft(ReviewTarget? Target, Annotation? Existing, string Quote, Placement? Placement = null);
+
+    /// <summary>A sticky note (at a point) or a text box (a box) placed by hand in annotate mode.</summary>
+    private sealed record Placement(AnnotationTool Kind, int Page, float X, float Y, float W, float H, string Colour);
 
     public bool IsNoteEditorOpen => _draft is not null;
 
@@ -496,7 +501,50 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     /// <summary>What the note is on, quoted on the card.</summary>
     public string NoteEditorQuote => _draft?.Quote ?? "";
 
-    public string NoteEditorTitle => _draft?.Existing is not null ? "Edit note" : "Note on what was just read";
+    public string NoteEditorTitle => _draft switch
+    {
+        { Existing: FreeTextAnnotation } => "Edit the text",
+        { Existing: not null } => "Edit note",
+        { Placement.Kind: AnnotationTool.FreeText } => "Text on the page",
+        { Placement: not null } => "New note",
+        _ => "Note on what was just read",
+    };
+
+    /// <summary>
+    /// The place on the page the note card belongs beside: what a new note is on, where a note or
+    /// text box is being placed, or the annotation being edited. Null with no card open.
+    /// </summary>
+    public (int Page, PageRect Rect)? NoteAnchor
+    {
+        get
+        {
+            if (_draft is not { } draft) return null;
+            if (draft.Placement is { } p) return (p.Page, new PageRect(p.X, p.Y, p.X + Math.Max(p.W, 16), p.Y + Math.Max(p.H, 16)));
+            if (draft.Target is { } t && t.Pages[0].Rects is { Count: > 0 } r)
+                return (t.FirstPage, new PageRect(r.Min(x => x.X), r.Min(x => x.Y), r.Max(x => x.X + x.W), r.Max(x => x.Y + x.H)));
+            if (draft.Existing is { } e && _session?.PageOf(e) is int page
+                && RailReader.Core.Services.AnnotationGeometry.GetAnnotationBounds(e) is { } b)
+                return (page, new PageRect(b.Left, b.Top, b.Right, b.Bottom));
+            return null;
+        }
+    }
+
+    /// <summary>Every note's text shown on the page, not only the open ones (View ▸ Expand all notes). Remembered.</summary>
+    public bool ExpandAllNotes
+    {
+        get => _expandAllNotes;
+        set
+        {
+            if (!Set(ref _expandAllNotes, value)) return;
+            PersistPreference(s => s with { ExpandAllNotes = value });
+            InvalidateSurface?.Invoke();
+        }
+    }
+
+    private bool _expandAllNotes;
+
+    /// <summary>A note or text box chosen in the list, to be centred on its page (it may be tied to no text).</summary>
+    public event Action<int, PageRect>? AnnotationFocusRequested;
 
     /// <summary>
     /// Where the note being written goes, per page, for the page to outline it while the card is
@@ -545,6 +593,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     private bool _annotateMode;
     private AnnotationTool _tool = AnnotationTool.Highlight;
     private MarkupDrag? _drag;
+    private AnnotationMove? _move;
+    private BoxDrag? _box;
     private (int Page, float X, float Y)? _pressedAt;
     private Dictionary<AnnotationTool, int>? _colourIndices;
 
@@ -574,7 +624,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         {
             if (!Set(ref _tool, value)) return;
             foreach (var name in new[] { nameof(IsHighlightTool), nameof(IsUnderlineTool), nameof(IsStrikeOutTool),
-                         nameof(IsSquigglyTool), nameof(IsSelectTool), nameof(ActiveColourIndex), nameof(ActiveColour) })
+                         nameof(IsSquigglyTool), nameof(IsSelectTool), nameof(IsTextNoteTool), nameof(IsFreeTextTool),
+                         nameof(IsTextMarkupTool), nameof(ActiveColourIndex), nameof(ActiveColour) })
                 OnPropertyChanged(name);
         }
     }
@@ -584,6 +635,11 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public bool IsStrikeOutTool => _tool == AnnotationTool.StrikeOut;
     public bool IsSquigglyTool => _tool == AnnotationTool.Squiggly;
     public bool IsSelectTool => _tool == AnnotationTool.None;
+    public bool IsTextNoteTool => _tool == AnnotationTool.TextNote;
+    public bool IsFreeTextTool => _tool == AnnotationTool.FreeText;
+
+    /// <summary>A tool that marks text by dragging over it.</summary>
+    public bool IsTextMarkupTool => RailReader.Core.AnnotationInteractionHandler.IsTextMarkupTool(_tool);
 
     /// <summary>The five colours, with what the reader calls them.</summary>
     public IReadOnlyList<PaletteColour> Palette => _palette ??= BuildPalette();
@@ -615,9 +671,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     }
 
     /// <summary>The markup being dragged, to draw; null when none.</summary>
-    public Annotation? MarkupPreview => _drag?.Preview;
+    public Annotation? MarkupPreview => (Annotation?)_drag?.Preview ?? _box?.Preview;
 
-    public int MarkupPreviewPage => _drag?.PageIndex ?? -1;
+    public int MarkupPreviewPage => _drag?.PageIndex ?? _box?.PageIndex ?? -1;
 
     public RelayCommand ToggleAnnotateMode { get; private set; } = null!;
     public RelayCommand<string> ChooseTool { get; private set; } = null!;
@@ -665,13 +721,30 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     /// A left press on the page in annotate mode, in page points. True when it is taken (always, in
     /// annotate mode: a click there selects; it never reads from there).
     /// </summary>
-    public bool AnnotatePress(int pageIndex, double pageX, double pageY)
+    public bool AnnotatePress(int pageIndex, double pageX, double pageY, bool doubleClick = false)
     {
         if (!_annotateMode || _session is null) return false;
         CancelAnnotateDrag();
         float x = (float)pageX, y = (float)pageY;
         _pressedAt = (pageIndex, x, y);
-        if (_tool != AnnotationTool.None && _pageText?.For(pageIndex) is { } page)
+        if (_tool == AnnotationTool.None)
+        {
+            // Select: a press on an annotation selects it, and a drag moves a note, a text box or a
+            // drawing; a double click edits its words.
+            var hit = AnnotationAt(pageIndex, x, y);
+            _session.Selected = hit;
+            if (hit is null) return true;
+            if (doubleClick) { _pressedAt = null; OpenNoteEditorFor(hit); return true; }
+            _move = AnnotationMove.Begin(hit, x, y);
+            return true;
+        }
+        if (_tool == AnnotationTool.FreeText)
+        {
+            _box = new BoxDrag(pageIndex, x, y, ReviewPalette.Hex(ColourIndexOf(_tool)));
+            return true;
+        }
+        if (_tool == AnnotationTool.TextNote) return true;   // placed on release
+        if (_pageText?.For(pageIndex) is { } page)
         {
             var (drag, refusal) = MarkupDrag.Begin(page, _tool, ReviewPalette.Hex(ColourIndexOf(_tool)), ReviewPalette.OpacityFor(_tool), x, y);
             _drag = drag;
@@ -682,8 +755,21 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     public void AnnotateMove(double pageX, double pageY)
     {
+        float x = (float)pageX, y = (float)pageY;
+        if (_move is { } move)
+        {
+            move.To(x, y);
+            if (move.Moved) _review?.MarkViewChanged();
+            return;
+        }
+        if (_box is { } box)
+        {
+            box.To(x, y);
+            InvalidateSurface?.Invoke();
+            return;
+        }
         if (_drag is null) return;
-        _drag.Move((float)pageX, (float)pageY);
+        _drag.Move(x, y);
         InvalidateSurface?.Invoke();
     }
 
@@ -692,9 +778,31 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     {
         var drag = _drag;
         var pressed = _pressedAt;
+        var move = _move;
+        var box = _box;
         _drag = null;
+        _move = null;
+        _box = null;
         _pressedAt = null;
         if (_session is null) return;
+        if (move is not null)
+        {
+            _session.Moved(move);
+            return;
+        }
+        if (box is not null)
+        {
+            var (bx, by, bw, bh) = box.IsBox ? box.Box : (box.Box.X, box.Box.Y, ReviewSession.DefaultTextWidth, ReviewSession.DefaultTextHeight);
+            OpenNoteEditor(new NoteDraft(null, null, "", new Placement(AnnotationTool.FreeText, box.PageIndex, bx, by, bw, bh,
+                ReviewPalette.Hex(ColourIndexOf(AnnotationTool.FreeText)))), "");
+            return;
+        }
+        if (_tool == AnnotationTool.TextNote && pressed is { } point && drag is null)
+        {
+            OpenNoteEditor(new NoteDraft(null, null, "", new Placement(AnnotationTool.TextNote, point.Page, point.X, point.Y, 0, 0,
+                ReviewPalette.Hex(ColourIndexOf(AnnotationTool.TextNote)))), "");
+            return;
+        }
         if (drag?.Range is { } range && _snapshot is { } snapshot && _pageText?.For(drag.PageIndex) is { } page
             && ReviewTarget.ForRange(Plan, snapshot, page, range, _pageText.Ligatures) is { } target)
         {
@@ -708,8 +816,15 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     public void CancelAnnotateDrag()
     {
-        bool had = _drag is not null;
+        bool had = _drag is not null || _box is not null;
+        if (_move is { Moved: true } move)
+        {
+            move.Cancel();
+            _review?.MarkViewChanged();
+        }
         _drag = null;
+        _move = null;
+        _box = null;
         _pressedAt = null;
         if (had) InvalidateSurface?.Invoke();
     }
@@ -717,14 +832,21 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     /// <summary>Selects the annotation under a page point (the topmost), or none.</summary>
     private void SelectAt(int pageIndex, float x, float y)
     {
-        if (_session is null || _review is null) return;
-        var onPage = _review.PageAnnotations(pageIndex);
-        Annotation? hit = null;
-        for (int i = onPage.Count - 1; i >= 0 && hit is null; i--)
-            if (RailReader.Core.Services.AnnotationGeometry.HitTest(onPage[i], x, y)) hit = onPage[i];
+        if (_session is null) return;
+        var hit = AnnotationAt(pageIndex, x, y);
         _session.Selected = hit;
         if (hit is not null)
             StatusMessage = "Selected. A colour (1 to 5) recolours it, N writes its note, Delete removes it.";
+    }
+
+    /// <summary>The topmost annotation under a page point: notes over drawings over markup, as drawn.</summary>
+    private Annotation? AnnotationAt(int pageIndex, float x, float y)
+    {
+        if (_review is null) return null;
+        var onPage = RailReader.Renderer.Skia.AnnotationRenderer.SortByZOrder([.. _review.PageAnnotations(pageIndex)]);
+        for (int i = onPage.Count - 1; i >= 0; i--)
+            if (RailReader.Core.Services.AnnotationGeometry.HitTest(onPage[i], x, y)) return onPage[i];
+        return null;
     }
 
     private static string Shorten(string text) => text.Length <= 60 ? text : text[..57] + "…";
@@ -813,6 +935,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         OnPropertyChanged(nameof(NoteEditorQuote));
         OnPropertyChanged(nameof(NoteEditorTitle));
         OnPropertyChanged(nameof(NoteTarget));
+        OnPropertyChanged(nameof(NoteAnchor));
         RefreshReviewCommands();
         InvalidateSurface?.Invoke();
         NoteEditorOpened?.Invoke();
@@ -836,6 +959,11 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         string text = NoteEditorText;
         _session.Author = Author;
         if (draft.Existing is { } existing) _session.SetNote(existing, text);
+        else if (draft.Placement is { } place && !string.IsNullOrWhiteSpace(text))
+        {
+            if (place.Kind == AnnotationTool.FreeText) _session.AddText(place.Page, place.X, place.Y, place.W, place.H, text, place.Colour);
+            else _session.AddNote(place.Page, place.X, place.Y, text, place.Colour);
+        }
         else if (draft.Target is { } target && !string.IsNullOrWhiteSpace(text)) _session.Highlight(target, text);
         CloseNoteEditor(string.IsNullOrWhiteSpace(text) && draft.Existing is null ? "No note written; nothing was added." : null);
         if (resume && !_playback.IsAudible && CanRead())
@@ -854,7 +982,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     {
         if (_session is null) return;
         _session.Selected = item.Annotation;
-        PageRequested?.Invoke(item.PageIndex);
+        if (RailReader.Core.Services.AnnotationGeometry.GetAnnotationBounds(item.Annotation) is { } b)
+            AnnotationFocusRequested?.Invoke(item.PageIndex, new PageRect(b.Left, b.Top, b.Right, b.Bottom));
+        else PageRequested?.Invoke(item.PageIndex);
         if (item.SegmentId is not { } segmentId || Plan?.Segment(segmentId) is null) return;
         if (_playback.IsAudible)
         {
@@ -961,6 +1091,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         _session = null;
         _annotateMode = false;
         _drag = null;
+        _move = null;
+        _box = null;
         _pressedAt = null;
         OnPropertyChanged(nameof(AnnotateMode));
         _pageText = null;
