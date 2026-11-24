@@ -44,6 +44,8 @@ public sealed class DispatcherThreadMarshaller : IThreadMarshaller
 /// application's markup. And Core.Pdfium's <c>AnnotationService.Default</c> persists under
 /// <c>~/.config/railreader2/annotations</c>, so wiring it up here would write into RailReader2's
 /// own store. Rail Narrator keeps its state in its own XDG directories.
+/// The reader's own annotations are not affected: they are kept by Rail Narrator's own store, in
+/// its data directory, and written into a PDF only by exporting a copy (ADR-0014).
 /// </remarks>
 public sealed class NullAnnotationStore : IAnnotationStore
 {

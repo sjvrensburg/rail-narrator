@@ -51,6 +51,11 @@ Since PR #10:
 - **Simpler window** (PR #16): one Play/Pause button (Cancel while preparing), the script panel
   hidden by default, and RailReader's colour filters on the toolbar, in View and on the C key.
 
+- **Review annotations are decided, not built** (ADR-0014): pause, note what was just read,
+  carry on; markup, sticky notes and pen; Markdown, annotated-PDF-copy and RailReader2 JSON
+  export. Kept in Rail Narrator's data directory by content hash; the PDF is never modified.
+  Planned in eight phases, from the ADR to revised-document carry-over.
+
 ## Recently landed
 
 - **Four reports narrated to audiobooks** (`fix/gui-test-findings`, `status.md` item 99): 248
