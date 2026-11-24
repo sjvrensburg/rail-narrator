@@ -175,6 +175,11 @@ the second is a product boundary: narration highlights must never be written int
 the reader's PDF, and a companion application must not read or overwrite another
 product's settings.
 
+The reader's own annotations (notes and markup made while listening, ADR-0014) are
+not narration highlights and do not go through Core's store either: they are kept in
+Rail Narrator's data directory, keyed by the PDF's content hash, in Core's JSON
+format. The PDF is changed only by exporting an annotated copy.
+
 ## Maths
 
 Two stages, separate services, because they fail differently and are corrected
