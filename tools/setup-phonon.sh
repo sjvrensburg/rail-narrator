@@ -16,6 +16,9 @@ set -euo pipefail
 #   default install-dir: ${XDG_DATA_HOME:-~/.local/share}/rail-narrator/phonon; on Windows (run it
 #   from Git Bash) %LOCALAPPDATA%\rail-narrator\phonon, where the application looks.
 #   PHONON_RUNTIME_ONLY=1 builds the library and stops (packaging/build-release.sh uses it).
+#   PHONON_MODEL_ONLY=1 skips the library and downloads the model and voices only: a release
+#   already carries the library beside the application, so this needs neither git nor cargo
+#   (the copy of this script in a release sets it).
 #   On Windows the library is ptts_ffi.dll, built with the Rust toolchain's default (MSVC) target.
 
 case "$(uname -s)" in
@@ -36,8 +39,12 @@ model_rev="92741c5b07d085ff840e26fea8ce43110b87852f"
 voices_rev="da6c9ec0d47be8df5c87c730a3aa97187f3229c3"
 hf="https://huggingface.co"
 
-command -v git >/dev/null || { echo "Needs git." >&2; exit 1; }
-command -v cargo >/dev/null || { echo "Needs a Rust toolchain (cargo): https://rustup.rs" >&2; exit 1; }
+model_only="${PHONON_MODEL_ONLY:-}"
+if [[ "$model_only" != 1 ]]; then
+    command -v git >/dev/null || { echo "Needs git." >&2; exit 1; }
+    command -v cargo >/dev/null || { echo "Needs a Rust toolchain (cargo): https://rustup.rs" >&2; exit 1; }
+fi
+command -v curl >/dev/null || { echo "Needs curl." >&2; exit 1; }
 mkdir -p "$model/voices"
 
 fetch() {   # url, destination, sha256
@@ -51,6 +58,7 @@ fetch() {   # url, destination, sha256
 # Rail Narrator's one change to it (tools/phonon-word-timing.patch): a call that also reports one
 # attention head of the language model per frame, which word timing is made from. Upstream has no
 # word timing. The library is rebuilt when the pinned commit or the patch changes.
+if [[ "$model_only" != 1 ]]; then
 patch="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/phonon-word-timing.patch"
 [[ -f "$patch" ]] || { echo "Missing $patch." >&2; exit 1; }
 runtime_id="$runtime_commit+timing-$(sha256sum "$patch" | cut -c1-12)"
@@ -67,6 +75,7 @@ if [[ ! -f "$dir/$lib" || "$(cat "$dir/runtime-commit" 2>/dev/null)" != "$runtim
     cp "$build/target/release/$lib" "$dir/$lib.part"
     mv "$dir/$lib.part" "$dir/$lib"
     echo "$runtime_id" > "$dir/runtime-commit"
+fi
 fi
 
 # The release build wants the library alone.

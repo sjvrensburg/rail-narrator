@@ -19,6 +19,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
+. "$ROOT/packaging/common.sh"
 
 CONFIG="${CONFIG:-Release}"
 RID="${RID:-win-x64}"
@@ -71,7 +72,8 @@ elif [[ "${WITH_PORTAUDIO:-auto}" != "no" && $ON_WINDOWS == 1 ]] && command -v c
   dll="$(find "$PA_BUILD/build" -iname 'portaudio*.dll' | head -1)"
   [[ -n "$dll" ]] || { echo "The PortAudio build produced no DLL." >&2; exit 1; }
   cp "$dll" "$STAGE/portaudio.dll"
-  cp "$PA_BUILD/src/LICENSE.txt" "$STAGE/LICENSE-portaudio.txt"
+  mkdir -p "$STAGE/licenses"
+  cp "$PA_BUILD/src/LICENSE.txt" "$STAGE/licenses/portaudio.txt"
   rm -rf "$PA_BUILD"
 elif [[ "${WITH_PORTAUDIO:-auto}" == "yes" ]]; then
   echo "WITH_PORTAUDIO=yes needs Windows with CMake and MSVC, or PORTAUDIO_DLL." >&2; exit 1
@@ -96,7 +98,7 @@ Native libraries Rail Narrator uses on Windows.
 
 Bundled in this folder
   portaudio.dll       Audio output (WASAPI), PortAudio v19.7.0, MIT-style licence
-                      (LICENSE-portaudio.txt).
+                      (licenses/portaudio.txt).
   pdfium.dll          PDF rendering (RailReader.Core.Pdfium).
   libSkiaSharp.dll    Drawing (SkiaSharp).
   onnxruntime*.dll    Layout, OCR, Kokoro and the formula model (ONNX Runtime), with its
@@ -107,7 +109,7 @@ Bundled in this folder
 
 Downloaded on explicit user approval (never bundled, never fetched implicitly)
   Kokoro ONNX model, layout models, formula model: see Models and endpoints in Settings.
-  Phonon model and voices: tools/setup-phonon.sh from the source tree (Git Bash).
+  Phonon model and voices: install-phonon.sh, run from Git Bash (needs curl).
 
 Not bundled, installed by you if wanted
   ffmpeg              Only to export an audiobook (M4B). Install it, for example with
@@ -126,11 +128,17 @@ Narrate or export from a terminal:  rail-narrator-cli.exe narrate file.pdf
 Settings:      %APPDATA%\\rail-narrator
 Models, cache: %LOCALAPPDATA%\\rail-narrator
 
-Models are not included. Settings ▸ Models and endpoints shows the size and licence of each
-before anything is downloaded.
+Models are not included. Get a voice first:
+  Kokoro: Models and endpoints > Download Kokoro speech model, in the app; or
+  Phonon: install-phonon.sh, run from Git Bash (about 70 MB; needs curl).
+Each download shows its size and licence before anything is fetched.
+
+Licence: LICENSE (MIT); bundled components: THIRD-PARTY-NOTICES.txt.
 
 A PDF passed on the command line is opened but never read aloud automatically.
 TXT
+
+add_release_files "$STAGE"
 
 ARCHIVE="$OUT/${NAME}.zip"
 rm -f "$ARCHIVE"
