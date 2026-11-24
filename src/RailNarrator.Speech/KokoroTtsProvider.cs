@@ -23,11 +23,14 @@ public sealed record KokoroProviderSettings(
 {
     /// <summary>
     /// KokoroSharp ships every released voice inside its NuGet package under <c>content/voices</c>.
-    /// PackageReference does not copy <c>content</c> to the output directory, so the package folder
-    /// in the global packages cache is the reliable default location.
+    /// Its build target copies them to a build's output folder (<c>voices</c> beside the
+    /// application), which is looked in first; a publish does not get them that way, so the package
+    /// folder in the global packages cache is the fallback on a developer's machine.
     /// </summary>
     public static string? LocatePackageVoices(string packageVersion = "0.8.4")
     {
+        string beside = Path.Combine(AppContext.BaseDirectory, "voices");
+        if (Directory.Exists(beside) && Directory.EnumerateFiles(beside, "*.npy").Any()) return beside;
         string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         string[] roots =
         [

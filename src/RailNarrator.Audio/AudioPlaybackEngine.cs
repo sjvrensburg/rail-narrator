@@ -72,6 +72,23 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
     private PlaybackState _state = PlaybackState.Idle;
     private CancellationTokenSource? _writerCts;
     private Task? _writerTask;
+    /// <summary>
+    /// Writers being stopped and not yet exited. A second <see cref="StopWriterAsync"/> found no
+    /// writer and returned at once while the first was still waiting for it, so a writer could still
+    /// run after "stopped". Guarded by <see cref="_writerLock"/> with the two fields above.
+    /// </summary>
+    private Task? _retiringWriter;
+    private readonly object _writerLock = new();
+    /// <summary>
+    /// Runs the operations that stop the writer and reset the clip (stop, load, pause, seek) one at
+    /// a time and in the order they were asked. Two seeks in quick succession each stop the
+    /// transport: the first one's stop awaited the writer and then flushed and emptied the engine,
+    /// after the second had already loaded and started its clip, leaving the coordinator playing a
+    /// transport that was idle (seen on Windows, where it was common; possible anywhere). This is
+    /// not <see cref="_gate"/>: events are raised while it is held, which the coordinator handles
+    /// without waiting on the engine (its work runs on <c>Task.Run</c>).
+    /// </summary>
+    private readonly SemaphoreSlim _operations = new(1, 1);
     private bool _disposed;
     private bool _clipCompletedRaised;
     private readonly ManualResetEventSlim _writerGate = new(false);
@@ -157,6 +174,13 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
         ArgumentNullException.ThrowIfNull(asset);
         ObjectDisposedException.ThrowIf(_disposed, this);
 
+        await _operations.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try { await LoadCoreAsync(segmentId, asset, pcm).ConfigureAwait(false); }
+        finally { _operations.Release(); }
+    }
+
+    private async Task LoadCoreAsync(string segmentId, SpeechAsset asset, ReadOnlyMemory<byte> pcm)
+    {
         await StopWriterAsync().ConfigureAwait(false);
 
         // Decode to mono float at the clip's own rate. Conversion is exact; resampling is separate so
@@ -318,10 +342,15 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
 
     public async Task PauseAsync(CancellationToken ct = default)
     {
-        if (State != PlaybackState.Playing) return;
-        await StopWriterAsync().ConfigureAwait(false);
-        _device.Pause();
-        SetState(PlaybackState.Paused);
+        await _operations.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            if (State != PlaybackState.Playing) return;
+            await StopWriterAsync().ConfigureAwait(false);
+            _device.Pause();
+            SetState(PlaybackState.Paused);
+        }
+        finally { _operations.Release(); }
     }
 
     public Task ResumeAsync(CancellationToken ct = default)
@@ -334,6 +363,13 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
     }
 
     public async Task StopAsync(CancellationToken ct = default)
+    {
+        await _operations.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try { await StopCoreAsync().ConfigureAwait(false); }
+        finally { _operations.Release(); }
+    }
+
+    private async Task StopCoreAsync()
     {
         await StopWriterAsync().ConfigureAwait(false);
         _device.Flush();
@@ -353,6 +389,13 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
     }
 
     public async Task SeekAsync(double seconds, CancellationToken ct = default)
+    {
+        await _operations.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try { await SeekCoreAsync(seconds).ConfigureAwait(false); }
+        finally { _operations.Release(); }
+    }
+
+    private async Task SeekCoreAsync(double seconds)
     {
         SpeechAsset? asset;
         lock (_gate) asset = _asset;
@@ -442,23 +485,38 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
     private void StartWriter()
     {
         _writerGate.Set();
-        if (_writerTask is { IsCompleted: false }) return;
-        _writerCts = new CancellationTokenSource();
-        var ct = _writerCts.Token;
-        _writerTask = Task.Run(() => WriterLoopAsync(ct), ct);
+        lock (_writerLock)
+        {
+            if (_writerTask is { IsCompleted: false }) return;
+            _writerCts = new CancellationTokenSource();
+            var ct = _writerCts.Token;
+            _writerTask = Task.Run(() => WriterLoopAsync(ct), ct);
+        }
     }
 
+    /// <summary>
+    /// Stops the writer and returns once no writer is running: the one this call stopped and any
+    /// another call is still stopping.
+    /// </summary>
     private async Task StopWriterAsync()
     {
         _writerGate.Reset();
-        var cts = _writerCts;
-        var task = _writerTask;
-        _writerCts = null;
-        _writerTask = null;
-        cts?.Cancel();
-        if (task is not null)
+        CancellationTokenSource? cts;
+        Task? wait;
+        lock (_writerLock)
         {
-            try { await task.ConfigureAwait(false); }
+            cts = _writerCts;
+            var task = _writerTask;
+            _writerCts = null;
+            _writerTask = null;
+            if (task is not null)
+                _retiringWriter = _retiringWriter is { IsCompleted: false } retiring ? Task.WhenAll(retiring, task) : task;
+            wait = _retiringWriter;
+        }
+        cts?.Cancel();
+        if (wait is not null)
+        {
+            try { await wait.ConfigureAwait(false); }
             catch (OperationCanceledException) { }
             catch (Exception) { /* a writer failure is surfaced through DeviceFailed, not here */ }
         }

@@ -1,0 +1,5 @@
+# Scripts and the patch run under bash and git apply, which need LF line endings on every
+# platform, Git for Windows included.
+*.sh     text eol=lf
+*.patch  text eol=lf
+packaging/rail-narrator  text eol=lf

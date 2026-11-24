@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    The application's "narrate" and "export" commands as a console program. On Windows the
+    application itself is a GUI program (WinExe), which a console neither waits for nor shows the
+    output of, so a release carries this beside it as rail-narrator-cli.exe. On Linux
+    "rail-narrator narrate" works as it is; this builds there too, and is the same code.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>RailNarrator.Cli</RootNamespace>
+    <AssemblyName>rail-narrator-cli</AssemblyName>
+    <ApplicationIcon>../../packaging/rail-narrator.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../RailNarrator.App/RailNarrator.App.csproj" />
+  </ItemGroup>
+</Project>

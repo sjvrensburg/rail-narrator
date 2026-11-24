@@ -14,13 +14,19 @@ namespace RailNarrator.App.Composition;
 /// rail-narrator export  paper.pdf [--m4b book.m4b]
 /// </code>
 /// Nothing here may touch Avalonia: it runs before the desktop runtime starts, and on a machine
-/// with no display.
+/// with no display. On Windows the application is a GUI program with no console, so these commands
+/// are run as <c>rail-narrator-cli</c> (the RailNarrator.Cli project), which calls this class.
 /// </remarks>
 public static class HeadlessNarration
 {
-    public const string Usage =
-        "usage: rail-narrator narrate <document.pdf> [--out FILE.narration] [--voice ID] [--m4b [FILE.m4b]] [--force] [--allow-uninterpreted]\n" +
-        "       rail-narrator export  <document.pdf> [--m4b FILE.m4b]\n" +
+    /// <summary>The command a reader types: <c>rail-narrator</c>, or <c>rail-narrator-cli</c> on Windows.</summary>
+    public static string CommandName
+        => Path.GetFileNameWithoutExtension(Environment.ProcessPath) is { Length: > 0 } name && name.StartsWith("rail-narrator", StringComparison.Ordinal)
+            ? name : "rail-narrator";
+
+    public static string Usage =>
+        $"usage: {CommandName} narrate <document.pdf> [--out FILE.narration] [--voice ID] [--m4b [FILE.m4b]] [--force] [--allow-uninterpreted]\n" +
+        $"       {CommandName} export  <document.pdf> [--m4b FILE.m4b]\n" +
         "narrate: interprets the maths, speaks every passage and times its words, and saves the result beside\n" +
         "         the document, where Rail Narrator plays it with no language model and no speech engine.\n" +
         "         It stops if the maths model cannot be asked, unless --allow-uninterpreted is given.\n" +
@@ -91,7 +97,7 @@ public static class HeadlessNarration
                 if (saved is null)
                 {
                     errors.WriteLine(problem is null
-                        ? $"There is no saved narration at {narrationPath}. Run 'rail-narrator narrate' on the document first."
+                        ? $"There is no saved narration at {narrationPath}. Run '{CommandName} narrate' on the document first."
                         : $"The saved narration at {narrationPath} cannot be used: {problem}.");
                     return 1;
                 }

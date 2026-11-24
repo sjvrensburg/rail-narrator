@@ -4,6 +4,8 @@
     <RootNamespace>RailNarrator.App</RootNamespace>
     <AssemblyName>rail-narrator</AssemblyName>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <!-- The Windows executable's own icon (Explorer, the taskbar before the window sets its own). -->
+    <ApplicationIcon>../../packaging/rail-narrator.ico</ApplicationIcon>
     <BuiltInComInteropSupport>false</BuiltInComInteropSupport>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <!-- The PDF raster is copied row by row into a WriteableBitmap; unsafe spans avoid a full extra copy. -->
@@ -32,6 +34,21 @@
     <!-- The mark (window icon, welcome screen, splash), loaded as avares://rail-narrator/Assets/…. -->
     <AvaloniaResource Include="Assets/rail-narrator.png" />
   </ItemGroup>
+  <!--
+    Kokoro's 54 English voices (Apache-2.0, 27 MB) ship in a release. KokoroSharp's own target copies
+    them into a build's output folder only, so a publish left them out and Kokoro found none on a
+    clean machine. They are taken from that output folder, which the publish's build has just filled.
+    The Kokoro model itself is still never bundled.
+  -->
+  <Target Name="PublishKokoroVoices" AfterTargets="ComputeResolvedFilesToPublishList">
+    <ItemGroup>
+      <!-- The English voices this model speaks, and their licence; voices-zh is another model's. -->
+      <KokoroVoice Include="$(OutDir)voices/*.npy" />
+      <ResolvedFileToPublish Include="@(KokoroVoice)" RelativePath="voices/%(Filename)%(Extension)" CopyToPublishDirectory="PreserveNewest" />
+      <ResolvedFileToPublish Include="$(OutDir)voices/LICENSE" RelativePath="voices/LICENSE" CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+    <Error Condition="'@(KokoroVoice)' == ''" Text="No Kokoro voices in $(OutDir)voices: KokoroSharp's build target did not copy them, and a release without them has no Kokoro voices." />
+  </Target>
   <ItemGroup>
     <PackageReference Include="Avalonia" />
     <PackageReference Include="Avalonia.Desktop" />

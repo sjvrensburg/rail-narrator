@@ -365,21 +365,24 @@ public sealed class RecentDocumentsStoreTests : IDisposable
 
     public void Dispose() { if (Directory.Exists(_dir)) Directory.Delete(_dir, recursive: true); }
 
+    /// <summary>A document's path as the store keeps it: full, so <c>D:\papers\a.pdf</c> on Windows.</summary>
+    private static string P(string name) => Path.GetFullPath("/papers/" + name);
+
     [Fact]
     public void Opening_MovesADocumentToTheFront_AndProgressDoesNotReorder()
     {
         var store = new RailNarrator.Infrastructure.RecentDocumentsStore(_dir);
         var t = new DateTime(2026, 11, 19, 10, 0, 0, DateTimeKind.Utc);
-        store.Opened("/papers/a.pdf", 10, t);
-        store.Opened("/papers/b.pdf", 20, t.AddMinutes(1));
-        store.Progressed("/papers/a.pdf", 0.5);
+        store.Opened(P("a.pdf"), 10, t);
+        store.Opened(P("b.pdf"), 20, t.AddMinutes(1));
+        store.Progressed(P("a.pdf"), 0.5);
         var list = store.Load();
-        Assert.Equal(["/papers/b.pdf", "/papers/a.pdf"], list.Select(d => d.Path));
+        Assert.Equal([P("b.pdf"), P("a.pdf")], list.Select(d => d.Path));
         Assert.Equal(0.5, list[1].Progress);
 
-        store.Opened("/papers/a.pdf", 0, t.AddMinutes(2));   // page count unknown this time: kept
+        store.Opened(P("a.pdf"), 0, t.AddMinutes(2));   // page count unknown this time: kept
         list = new RailNarrator.Infrastructure.RecentDocumentsStore(_dir).Load();
-        Assert.Equal("/papers/a.pdf", list[0].Path);
+        Assert.Equal(P("a.pdf"), list[0].Path);
         Assert.Equal(10, list[0].PageCount);
         Assert.Equal(0.5, list[0].Progress);
         Assert.Equal("a.pdf", list[0].Name);
@@ -390,18 +393,18 @@ public sealed class RecentDocumentsStoreTests : IDisposable
     {
         var store = new RailNarrator.Infrastructure.RecentDocumentsStore(_dir);
         var t = new DateTime(2026, 11, 19, 10, 0, 0, DateTimeKind.Utc);
-        for (int i = 0; i < 20; i++) store.Opened($"/papers/{i}.pdf", 1, t.AddMinutes(i));
+        for (int i = 0; i < 20; i++) store.Opened(P($"{i}.pdf"), 1, t.AddMinutes(i));
         Assert.Equal(RailNarrator.Infrastructure.RecentDocumentsStore.Capacity, store.Load().Count);
-        Assert.Equal("/papers/19.pdf", store.Load()[0].Path);
+        Assert.Equal(P("19.pdf"), store.Load()[0].Path);
 
-        store.Remove("/papers/19.pdf");
-        Assert.DoesNotContain(store.Load(), d => d.Path == "/papers/19.pdf");
-        store.Progressed("/papers/never-opened.pdf", 0.3);   // unknown: ignored, not added
-        Assert.DoesNotContain(store.Load(), d => d.Path == "/papers/never-opened.pdf");
+        store.Remove(P("19.pdf"));
+        Assert.DoesNotContain(store.Load(), d => d.Path == P("19.pdf"));
+        store.Progressed(P("never-opened.pdf"), 0.3);   // unknown: ignored, not added
+        Assert.DoesNotContain(store.Load(), d => d.Path == P("never-opened.pdf"));
 
         File.WriteAllText(Path.Combine(_dir, "recent.json"), "{ not json");
         Assert.Empty(store.Load());
-        Assert.NotEqual(store.ThumbnailPath("/papers/a.pdf"), store.ThumbnailPath("/papers/b.pdf"));
+        Assert.NotEqual(store.ThumbnailPath(P("a.pdf")), store.ThumbnailPath(P("b.pdf")));
     }
 
     [Fact]

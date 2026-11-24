@@ -7,6 +7,7 @@
     <Project Path="src/RailNarrator.Inference/RailNarrator.Inference.csproj" />
     <Project Path="src/RailNarrator.Infrastructure/RailNarrator.Infrastructure.csproj" />
     <Project Path="src/RailNarrator.App/RailNarrator.App.csproj" />
+    <Project Path="src/RailNarrator.Cli/RailNarrator.Cli.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/RailNarrator.TestFixtures/RailNarrator.TestFixtures.csproj" />

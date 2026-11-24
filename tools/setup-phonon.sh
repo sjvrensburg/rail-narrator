@@ -13,10 +13,22 @@ set -euo pipefail
 #      SHA-256.
 #
 # Usage: tools/setup-phonon.sh [install-dir]
-#   default install-dir: ${XDG_DATA_HOME:-~/.local/share}/rail-narrator/phonon
+#   default install-dir: ${XDG_DATA_HOME:-~/.local/share}/rail-narrator/phonon; on Windows (run it
+#   from Git Bash) %LOCALAPPDATA%\rail-narrator\phonon, where the application looks.
 #   PHONON_RUNTIME_ONLY=1 builds the library and stops (packaging/build-release.sh uses it).
+#   On Windows the library is ptts_ffi.dll, built with the Rust toolchain's default (MSVC) target.
 
-dir="${1:-${XDG_DATA_HOME:-$HOME/.local/share}/rail-narrator/phonon}"
+case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*) windows=1; lib="ptts_ffi.dll" ;;
+    *) windows=0; lib="libptts_ffi.so" ;;
+esac
+if [[ $windows == 1 && -z "${XDG_DATA_HOME:-}" ]]; then
+    [[ -n "${LOCALAPPDATA:-}" ]] || { echo "LOCALAPPDATA is not set." >&2; exit 1; }
+    default_dir="$(cygpath -u "$LOCALAPPDATA")/rail-narrator/phonon"
+else
+    default_dir="${XDG_DATA_HOME:-$HOME/.local/share}/rail-narrator/phonon"
+fi
+dir="${1:-$default_dir}"
 model="$dir/phonon-31m-en"
 runtime_tag="v0.7.1"
 runtime_commit="5f9522b3e245846d312caaeb460d3dcae5d1a991"
@@ -42,16 +54,18 @@ fetch() {   # url, destination, sha256
 patch="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/phonon-word-timing.patch"
 [[ -f "$patch" ]] || { echo "Missing $patch." >&2; exit 1; }
 runtime_id="$runtime_commit+timing-$(sha256sum "$patch" | cut -c1-12)"
-if [[ ! -f "$dir/libptts_ffi.so" || "$(cat "$dir/runtime-commit" 2>/dev/null)" != "$runtime_id" ]]; then
+if [[ ! -f "$dir/$lib" || "$(cat "$dir/runtime-commit" 2>/dev/null)" != "$runtime_id" ]]; then
     build="$(mktemp -d)"
     trap 'rm -rf "$build"' EXIT
     echo "Building Gradium's runtime $runtime_tag (about a minute)…"
-    git -c advice.detachedHead=false clone -q --depth 1 --branch "$runtime_tag" https://github.com/gradium-ai/xn-ptts.git "$build/xn-ptts"
+    # core.autocrlf off: Git for Windows would otherwise check the sources out with CRLF line
+    # endings, and the patch would no longer apply.
+    git -c advice.detachedHead=false -c core.autocrlf=false clone -q --depth 1 --branch "$runtime_tag" https://github.com/gradium-ai/xn-ptts.git "$build/xn-ptts"
     [[ "$(git -C "$build/xn-ptts" rev-parse HEAD)" == "$runtime_commit" ]] || { echo "The $runtime_tag tag no longer points at $runtime_commit; refusing to build it." >&2; exit 1; }
     git -C "$build/xn-ptts" apply "$patch" || { echo "tools/phonon-word-timing.patch no longer applies to $runtime_tag." >&2; exit 1; }
     CARGO_TARGET_DIR="$build/target" cargo build -q --release --manifest-path "$build/xn-ptts/Cargo.toml" -p ptts-ffi
-    cp "$build/target/release/libptts_ffi.so" "$dir/libptts_ffi.so.part"
-    mv "$dir/libptts_ffi.so.part" "$dir/libptts_ffi.so"
+    cp "$build/target/release/$lib" "$dir/$lib.part"
+    mv "$dir/$lib.part" "$dir/$lib"
     echo "$runtime_id" > "$dir/runtime-commit"
 fi
 

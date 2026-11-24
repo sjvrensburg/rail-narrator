@@ -5,6 +5,10 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup>
+    <!-- PortAudioNative's struct layouts are pinned by tests (PortAudioAbiTests). -->
+    <InternalsVisibleTo Include="RailNarrator.Audio.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="../RailNarrator.Domain/RailNarrator.Domain.csproj" />
   </ItemGroup>
 </Project>

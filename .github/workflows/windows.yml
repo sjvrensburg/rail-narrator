@@ -1,0 +1,101 @@
+name: Windows
+
+# Builds, tests and packages Rail Narrator on Windows, the one platform that cannot be checked on
+# the developer's machine. Linux is still checked locally (CLAUDE.md); this does not replace that.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v5
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('Directory.Packages.props', '**/*.csproj') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      - name: Build
+        run: dotnet build RailNarrator.slnx -c Release
+
+      # Needs no GPU, network, model or sound card, as on Linux.
+      - name: Test
+        run: dotnet test RailNarrator.slnx -c Release --no-build --logger "trx" --results-directory test-results
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-test-results
+          path: test-results
+
+  package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      # PortAudio is built with CMake and MSVC, and Phonon's runtime (ptts_ffi.dll) with the
+      # runner's Rust toolchain (MSVC target). Both are required: a package without either fails.
+      - name: Package
+        shell: bash
+        env:
+          WITH_PORTAUDIO: "yes"
+          WITH_PHONON: "yes"
+        run: packaging/build-windows.sh
+
+      # The package carries both native libraries, and ptts_ffi.dll has the word-timing call that
+      # only the patched build has (tools/phonon-word-timing.patch).
+      - name: Native libraries present
+        shell: bash
+        run: |
+          dir=$(echo dist/rail-narrator-*-win-x64)
+          ls -l "$dir/portaudio.dll" "$dir/ptts_ffi.dll"
+          grep -q ptts_speak_aligned "$dir/ptts_ffi.dll"
+
+      # The bundled portaudio.dll loads and answers: version, initialise, devices (a runner has
+      # none, which the smoke tool reports and accepts).
+      - name: PortAudio smoke
+        shell: bash
+        run: |
+          dotnet build tools/RailNarrator.Smoke -c Release
+          cp dist/rail-narrator-*-win-x64/portaudio.dll tools/RailNarrator.Smoke/bin/Release/net10.0/
+          tools/RailNarrator.Smoke/bin/Release/net10.0/rail-narrator-smoke.exe audio --silent
+
+      # The console twin starts and prints its usage (exit code 2).
+      - name: CLI smoke
+        shell: bash
+        run: |
+          set +e
+          dist/rail-narrator-*-win-x64/rail-narrator-cli.exe > usage.txt 2>&1
+          code=$?
+          cat usage.txt
+          [[ $code == 2 ]] && grep -q "rail-narrator-cli narrate" usage.txt
+
+      - name: Upload package
+        uses: actions/upload-artifact@v7
+        with:
+          name: rail-narrator-win-x64
+          path: dist/*.zip
