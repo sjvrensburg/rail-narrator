@@ -1,6 +1,7 @@
 using RailReader.Core.Models;
 using System.Collections.ObjectModel;
 using Avalonia.Controls;
+using Avalonia.Input.Platform;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using RailNarrator.App.Composition;
@@ -86,6 +87,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         _transcriptVisible = services.CurrentSettings.SidebarVisible;
         _showAnnotations = services.CurrentSettings.ShowAnnotations;
         _expandAllNotes = services.CurrentSettings.ExpandAllNotes;
+        _showPdfAnnotations = services.CurrentSettings.ShowPdfAnnotations;
 
         foreach (string note in services.StartupNotes) Notes.Add(note);
 
@@ -115,6 +117,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         ToggleFollow = new RelayCommand(CycleFollowMode, null, OnCommandError);
         SetUpReview();
         SetUpAnnotateMode();
+        SetUpExport();
         ResumeFollow = new RelayCommand(() => _services.Coordinator.ResumeFollow(), () => FollowSuspended, OnCommandError);
         ZoomIn = new RelayCommand(() => ApplyZoom(Zoom * 1.25), () => HasDocument, OnCommandError);
         ZoomOut = new RelayCommand(() => ApplyZoom(Zoom / 1.25), () => HasDocument, OnCommandError);
@@ -529,6 +532,165 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         }
     }
 
+    /// <summary>The PDF's own annotations shown, read-only (View menu). Remembered.</summary>
+    public bool ShowPdfAnnotations
+    {
+        get => _showPdfAnnotations;
+        set
+        {
+            if (!Set(ref _showPdfAnnotations, value)) return;
+            PersistPreference(s => s with { ShowPdfAnnotations = value });
+            _services.CurrentSettings = _services.CurrentSettings with { ShowPdfAnnotations = value };
+            if (!value) ShowPdfAnnotationsOf(null);
+            else if (DocumentPath is { } path) _ = LoadPdfAnnotationsAsync(path);
+        }
+    }
+
+    private bool _showPdfAnnotations;
+
+    private async Task LoadPdfAnnotationsAsync(string path)
+    {
+        var file = await Task.Run(() => AnnotatedPdfExport.ReadExisting(path));
+        if (DocumentPath == path && _showPdfAnnotations) ShowPdfAnnotationsOf(file);
+    }
+
+    private void ShowPdfAnnotationsOf(AnnotationFile? file)
+    {
+        if (_review is null) return;
+        if (file is null && _session?.Selected is { } selected && _review.IsFromPdf(selected)) _session.Selected = null;
+        _review.SetPdfAnnotations(file);
+        RebuildReviewNotes();
+        int count = file?.Pages.Values.Sum(p => p.Count) ?? 0;
+        if (count > 0) StatusMessage = $"The PDF carries {count} annotation{(count == 1 ? "" : "s")} of its own, shown read-only.";
+    }
+
+    // ---- export and exchange (ADR-0014) --------------------------------------------------------
+
+    public RelayCommand CopyNotesAsMarkdown { get; private set; } = null!;
+    public RelayCommand SaveNotesAsMarkdown { get; private set; } = null!;
+    public RelayCommand SaveAnnotatedCopy { get; private set; } = null!;
+    public RelayCommand ExportAnnotationsJson { get; private set; } = null!;
+    public RelayCommand ImportAnnotationsJson { get; private set; } = null!;
+
+    private void SetUpExport()
+    {
+        bool HasNotes() => _review is not null && ReviewNotes.Count > 0 && !Busy;
+        bool HasOwn() => _review is { IsEmpty: false } && !Busy;
+        CopyNotesAsMarkdown = new RelayCommand(CopyMarkdownAsync, HasNotes, OnCommandError);
+        SaveNotesAsMarkdown = new RelayCommand(SaveMarkdownAsync, HasNotes, OnCommandError);
+        SaveAnnotatedCopy = new RelayCommand(SaveAnnotatedCopyAsync, HasOwn, OnCommandError);
+        ExportAnnotationsJson = new RelayCommand(ExportJsonAsync, HasOwn, OnCommandError);
+        ImportAnnotationsJson = new RelayCommand(ImportJsonAsync, () => _session is not null && !Busy, OnCommandError);
+    }
+
+    private void RefreshExportCommands()
+    {
+        foreach (var command in new[] { CopyNotesAsMarkdown, SaveNotesAsMarkdown, SaveAnnotatedCopy, ExportAnnotationsJson, ImportAnnotationsJson })
+            command?.RaiseCanExecuteChanged();
+    }
+
+    private string DocumentStem => Path.GetFileNameWithoutExtension(DocumentPath ?? "document");
+
+    /// <summary>The notes in the list's order, as the Markdown export takes them.</summary>
+    private string BuildMarkdown()
+    {
+        var palette = Enumerable.Range(0, ReviewPalette.Count)
+            .ToDictionary(i => ReviewPalette.Hex(i), i => ReviewPalette.NameOf(_services.CurrentSettings, i), StringComparer.OrdinalIgnoreCase);
+        // The colour names are the reader's: another reviewer's yellow is not the reader's "Note".
+        var notes = ReviewNotes.Select(item => new ExportedNote(item.PageIndex, item.Kind,
+            !item.FromPdf && palette.TryGetValue(item.Annotation.Color, out var name) ? name : null,
+            item.Quote, item.Note, item.Annotation.Author, item.FromPdf)).ToList();
+        return ReviewMarkdown.Build(Path.GetFileName(DocumentPath ?? "document"), notes, DateOnly.FromDateTime(DateTime.Now));
+    }
+
+    private async Task CopyMarkdownAsync()
+    {
+        if (TopLevelProvider?.Invoke()?.Clipboard is not { } clipboard) return;
+        await clipboard.SetTextAsync(BuildMarkdown());
+        ShowNotice($"Copied {ReviewNotes.Count} note{(ReviewNotes.Count == 1 ? "" : "s")} as Markdown.");
+    }
+
+    private async Task SaveMarkdownAsync()
+    {
+        if (await PickSaveAsync("Save the notes as Markdown", $"{DocumentStem} notes.md", "Markdown", "*.md") is not { } target) return;
+        string markdown = BuildMarkdown();
+        await Task.Run(() => File.WriteAllText(target, markdown));
+        ShowNotice($"Notes saved as {Path.GetFileName(target)}.");
+    }
+
+    private async Task SaveAnnotatedCopyAsync()
+    {
+        if (_review is not { } review || DocumentPath is not { } source) return;
+        if (await PickSaveAsync("Save an annotated copy of the PDF", $"{DocumentStem} (annotated).pdf", "PDF", "*.pdf") is not { } target) return;
+        Busy = true;
+        try
+        {
+            StatusMessage = "Writing the annotated copy…";
+            var result = await Task.Run(() => AnnotatedPdfExport.Write(source, review, target));
+            string text = $"Saved an annotated copy, {Path.GetFileName(target)}, with {result.Written} annotation{(result.Written == 1 ? "" : "s")}."
+                + (result.Warning is { } warning ? " " + warning : "");
+            if (Author is null)
+                ShowNotice(text + " They are signed with no name.", "Set a name…", () => SettingsRequested?.Invoke("Annotations"));
+            else ShowNotice(text);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            ShowNotice($"The annotated copy was not saved: {ex.Message}");
+        }
+        finally { Busy = false; }
+    }
+
+    private async Task ExportJsonAsync()
+    {
+        if (_review is not { } review) return;
+        if (await PickSaveAsync("Export the annotations for RailReader2", $"{DocumentStem}.annotations.json", "Annotations (JSON)", "*.json") is not { } target) return;
+        string json = ReviewAnnotationJson.Serialize(review.File);
+        await Task.Run(() => File.WriteAllText(target, json));
+        ShowNotice($"Annotations exported as {Path.GetFileName(target)}. In RailReader2: Import Annotations.");
+    }
+
+    private async Task ImportJsonAsync()
+    {
+        if (_session is not { } session || TopLevelProvider?.Invoke() is not { } top) return;
+        var files = await top.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "Import annotations (RailReader2 or Rail Narrator JSON)",
+            AllowMultiple = false,
+            FileTypeFilter = [new FilePickerFileType("Annotations (JSON)") { Patterns = ["*.json"] }],
+        });
+        if (files.Count == 0 || files[0].TryGetLocalPath() is not { } path) return;
+        string text = await Task.Run(() => File.ReadAllText(path));
+        if (ReviewAnnotationJson.Deserialize(text) is not { } imported)
+        {
+            ShowNotice($"{Path.GetFileName(path)} is not an annotation file.");
+            return;
+        }
+        var (added, skipped) = session.Import(imported);
+        ShowNotice($"Imported {added} annotation{(added == 1 ? "" : "s")}" + (skipped > 0 ? $"; {skipped} were already here." : ".")
+            + (added > 0 ? " Ctrl+Z takes them out again." : ""));
+    }
+
+    private async Task<string?> PickSaveAsync(string title, string suggested, string kind, string pattern)
+    {
+        if (TopLevelProvider?.Invoke() is not { } top) return null;
+        var file = await top.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        {
+            Title = title,
+            SuggestedFileName = suggested,
+            SuggestedStartLocation = DocumentPath is { } p ? await top.StorageProvider.TryGetFolderFromPathAsync(Path.GetDirectoryName(p)!) : null,
+            FileTypeChoices = [new FilePickerFileType(kind) { Patterns = [pattern] }],
+            ShowOverwritePrompt = true,
+        });
+        string? target = file?.TryGetLocalPath();
+        if (target is not null && DocumentPath is { } source
+            && string.Equals(Path.GetFullPath(target), Path.GetFullPath(source), StringComparison.Ordinal))
+        {
+            ShowNotice("That is the PDF itself; it is never written. Choose another name.");
+            return null;
+        }
+        return target;
+    }
+
     /// <summary>Every note's text shown on the page, not only the open ones (View ▸ Expand all notes). Remembered.</summary>
     public bool ExpandAllNotes
     {
@@ -582,7 +744,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         UndoAnnotation = new RelayCommand(() => _session?.Undo(), () => _session?.CanUndo == true && !IsNoteEditorOpen, OnCommandError);
         RedoAnnotation = new RelayCommand(() => _session?.Redo(), () => _session?.CanRedo == true && !IsNoteEditorOpen, OnCommandError);
         DeleteSelectedAnnotation = new RelayCommand(() => { if (_session?.Selected is { } a) _session.Delete(a); },
-            () => _session?.Selected is not null && !IsNoteEditorOpen, OnCommandError);
+            () => _session?.Selected is { } a && _review?.IsFromPdf(a) != true && !IsNoteEditorOpen, OnCommandError);
         OpenReviewNote = new RelayCommand<ReviewNoteItem>(GoToReviewNote);
         EditReviewNote = new RelayCommand<ReviewNoteItem>(item => OpenNoteEditorFor(item.Annotation));
         DeleteReviewNote = new RelayCommand<ReviewNoteItem>(item => _session?.Delete(item.Annotation));
@@ -743,7 +905,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public void UseColour(int index)
     {
         if (index < 0 || index >= ReviewPalette.Count) return;
-        if (_session?.Selected is { } selected) _session.Recolour(selected, ReviewPalette.Hex(index));
+        if (_session?.Selected is { } selected && _review?.IsFromPdf(selected) != true) _session.Recolour(selected, ReviewPalette.Hex(index));
         // With the select tool, a colour is for the selection only: the tools keep their own.
         if (_tool != AnnotationTool.None)
         {
@@ -798,7 +960,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             _session.Selected = hit;
             if (hit is null) return true;
             if (doubleClick) { _pressedAt = null; OpenNoteEditorFor(hit); return true; }
-            _move = AnnotationMove.Begin(hit, x, y);
+            if (_review?.IsFromPdf(hit) != true) _move = AnnotationMove.Begin(hit, x, y);
             return true;
         }
         if (_tool is AnnotationTool.FreeText or AnnotationTool.Rectangle)
@@ -965,16 +1127,17 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     /// <summary>Removes the annotation under a page point (and the others made with it), each one undoable.</summary>
     private void EraseAt(int pageIndex, float x, float y)
     {
-        if (_session is null || AnnotationAt(pageIndex, x, y) is not { } hit) return;
+        if (_session is null || AnnotationAt(pageIndex, x, y, includePdf: false) is not { } hit) return;
         _session.Delete(hit);
         StatusMessage = "Erased. Ctrl+Z brings it back.";
     }
 
     /// <summary>The topmost annotation under a page point: notes over drawings over markup, as drawn.</summary>
-    private Annotation? AnnotationAt(int pageIndex, float x, float y)
+    private Annotation? AnnotationAt(int pageIndex, float x, float y, bool includePdf = true)
     {
         if (_review is null) return null;
-        var onPage = RailReader.Renderer.Skia.AnnotationRenderer.SortByZOrder([.. _review.PageAnnotations(pageIndex)]);
+        var onPage = RailReader.Renderer.Skia.AnnotationRenderer.SortByZOrder(
+            [.. includePdf ? _review.PdfAnnotations(pageIndex) : [], .. _review.PageAnnotations(pageIndex)]);
         for (int i = onPage.Count - 1; i >= 0; i--)
             if (RailReader.Core.Services.AnnotationGeometry.HitTest(onPage[i], x, y)) return onPage[i];
         return null;
@@ -1052,6 +1215,11 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public void OpenNoteEditorFor(Annotation annotation)
     {
         if (_session is null || IsNoteEditorOpen) return;
+        if (_review?.IsFromPdf(annotation) == true)
+        {
+            StatusMessage = "This annotation is part of the PDF: it is shown here, not changed.";
+            return;
+        }
         var head = _session.Head(annotation);
         _session.Selected = head;
         string text = head is TextNoteAnnotation note ? note.EffectiveContents : head.Contents ?? "";
@@ -1136,7 +1304,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     {
         if (_session is not { } session || _review is not { } review || !ShowAnnotations) return false;
         float x = (float)pageX, y = (float)pageY;
-        var onPage = review.PageAnnotations(pageIndex);
+        var onPage = review.PdfAnnotations(pageIndex).Concat(review.PageAnnotations(pageIndex)).ToList();
         for (int i = onPage.Count - 1; i >= 0; i--)
         {
             var annotation = onPage[i];
@@ -1181,10 +1349,22 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
                     int segment = link?.SegmentId is { } id && order.TryGetValue(id, out int at) ? at : int.MaxValue;
                     items.Add((item, segment, bounds?.Top ?? 0, bounds?.Left ?? 0));
                 }
+            foreach (var (page, list) in review.AllPdfAnnotations)
+                foreach (var annotation in list.Where(a => a.InReplyTo is null || a.ReplyType == AnnotationReplyType.Group))
+                {
+                    var bounds = RailReader.Core.Services.AnnotationGeometry.GetAnnotationBounds(annotation);
+                    string note = annotation.EffectiveContents;
+                    // The PDF does not say what text its markup is on: the words under its boxes.
+                    string quote = annotation is TextMarkupAnnotation markup && _pageText?.For(page) is { } text
+                        ? PageQuote.UnderRects(text, markup.Rects, _pageText.Ligatures) : "";
+                    items.Add((new ReviewNoteItem(annotation, page, null, quote, string.IsNullOrWhiteSpace(note) ? null : note, FromPdf: true),
+                        int.MaxValue, bounds?.Top ?? 0, bounds?.Left ?? 0));
+                }
             foreach (var x in items.OrderBy(x => x.Item.PageIndex).ThenBy(x => x.Segment).ThenBy(x => x.Top).ThenBy(x => x.Left))
                 ReviewNotes.Add(x.Item);
         }
         OnPropertyChanged(nameof(HasReviewNotes));
+        RefreshExportCommands();
     }
 
     private void AttachReview(ReviewLoadResult loaded)
@@ -1909,6 +2089,10 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             ReportLoading("Starting the voice");
             var position = await _services.PlanStore.TryGetPositionAsync(hash);
             var review = await Task.Run(() => _services.ReviewAnnotations.Load(hash, path));
+            // The PDF's own annotations (a co-reviewer's), read-only. Core's reader never throws.
+            var inPdf = _services.CurrentSettings.ShowPdfAnnotations
+                ? await Task.Run(() => AnnotatedPdfExport.ReadExisting(path))
+                : null;
             (string? ProviderId, IReadOnlyList<TtsVoice> Voices, IReadOnlyList<string> Devices) available = (null, [], []);
             try { available = await voices; }
             catch (Exception ex)
@@ -1930,6 +2114,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             committed = true;
             OnPropertyChanged(nameof(PlaysSavedNarration));
             AttachReview(review);
+            if (inPdf is not null) ShowPdfAnnotationsOf(inPdf);
 
             RebuildTranscript();
             ShowVoices(available);

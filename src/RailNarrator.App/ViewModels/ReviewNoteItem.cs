@@ -9,23 +9,16 @@ namespace RailNarrator.App.ViewModels;
 /// <param name="SegmentId">The passage it was made on, when it was made while listening.</param>
 /// <param name="Quote">The document's text it is on; empty for a mark not made on text.</param>
 /// <param name="Note">What the reader wrote; null for a highlight without a note.</param>
-public sealed record ReviewNoteItem(Annotation Annotation, int PageIndex, string? SegmentId, string Quote, string? Note)
+/// <param name="FromPdf">Carried by the PDF itself (a co-reviewer's), shown read-only.</param>
+public sealed record ReviewNoteItem(Annotation Annotation, int PageIndex, string? SegmentId, string Quote, string? Note, bool FromPdf = false)
 {
-    public string PageLabel => $"Page {PageIndex + 1} · {Kind}";
+    public string PageLabel => $"Page {PageIndex + 1} · {Kind}" + (FromPdf ? " · in the PDF" + (Annotation.Author is { Length: > 0 } a ? $", {a}" : "") : "");
+
+    /// <summary>The reader's own, which may be edited and deleted here.</summary>
+    public bool IsOwn => !FromPdf;
 
     /// <summary>What the annotation is, in the reader's words: a drawing has no quote or note to show.</summary>
-    public string Kind => Annotation switch
-    {
-        HighlightAnnotation => "Highlight",
-        UnderlineAnnotation => "Underline",
-        StrikeOutAnnotation => "Struck out",
-        SquigglyAnnotation => "Squiggle",
-        TextNoteAnnotation => "Sticky note",
-        FreeTextAnnotation => "Text box",
-        FreehandAnnotation => "Pen",
-        RectAnnotation => "Box",
-        _ => "Annotation",
-    };
+    public string Kind => RailNarrator.Pdf.Annotations.ReviewMarkdown.KindOf(Annotation);
 
     public bool HasNote => !string.IsNullOrEmpty(Note);
 

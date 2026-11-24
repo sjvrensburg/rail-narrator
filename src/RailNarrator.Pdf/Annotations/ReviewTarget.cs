@@ -202,6 +202,40 @@ public static class PageQuote
     }
 
     /// <summary>
+    /// The words under a text markup's boxes (an annotation the PDF carries, which has no link to
+    /// say what it is on): each box's characters, those whose horizontal centre is within the box
+    /// and whose own box (taken 2 points lower, for an underline drawn as a strip at the baseline)
+    /// holds the box's vertical centre, quoted as
+    /// <see cref="Of"/> quotes; boxes in order, joined by a space. Empty when no glyph is under them.
+    /// </summary>
+    /// <summary>How far below a glyph's box an underline or squiggle drawn at the baseline may sit, in points.</summary>
+    private const float BaselineStrip = 2f;
+
+    public static string UnderRects(PageTextIndex page, IEnumerable<RailReader.Core.Models.HighlightRect> rects,
+        IReadOnlyDictionary<char, string> ligatures)
+    {
+        ArgumentNullException.ThrowIfNull(page);
+        ArgumentNullException.ThrowIfNull(rects);
+        var boxes = page.Text.CharBoxes;
+        var parts = new List<string>();
+        foreach (var r in rects)
+        {
+            int first = -1, last = -1;
+            for (int i = 0; i < boxes.Count; i++)
+            {
+                var b = boxes[i];
+                if (b.Left == 0 && b.Right == 0 && b.Top == 0 && b.Bottom == 0) continue;
+                float cx = (b.Left + b.Right) / 2, ry = r.Y + r.H / 2;
+                if (cx < r.X || cx > r.X + r.W || ry < b.Top || ry > b.Bottom + BaselineStrip) continue;
+                if (first < 0) first = i;
+                last = i;
+            }
+            if (first >= 0) parts.Add(Of(page.Text.Text, first, last + 1, ligatures));
+        }
+        return string.Join(' ', parts.Where(p => p.Length > 0));
+    }
+
+    /// <summary>
     /// The ligatures a document's text layer left unmapped, worked out from all its pages at once
     /// (<see cref="UnmappedGlyphResolver.Infer"/>), as reading units are.
     /// </summary>
