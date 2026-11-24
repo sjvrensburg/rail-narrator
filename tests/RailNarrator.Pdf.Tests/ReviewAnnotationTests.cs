@@ -22,8 +22,9 @@ public sealed class ReviewAnnotationTests : IDisposable
     {
         try
         {
-            foreach (var f in Directory.EnumerateFiles(_root, "*", SearchOption.AllDirectories))
-                File.SetUnixFileMode(f, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            if (!OperatingSystem.IsWindows())
+                foreach (var f in Directory.EnumerateFiles(_root, "*", SearchOption.AllDirectories))
+                    File.SetUnixFileMode(f, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             Directory.Delete(_root, recursive: true);
         }
         catch (DirectoryNotFoundException) { }
@@ -138,18 +139,28 @@ public sealed class ReviewAnnotationTests : IDisposable
         await store.SaveAsync(document);
         string path = Path.Combine(store.DirectoryFor(Hash), "annotations.json");
         string before = File.ReadAllText(path);
-        File.SetUnixFileMode(path, UnixFileMode.None);
-        if (CanRead(path)) return;   // running as root: the mode does not stop a read
+        // Unreadable: by its mode on Linux; on Windows, which has no file modes, by another program
+        // holding it open with no sharing, which is how a Windows file most often cannot be read.
+        FileStream? held = null;
+        if (OperatingSystem.IsWindows()) held = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.None);
+        else File.SetUnixFileMode(path, UnixFileMode.None);
+        try
+        {
+            if (!OperatingSystem.IsWindows() && CanRead(path)) return;   // running as root: the mode does not stop a read
 
-        var loaded = store.Load(Hash, null);
-        Assert.NotNull(loaded.Problem);
-        Assert.True(loaded.Document.File.Pages.Count == 0);
+            var loaded = store.Load(Hash, null);
+            Assert.NotNull(loaded.Problem);
+            Assert.True(loaded.Document.File.Pages.Count == 0);
 
-        loaded.Document.File.Pages[0] = [new TextNoteAnnotation { NativeId = "x" }];
-        loaded.Document.MarkChanged();
-        await Assert.ThrowsAsync<IOException>(() => store.SaveAsync(loaded.Document));
-
-        File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            loaded.Document.File.Pages[0] = [new TextNoteAnnotation { NativeId = "x" }];
+            loaded.Document.MarkChanged();
+            await Assert.ThrowsAsync<IOException>(() => store.SaveAsync(loaded.Document));
+        }
+        finally
+        {
+            held?.Dispose();
+            if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
         Assert.Equal(before, File.ReadAllText(path));
     }
 

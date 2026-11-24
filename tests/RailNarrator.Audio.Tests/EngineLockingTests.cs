@@ -61,6 +61,8 @@ public sealed class EngineLockingTests
 
         long heartbeat = 0, transitions = 0;
         int lastIndex = -1;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var transitionTimes = new ConcurrentQueue<long>();
         using var stop = new CancellationTokenSource();
         var uiWork = new ConcurrentQueue<Action>();
         coordinator.SnapshotChanged += snap => uiWork.Enqueue(() =>
@@ -68,6 +70,7 @@ public sealed class EngineLockingTests
             if (snap.Generation != coordinator.Generation || snap.SegmentIndex == lastIndex) return;
             lastIndex = snap.SegmentIndex;
             Interlocked.Increment(ref transitions);
+            transitionTimes.Enqueue(clock.ElapsedMilliseconds);
             if (snap.SegmentId is { } id) _ = coordinator.GoToSegmentAsync(id);
         });
         var ui = new Thread(() =>
@@ -96,7 +99,12 @@ public sealed class EngineLockingTests
                 $"The UI thread stopped after {Interlocked.Read(ref transitions)} passage transitions: deadlock.");
         }
         stop.Cancel();
+        var last = coordinator.Snapshot;
         Assert.True(Interlocked.Read(ref transitions) >= segments - 1,
-            $"Only {Interlocked.Read(ref transitions)} of {segments - 1} transitions completed in 60 s.");
+            $"Only {Interlocked.Read(ref transitions)} of {segments - 1} transitions completed in 60 s. " +
+            $"Transitions at (ms): {string.Join(", ", transitionTimes.Take(20))}. " +
+            $"Last snapshot: {last.State}, passage {last.SegmentIndex}, position {last.PositionSeconds:F3} s of {last.ClipDurationSeconds:F3} s, " +
+            $"buffered ahead {last.BufferedAheadSeconds:F3} s, message '{last.Message}'; engine {engine.State}; " +
+            $"device presented {device.PresentedFrames}, queued {device.QueuedFrames}; UI ticks {Interlocked.Read(ref heartbeat)}.");
     }
 }

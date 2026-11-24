@@ -60,9 +60,11 @@ elif [[ "${WITH_PORTAUDIO:-auto}" != "no" && $ON_WINDOWS == 1 ]] && command -v c
     https://github.com/PortAudio/portaudio.git "$PA_BUILD/src"
   [[ "$(git -C "$PA_BUILD/src" rev-parse HEAD)" == "$PORTAUDIO_COMMIT" ]] \
     || { echo "PortAudio's $PORTAUDIO_TAG tag no longer points at $PORTAUDIO_COMMIT; refusing to build it." >&2; exit 1; }
+  # CMake 4 refuses v19.7.0's cmake_minimum_required(2.8) unless told which policies to assume;
+  # 3.5 is the oldest it still offers, and the build needs nothing newer.
   # WASAPI is what the application uses; MME stays as PortAudio's own fallback. ASIO needs
   # Steinberg's SDK under its own licence and is left out.
-  cmake -S "$PA_BUILD/src" -B "$PA_BUILD/build" -A x64 \
+  cmake -S "$PA_BUILD/src" -B "$PA_BUILD/build" -A x64 -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DPA_USE_ASIO=OFF -DPA_USE_WASAPI=ON -DPA_USE_WMME=ON -DPA_USE_DS=OFF -DPA_USE_WDMKS=OFF \
     -DPA_BUILD_SHARED=ON -DPA_BUILD_STATIC=OFF -DPA_DLL_LINK_WITH_STATIC_RUNTIME=ON >/dev/null
   cmake --build "$PA_BUILD/build" --config Release >/dev/null
