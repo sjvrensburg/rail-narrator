@@ -1159,7 +1159,14 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         string mathsNote = maths == 0 ? "" : _services.MathInterpreter is null
             ? $" {maths} maths passages will be read as notation: no maths model is set up."
             : $" {maths} maths passages go to the maths model.";
-        ShowNotice($"Narrate all {plan.SegmentCount} passages and save them beside the document?{mathsNote}",
+        // What this reading has already fallen back on is saved as it is: the model is not asked again.
+        var mathsUnits = plan.Units.Where(u => u.IsMaths || u.ContainsMaths).Select(u => u.Id).ToHashSet(StringComparer.Ordinal);
+        int fellBack = plan.Segments.Count(s => s.Provenance is ScriptProvenance.SourceVerbatim or ScriptProvenance.LocalRule or ScriptProvenance.FailureAnnouncement
+            && s.ReadingUnitIds.Any(mathsUnits.Contains));
+        // First, where a narrow status bar still shows it: it is the part the reader can act on.
+        if (fellBack > 0 && _services.MathInterpreter is not null)
+            mathsNote = $" {fellBack} maths passages were not interpreted in this reading and will be saved as they are (reload first to try again)." + mathsNote;
+        ShowNotice($"Save a narration of all {plan.SegmentCount} passages?{mathsNote}",
             "Narrate", () => _ = NarrateDocumentAsync(plan, DocumentPath));
     }
 

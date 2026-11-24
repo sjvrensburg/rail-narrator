@@ -354,7 +354,7 @@ public sealed class SettingsViewModel : ViewModelBase
     public SettingOption<WordTimingSource>? WordTiming
     {
         get => WordTimingOptions.First(o => o.Value == _s.WordTiming);
-        set { if (value is not null) Save(s => s with { WordTiming = value.Value }); }
+        set { if (value is not null) SaveChoice(s => s with { WordTiming = value.Value }); }
     }
 
     // ---- Speech: after a restart -------------------------------------------------------------
@@ -372,7 +372,7 @@ public sealed class SettingsViewModel : ViewModelBase
         // "zonos3" is what this dialogue saved for ZONOS3 before it used the provider's own id.
         get => SpeechProviders.FirstOrDefault(o => o.Value == (_s.SpeechProviderId == "zonos3" ? SpeechProviderIds.Zonos : _s.SpeechProviderId))
                ?? SpeechProviders[0];
-        set { if (value is not null) Save(s => s with { SpeechProviderId = value.Value }); }
+        set { if (value is not null) SaveChoice(s => s with { SpeechProviderId = value.Value }); }
     }
 
     public IReadOnlyList<SettingOption<SpeechAcceleration>> SpeechAccelerations { get; } =
@@ -384,7 +384,7 @@ public sealed class SettingsViewModel : ViewModelBase
     public SettingOption<SpeechAcceleration>? KokoroAcceleration
     {
         get => SpeechAccelerations.First(o => o.Value == _s.KokoroAcceleration);
-        set { if (value is not null) Save(s => s with { KokoroAcceleration = value.Value }); }
+        set { if (value is not null) SaveChoice(s => s with { KokoroAcceleration = value.Value }); }
     }
 
     /// <summary>Seconds of listening prepared ahead of the passage being read.</summary>
@@ -415,7 +415,7 @@ public sealed class SettingsViewModel : ViewModelBase
     public SettingOption<MathMode>? SelectedMathMode
     {
         get => MathModes.FirstOrDefault(o => o.Value == _s.MathMode) ?? MathModes[0];
-        set { if (value is not null) Save(s => s with { MathMode = value.Value }); }
+        set { if (value is not null) SaveChoice(s => s with { MathMode = value.Value }); }
     }
 
     public IReadOnlyList<SettingOption<MathThinkingPolicy>> ThinkingPolicies { get; } =
@@ -436,7 +436,7 @@ public sealed class SettingsViewModel : ViewModelBase
     public SettingOption<MathEvidence>? Evidence
     {
         get => EvidenceOptions.First(o => o.Value == _s.MathLlmEvidence);
-        set { if (value is not null) Save(s => s with { MathLlmEvidence = value.Value }); }
+        set { if (value is not null) SaveChoice(s => s with { MathLlmEvidence = value.Value }); }
     }
 
     public bool UseFormulaModel
@@ -463,7 +463,7 @@ public sealed class SettingsViewModel : ViewModelBase
     {
         get => ThinkingPolicies.First(o => o.Value == _s.EffectiveMathThinking);
         // The older switch would override the choice, so it is cleared when a choice is made.
-        set { if (value is not null) Save(s => s with { MathLlmThinking = value.Value, MathLlmDisableThinking = false }); }
+        set { if (value is not null) SaveChoice(s => s with { MathLlmThinking = value.Value, MathLlmDisableThinking = false }); }
     }
 
     public EndpointSettingsViewModel MathEndpoint { get; }
@@ -493,7 +493,7 @@ public sealed class SettingsViewModel : ViewModelBase
     public SettingOption<string>? LayoutAnalyzer
     {
         get => LayoutAnalyzers.FirstOrDefault(o => o.Value == _s.LayoutAnalyzer) ?? LayoutAnalyzers[0];
-        set { if (value is not null) Save(s => s with { LayoutAnalyzer = value.Value }); }
+        set { if (value is not null) SaveChoice(s => s with { LayoutAnalyzer = value.Value }); }
     }
 
     public IReadOnlyList<SettingOption<LayoutAcceleration>> LayoutAccelerations { get; } =
@@ -505,7 +505,7 @@ public sealed class SettingsViewModel : ViewModelBase
     public SettingOption<LayoutAcceleration>? SelectedLayoutAcceleration
     {
         get => LayoutAccelerations.First(o => o.Value == _s.LayoutAcceleration);
-        set { if (value is not null) Save(s => s with { LayoutAcceleration = value.Value }); }
+        set { if (value is not null) SaveChoice(s => s with { LayoutAcceleration = value.Value }); }
     }
 
     public IReadOnlyList<SettingOption<OcrPolicy>> OcrPolicies { get; } =
@@ -518,7 +518,7 @@ public sealed class SettingsViewModel : ViewModelBase
     public SettingOption<OcrPolicy>? Ocr
     {
         get => OcrPolicies.First(o => o.Value == _s.Ocr);
-        set { if (value is not null) Save(s => s with { Ocr = value.Value }); }
+        set { if (value is not null) SaveChoice(s => s with { Ocr = value.Value }); }
     }
 
     public string LayoutModelPath { get => _s.LayoutModelPath ?? ""; set => Save(s => s with { LayoutModelPath = Blank(value) }); }
@@ -529,6 +529,17 @@ public sealed class SettingsViewModel : ViewModelBase
         => Save(s => s with { Filters = update(s.Filters) });
 
     /// <summary>Saves a change to the engines: it applies after a restart.</summary>
+    /// <summary>
+    /// Saves a choice from a list and says that it changed: the line under the list describes the
+    /// choice made (bound as <c>Choice.Description</c>), and kept describing the one before.
+    /// </summary>
+    private void SaveChoice(Func<RailNarratorSettings, RailNarratorSettings> update,
+        [System.Runtime.CompilerServices.CallerMemberName] string? property = null)
+    {
+        Save(update);
+        OnPropertyChanged(property);
+    }
+
     private void Save(Func<RailNarratorSettings, RailNarratorSettings> update)
     {
         if (!Write(update)) return;

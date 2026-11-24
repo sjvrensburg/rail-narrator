@@ -40,6 +40,7 @@ public sealed record ReadingUnitBuilderOptions(
     bool DetectRunningElements = true,
     int RunningElementMinPages = 3,
     bool SkipPublisherCoverPages = true,
+    bool SkipContents = true,
     bool SkipArticleMetadata = true,
     bool SkipAffiliations = true)
 {
@@ -169,7 +170,7 @@ public static class ReferenceSections
         => block.Kind is not (BlockKind.Header or BlockKind.Footer or BlockKind.PageNumber
             or BlockKind.Figure or BlockKind.Chart or BlockKind.Decoration);
 
-    private static string TextOf(PageExtraction page, ExtractedBlock block)
+    internal static string TextOf(PageExtraction page, ExtractedBlock block)
         => string.Join(" ", block.LineIndices
             .Where(i => i >= 0 && i < page.Lines.Count)
             .Select(i => page.TextOf(page.Lines[i].Text) ?? ""));
@@ -201,6 +202,131 @@ public static class PublisherCoverPages
             if (hits >= 3) pages.Add(page.PageIndex);
         }
         return pages;
+    }
+}
+
+/// <summary>
+/// A table of contents, or a list of figures or tables: titles led by dots to a page number. Read
+/// aloud it is a section title, a row of dots and a number, eighty times over, and it says nothing a
+/// listener can use; a thesis has several pages of it.
+/// </summary>
+/// <remarks>
+/// Recognised by the leaders, not by the heading: the heading varies ("Contents", "Table of
+/// contents", "List of figures", none at all on a second page) and the leaders do not.
+/// </remarks>
+public static class ContentsPages
+{
+    // Four or more dots, set tight or spaced, then the page number that ends the line.
+    private static readonly System.Text.RegularExpressions.Regex Leader = new(
+        @"(?:\.[ \u00A0]?){4,}\s*(?:[0-9]{1,4}|[ivxlc]{1,7})\s*$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    // An entry with no leaders in the text layer (they were drawn, or are a tab): a title, then the
+    // page number that ends the line.
+    private static readonly System.Text.RegularExpressions.Regex Entry = new(
+        @"^\W*(?:[0-9.]+\s+)?[A-Za-z].*[^0-9.,]\s+([0-9]{1,3})\s*$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>True for a line that ends in dot leaders and a page number.</summary>
+    public static bool IsLeaderLine(string text) => Leader.IsMatch(text ?? "");
+
+    /// <summary>
+    /// Pages that are contents: at least four leader lines, and they at least a third of the page's
+    /// lines (an entry's title may run over a line of its own, which has no leader).
+    /// </summary>
+    public static IReadOnlyList<int> Find(ExtractionSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        var pages = new List<int>();
+        foreach (var page in snapshot.Pages)
+        {
+            int leaders = LeaderLines(page).Count;
+            if (leaders >= 4 && leaders * 3 >= page.Lines.Count || IsListOfEntries(snapshot, page)) pages.Add(page.PageIndex);
+        }
+        return pages;
+    }
+
+    /// <summary>
+    /// Contents without leaders: in the front of the document, at least four lines, and a third of
+    /// the page's, that end in a page number, the numbers never going back. Prose does not do that.
+    /// </summary>
+    private static bool IsListOfEntries(ExtractionSnapshot snapshot, PageExtraction page)
+    {
+        if (page.PageIndex >= Math.Max(10, snapshot.PageCount / 4)) return false;
+        var numbers = new List<int>();
+        foreach (var line in page.Lines)
+        {
+            var match = Entry.Match(LineText(page, line));
+            if (match.Success) numbers.Add(int.Parse(match.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture));
+        }
+        if (numbers.Count < 4 || numbers.Count * 3 < page.Lines.Count) return false;
+        for (int i = 1; i < numbers.Count; i++)
+            if (numbers[i] < numbers[i - 1]) return false;
+        return true;
+    }
+
+    private static string LineText(PageExtraction page, ExtractedLine line)
+    {
+        int start = Math.Clamp(line.Text.Start, 0, page.Text.Length);
+        return page.Text.Substring(start, Math.Clamp(line.Text.Length, 0, page.Text.Length - start));
+    }
+
+    private static readonly System.Text.RegularExpressions.Regex ListHeading = new(
+        @"^\W*(?:table\s+of\s+contents|contents|list\s+of\s+(?:figures|tables|illustrations|plates|listings))\W*$",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    // "Figure 7d:", "Table 3.": two of them in one block are entries of a list, not a caption.
+    private static readonly System.Text.RegularExpressions.Regex CaptionEntry = new(
+        @"\b(?:Figure|Fig\.|Table|Listing)\s+[0-9]+[A-Za-z]?(?:\.[0-9]+)?\s*[:.]", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    private static readonly System.Text.RegularExpressions.Regex EndsInPageNumber = new(
+        @"[^0-9.,]\s+(?:[0-9]{1,3}|[ivxlc]{1,7})\s*$", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    /// <summary>
+    /// The blocks of a list that its heading names ("List of figures", "Contents"), heading included,
+    /// up to the next heading: for a list whose entries are captions run over several lines, which
+    /// neither count of lines recognises. Only in the front of the document, and never for more than
+    /// six pages, so a heading the layout missed cannot take a chapter with it.
+    /// </summary>
+    public static IReadOnlyList<(int PageIndex, string BlockId)> ListsByHeading(ExtractionSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        var found = new List<(int, string)>();
+        int front = Math.Max(10, snapshot.PageCount / 4), startedOn = -1;
+        bool inside = false;
+        foreach (var page in snapshot.Pages)
+        {
+            if (inside && page.PageIndex - startedOn >= 6) inside = false;
+            foreach (var block in page.Blocks.OrderBy(b => b.Order))
+            {
+                if (block.Kind is BlockKind.Heading or BlockKind.Title)
+                {
+                    inside = page.PageIndex < front && ListHeading.IsMatch(ReferenceSections.TextOf(page, block));
+                    if (inside) { startedOn = page.PageIndex; found.Add((page.PageIndex, block.BlockId)); }
+                    continue;
+                }
+                // Over the page, only what still ends in a page number is the list: the text that
+                // follows a list with no heading of its own is the document.
+                if (inside && page.PageIndex > startedOn)
+                {
+                    string text = ReferenceSections.TextOf(page, block);
+                    if (!EndsInPageNumber.IsMatch(text) && CaptionEntry.Matches(text).Count < 2) inside = false;
+                }
+                if (inside) found.Add((page.PageIndex, block.BlockId));
+            }
+        }
+        return found;
+    }
+
+    /// <summary>The page's lines that end in leaders and a page number.</summary>
+    public static IReadOnlyList<ExtractedLine> LeaderLines(PageExtraction page)
+    {
+        ArgumentNullException.ThrowIfNull(page);
+        var lines = new List<ExtractedLine>();
+        foreach (var line in page.Lines)
+        {
+            if (IsLeaderLine(LineText(page, line))) lines.Add(line);
+        }
+        return lines;
     }
 }
 
@@ -629,6 +755,24 @@ public sealed class ReadingUnitBuilder
                 diag.Add($"Skipped page {cover + 1}: a publisher's download cover sheet (citation, links and view counts), not part of the article.");
             }
         }
+        var contentsLines = new List<(int PageIndex, string LineId)>();
+        if (_options.SkipContents)
+        {
+            var contents = ContentsPages.Find(snapshot);
+            foreach (int index in contents)
+                foreach (var block in snapshot.Page(index)?.Blocks ?? []) runningBlockSet.Add((index, block.BlockId));
+            if (contents.Count > 0)
+                diag.Add($"Skipped {contents.Count} page(s) of contents (titles led by dots to a page number): {string.Join(", ", contents.Select(i => i + 1))}.");
+            var lists = ContentsPages.ListsByHeading(snapshot).Where(b => !contents.Contains(b.PageIndex)).ToList();
+            foreach (var block in lists) runningBlockSet.Add(block);
+            if (lists.Count > 0)
+                diag.Add($"Skipped {lists.Count} block(s) of a list of figures, tables or contents under its heading.");
+            // The entries that run on to a page of something else, too few there to be the page.
+            foreach (var page in snapshot.Pages.Where(p => !contents.Contains(p.PageIndex)))
+                foreach (var line in ContentsPages.LeaderLines(page)) contentsLines.Add((page.PageIndex, line.LineId));
+            if (contentsLines.Count > 0)
+                diag.Add($"Skipped {contentsLines.Count} line(s) of contents on other pages.");
+        }
         // A reference list that is not read takes its heading with it: "References" spoken on its
         // own announced a section of which nothing followed.
         var referenceHeadings = ReferenceSections.HeadingsOfUnreadLists(snapshot,
@@ -637,6 +781,7 @@ public sealed class ReadingUnitBuilder
         if (referenceHeadings.Count > 0)
             diag.Add($"Skipped {referenceHeadings.Count} heading(s) of a reference list that is not read.");
         var runningLineSet = running.Where(r => r.IsLineLevel).Select(r => (r.PageIndex, r.LineId!)).ToHashSet();
+        foreach (var line in contentsLines) runningLineSet.Add(line);
         if (_options.SkipAffiliations)
         {
             // The article's first page: the first with text that is not a publisher's cover sheet.

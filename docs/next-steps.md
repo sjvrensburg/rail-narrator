@@ -1,7 +1,7 @@
 # Next steps and open decisions
 
-Handover note, 23 November 2026, on the `fix/narration-performance` branch (from `main`
-after PR #48). It builds with 0 warnings; the test runner reports 770 passed and 16 skipped.
+Handover note, 23 November 2026, on the `fix/gui-test-findings` branch (from `main`
+after PR #49). It builds with 0 warnings; the test runner reports 770 passed and 16 skipped.
 `status.md` gives 765 passing and 21 opt-in, because it
 counts as opt-in the five tests (four of Phonon, one of Kokoro with durations) that return early
 without an install and so report as passed. What is verified, and how it was measured, is in `status.md`. How to run the real models,
@@ -53,6 +53,16 @@ Since PR #10:
 
 ## Recently landed
 
+- **Four reports narrated to audiobooks** (`fix/gui-test-findings`, `status.md` item 99): 248
+  pages, seven hours of audio at about ten times real time, every maths passage interpreted, the
+  audio sampled against the script by speech recognition. Fixed on the way: a stray half
+  character that stopped planning, contents pages and lists of figures read aloud, section numbers.
+- **The window driven with the reader's key** (`fix/gui-test-findings`, `status.md` item 97):
+  saving and playing a narration, the audiobook, both engines' own word timing, the endpoint
+  notice and the Kokoro download all seen working on a virtual display with Claude interpreting
+  the maths; the interpret-ahead change measured (180 s for speaking and model together, the
+  model's 70 s beside it). Two defects fixed: the description under a Settings list, and the
+  count of uninterpreted maths in a saved narration.
 - **Word timing from the speech engine itself** (ADR-0013, `feat/engine-word-timing`, `status.md`
   item 95): Phonon from the attention head that follows its text (a patch to Gradium's library),
   Kokoro from the durations of its timestamped export, each as an alternative to the aligner
@@ -127,7 +137,11 @@ Since PR #10:
 
 In rough priority order:
 
-- **Watch the engine's word timing in the window** (`status.md` item 95). Run
+- **Listen** (`status.md` items 97, 98; the reader's install now has the patched Phonon library, and
+  Phonon's timing measured there agrees with the aligner's to a median 9 ms). Everything of the day's work has now been seen in the window
+  and measured at a silent audio sink; none of it has been heard. The one question that needs
+  ears: is the highlighted word the one sounding, with Phonon's timing and with Kokoro's?
+- **Watch the engine's word timing in the window on the reader's install** (`status.md` item 95). Run
   `tools/setup-phonon.sh` again (it rebuilds the library with the timing patch), choose the
   speech engine's own timing in Settings ▸ Reading, restart, and read a page: does the highlight
   sit on the word being said? Then the same with Kokoro and its timestamped model. If Phonon's

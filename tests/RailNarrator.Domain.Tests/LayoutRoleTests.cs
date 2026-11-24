@@ -437,6 +437,98 @@ public sealed class LayoutRoleTests
     }
 
     [Fact]
+    public void ATableOfContentsIsNotRead()
+    {
+        var title = new LayoutPage(0).Block(BlockKind.Title, "Clustering daily patterns");
+        var contents = new LayoutPage(1)
+            .Block(BlockKind.Heading, "Table of contents")
+            .Block(BlockKind.Text,
+                "Abstract .......................................................... i",
+                "1 Introduction ..................................................... 1",
+                "2 Literature review ................................................ 2",
+                "2.1 Support vector machines, incremental learning and",
+                "learning curves .................................................... 6",
+                "3 Methodology . . . . . . . . . . . . . . . . . . . . . . . . . . . 12");
+        var body = new LayoutPage(2)
+            .Block(BlockKind.Heading, "1 Introduction")
+            .Block(BlockKind.Text, "Suppose a new customer in a store buys a smartwatch.");
+
+        var units = new ReadingUnitBuilder().Build(title.Snapshot(contents, body), out var diagnostics);
+
+        Assert.DoesNotContain(units, u => u.PageIndex == 1);
+        Assert.Contains(units, u => u.OriginalText.Contains("smartwatch", StringComparison.Ordinal));
+        Assert.Contains(diagnostics, d => d.Contains("contents", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ContentsWithoutLeaders_AreNotReadEither()
+    {
+        var title = new LayoutPage(0).Block(BlockKind.Title, "Building type classification");
+        var contents = new LayoutPage(1)
+            .Block(BlockKind.Heading, "TABLE OF CONTENTS")
+            .Block(BlockKind.Text, "Abstract 2", "Acknowledgements 2", "Chapter 1: Introduction 8",
+                "2.1 The urban energy metadata gap 9", "2.5. Summary of literature, identified gaps,",
+                "and research positioning 11", "Chapter 3: Methodology 13");
+        var body = new LayoutPage(2)
+            .Block(BlockKind.Text, "The sample has 1 578 buildings, of which the training set took 80",
+                "per cent, and each of the ten repeated splits was stratified by type.",
+                "Accuracy was 0.71 for the first model and the second reached 74",
+                "per cent once the weather features were added to the 12",
+                "that the first model had.");
+
+        var units = new ReadingUnitBuilder().Build(title.Snapshot(contents, body));
+
+        Assert.DoesNotContain(units, u => u.PageIndex == 1);
+        Assert.Contains(units, u => u.PageIndex == 2);
+    }
+
+    [Fact]
+    public void AListOfFiguresIsSkippedUnderItsHeading_AndTheListAfterItIsRead()
+    {
+        var title = new LayoutPage(0).Block(BlockKind.Title, "Clustering daily solar irradiance patterns");
+        var figures = new LayoutPage(1)
+            .Block(BlockKind.Heading, "List of Figures")
+            .Block(BlockKind.Text, "Figure 1: Locations of the five extraction points used in the study 14 Figure 2: Distributions of hourly",
+                "estimated and clear-sky irradiation at the solar park, excluding observations with zero irradiance.");
+        var more = new LayoutPage(2)
+            .Block(BlockKind.Text, "Figure 7d: Mean hourly irradiation profiles obtained using three methods",
+                "at the fourth location 59")
+            .Block(BlockKind.Text, "Distributions of bootstrap values across the stages at the fifth location 66 Figure 9b: Bootstrap",
+                "distribution for the full procedure at the second location 66 Figure 9d: Bootstrap distribution for",
+                "the full procedure at the fourth location, which runs over the line")
+            .Block(BlockKind.Heading, "List of Abbreviations")
+            .Block(BlockKind.Text, "ARI Adjusted Rand index");
+
+        var units = new ReadingUnitBuilder().Build(title.Snapshot(figures, more));
+
+        Assert.DoesNotContain(units, u => u.OriginalText.Contains("Figure", StringComparison.Ordinal));
+        Assert.Contains(units, u => u.OriginalText.Contains("Adjusted Rand", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void ContentsEntriesThatRunOnToAnotherPage_AreSkippedByLine()
+    {
+        var page = new LayoutPage(0)
+            .Block(BlockKind.Text, "A.5 Statistical tests ......................................... 42",
+                "A.6 Required calibration amount ............................... 44")
+            .Block(BlockKind.Text, "The declaration follows on this page and is read.");
+
+        var units = new ReadingUnitBuilder().Build(page.Snapshot());
+
+        var unit = Assert.Single(units);
+        Assert.Contains("declaration", unit.OriginalText, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("The results are shown in Section 4.", false)]
+    [InlineData("and so on... 12", false)]
+    [InlineData("Wait.... what", false)]
+    [InlineData("4.1.3 Class distribution and imbalance ........ 21", true)]
+    [InlineData("References . . . . . . . . . . xii", true)]
+    public void ALeaderLineEndsInDotsAndAPageNumber(string line, bool expected) =>
+        Assert.Equal(expected, ContentsPages.IsLeaderLine(line));
+
+    [Fact]
     public void AnArticlePageMentioningOneCoverPhraseIsKept()
     {
         var first = new LayoutPage(0).Block(BlockKind.Text, "Published online: 30 Nov 2015. The model is introduced here in full.");
