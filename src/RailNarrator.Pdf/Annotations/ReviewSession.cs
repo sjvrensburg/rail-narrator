@@ -64,15 +64,23 @@ public sealed class ReviewSession
     /// </summary>
     public HighlightAnnotation Highlight(ReviewTarget target, string? note = null,
         string colour = DefaultColour, float opacity = HighlightOpacity)
+        => (HighlightAnnotation)Markup(target, AnnotationTool.Highlight, note, colour, opacity);
+
+    /// <summary>
+    /// Marks a target with a text markup (highlight, underline, strikeout or squiggly), with a note
+    /// when <paramref name="note"/> has text. Returns the annotation that carries the note.
+    /// </summary>
+    public TextMarkupAnnotation Markup(ReviewTarget target, AnnotationTool tool, string? note, string colour, float opacity)
     {
         ArgumentNullException.ThrowIfNull(target);
-        var made = new List<(int Page, HighlightAnnotation Annotation)>();
+        if (!AnnotationInteractionHandler.IsTextMarkupTool(tool))
+            throw new ArgumentException($"{tool} is not a text markup.", nameof(tool));
+        var made = new List<(int Page, TextMarkupAnnotation Annotation)>();
         string? groupId = null;
         var time = _now();
         foreach (var page in target.Pages)
         {
-            var annotation = (HighlightAnnotation)AnnotationInteractionHandler.CreateTextMarkup(
-                AnnotationTool.Highlight, [.. page.Rects], colour, opacity);
+            var annotation = AnnotationInteractionHandler.CreateTextMarkup(tool, [.. page.Rects], colour, opacity);
             annotation.NativeId = Guid.NewGuid().ToString();
             annotation.Source = AnnotationSource.RailReader;
             annotation.Author = Author;
@@ -84,7 +92,8 @@ public sealed class ReviewSession
 
         var links = made.Select(m => new ReviewLink(
             m.Annotation.NativeId!, target.SegmentId, target.UnitId, target.ExtractionRevision,
-            target.Pages.Single(p => p.PageIndex == m.Page).Ranges, target.QuotedText, time) { GroupId = groupId }).ToList();
+            target.Pages.Single(p => p.PageIndex == m.Page).Ranges, target.QuotedText, time)
+            { GroupId = groupId, ByHand = target.ByHand }).ToList();
 
         Apply(new Step(
             made.Select(m => (IUndoAction)new AddAnnotationAction(m.Page, m.Annotation)).ToList(),
@@ -101,6 +110,15 @@ public sealed class ReviewSession
         string? value = string.IsNullOrWhiteSpace(text) ? null : text.Trim();
         if (old == value || (string.IsNullOrEmpty(old) && value is null)) return;
         Apply(new Step([new EditContentsAction(annotation, old, value), new TouchAction(annotation, _now())], [], []));
+    }
+
+    /// <summary>Gives an annotation (and the others made with it) another colour, as one undoable step.</summary>
+    public void Recolour(Annotation annotation, string colour)
+    {
+        ArgumentNullException.ThrowIfNull(annotation);
+        var group = GroupOf(annotation).Select(g => g.Annotation).ToList();
+        if (group.All(a => a.Color == colour && a.ColorComponents is null)) return;
+        Apply(new Step([.. group.Select(a => (IUndoAction)new RecolourAction(a, colour)), new TouchAction(group[0], _now())], [], []));
     }
 
     /// <summary>Removes an annotation, and the others made with it.</summary>
@@ -142,7 +160,8 @@ public sealed class ReviewSession
     public Annotation? MadeOn(ReviewTarget target)
     {
         ArgumentNullException.ThrowIfNull(target);
-        var link = Document.Links.Values.FirstOrDefault(l =>
+        if (target.ByHand || target.SegmentId is null) return null;
+        var link = Document.Links.Values.FirstOrDefault(l => !l.ByHand &&
             l.SegmentId == target.SegmentId && l.UnitId == target.UnitId
             && (l.GroupId is null || l.GroupId == l.NativeId)
             && Document.File.Pages.Values.Any(p => p.Any(a => a.NativeId == l.NativeId)));
@@ -197,6 +216,28 @@ public sealed class ReviewSession
     /// <param name="Added">Links the step makes.</param>
     /// <param name="Removed">Links the step takes away.</param>
     private sealed record Step(IReadOnlyList<IUndoAction> Actions, IReadOnlyList<ReviewLink> Added, IReadOnlyList<ReviewLink> Removed);
+
+    /// <summary>
+    /// A new colour. The faithful components read from a PDF are dropped with it, or they would
+    /// win over the new colour when written (Core: "authoritative over Color for round-trip").
+    /// </summary>
+    private sealed class RecolourAction(Annotation annotation, string colour) : IUndoAction
+    {
+        private readonly string _before = annotation.Color;
+        private readonly float[]? _componentsBefore = annotation.ColorComponents;
+
+        public void Undo(AnnotationFile file)
+        {
+            annotation.Color = _before;
+            annotation.ColorComponents = _componentsBefore;
+        }
+
+        public void Redo(AnnotationFile file)
+        {
+            annotation.Color = colour;
+            annotation.ColorComponents = null;
+        }
+    }
 
     /// <summary>Stamps the modification time, and puts the old one back on undo.</summary>
     private sealed class TouchAction(Annotation annotation, DateTimeOffset time) : IUndoAction

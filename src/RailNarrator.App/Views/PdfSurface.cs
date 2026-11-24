@@ -128,6 +128,11 @@ public sealed class PdfSurface : Control
             // (wheel, fit) have already been applied, so they do not come through twice.
             if (e.PropertyName == nameof(MainViewModel.Zoom) && Math.Abs(viewModel.Zoom - Zoom) > 1e-9)
                 ZoomAbout(viewModel.Zoom, Bounds.Width / 2, Bounds.Height / 2);
+            // Annotate mode: a text cursor over the page while a markup tool marks text.
+            if (e.PropertyName is nameof(MainViewModel.AnnotateMode) or nameof(MainViewModel.ActiveTool))
+                Cursor = viewModel.AnnotateMode
+                    ? new Cursor(viewModel.IsSelectTool ? StandardCursorType.Arrow : StandardCursorType.Ibeam)
+                    : null;
             // The View menu's "Fit width" was ticked or cleared.
             if (e.PropertyName == nameof(MainViewModel.FitWidth) && viewModel.FitWidth != _magnification.FitsWidth)
             {
@@ -681,6 +686,8 @@ public sealed class PdfSurface : Control
                 }
             }
             DrawAnnotations(context, bounds);
+            if (_viewModel is { MarkupPreview: { } preview } vm && vm.MarkupPreviewPage == CurrentPage)
+                context.Custom(new MarkupPreviewDraw(bounds, preview, new PageTransform(Zoom, _offsetX, _offsetY)));
             DrawHighlights(context);
             DrawNoteTarget(context);
             DrawPreparing(context);
@@ -846,6 +853,15 @@ public sealed class PdfSurface : Control
             // opens it (a double click edits it) and does not start reading.
             var (notePageX, notePageY) = new PageTransform(Zoom, _offsetX, _offsetY).ToPage(point.X, point.Y);
             if (vm.ClickAnnotation(CurrentPage, notePageX, notePageY, e.ClickCount >= 2)) { e.Handled = true; return; }
+
+            // Annotate mode: the left button marks text and selects; it never reads from there or pans.
+            if (vm.AnnotatePress(CurrentPage, notePageX, notePageY))
+            {
+                _annotating = true;
+                e.Pointer.Capture(this);
+                e.Handled = true;
+                return;
+            }
         }
 
         if (properties.IsLeftButtonPressed && _viewModel?.Plan is { } plan && _source is not null)
@@ -871,9 +887,18 @@ public sealed class PdfSurface : Control
         e.Pointer.Capture(this);
     }
 
+    private bool _annotating;
+
     protected override void OnPointerMoved(PointerEventArgs e)
     {
         base.OnPointerMoved(e);
+        if (_annotating && _viewModel is { } annotating)
+        {
+            var at = e.GetPosition(this);
+            var (x, y) = new PageTransform(Zoom, _offsetX, _offsetY).ToPage(at.X, at.Y);
+            annotating.AnnotateMove(x, y);
+            return;
+        }
         if (!_dragging) return;
         var point = e.GetPosition(this);
         // Manual panning suspends the camera, not the audio.
@@ -891,6 +916,13 @@ public sealed class PdfSurface : Control
     protected override void OnPointerReleased(PointerReleasedEventArgs e)
     {
         base.OnPointerReleased(e);
+        if (_annotating)
+        {
+            _annotating = false;
+            e.Pointer.Capture(null);
+            _viewModel?.AnnotateRelease();
+            return;
+        }
         _dragging = false;
         e.Pointer.Capture(null);
     }
@@ -903,6 +935,12 @@ public sealed class PdfSurface : Control
     protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
     {
         base.OnPointerCaptureLost(e);
+        // A drag taken away mid-way marks nothing.
+        if (_annotating)
+        {
+            _annotating = false;
+            _viewModel?.CancelAnnotateDrag();
+        }
         _dragging = false;
     }
 

@@ -619,6 +619,19 @@ public partial class MainWindow : Window
         var mods = e.KeyModifiers;
         bool shift = mods == KeyModifiers.Shift, plain = mods == KeyModifiers.None;
         bool ctrl = mods == KeyModifiers.Control, ctrlShift = mods == (KeyModifiers.Control | KeyModifiers.Shift);
+
+        // Annotate mode: 1 to 5 choose a colour (and recolour the selection); Escape leaves the
+        // mode (before it pauses, as it would otherwise).
+        if (_viewModel.AnnotateMode && plain)
+        {
+            int colour = e.Key switch
+            {
+                Key.D1 or Key.NumPad1 => 0, Key.D2 or Key.NumPad2 => 1, Key.D3 or Key.NumPad3 => 2,
+                Key.D4 or Key.NumPad4 => 3, Key.D5 or Key.NumPad5 => 4, _ => -1,
+            };
+            if (colour >= 0) { _viewModel.UseColour(colour); return true; }
+            if (e.Key == Key.Escape) { _viewModel.AnnotateMode = false; return true; }
+        }
         RelayCommand? command = e.Key switch
         {
             Key.N when plain => _viewModel.NoteOnSentence,
@@ -629,6 +642,7 @@ public partial class MainWindow : Window
             Key.Z when ctrlShift => _viewModel.RedoAnnotation,
             Key.Y when ctrl => _viewModel.RedoAnnotation,
             Key.Delete when plain => _viewModel.DeleteSelectedAnnotation,
+            Key.E when ctrl => _viewModel.ToggleAnnotateMode,
             _ => null,
         };
         if (command is null || !command.CanExecute(null)) return false;

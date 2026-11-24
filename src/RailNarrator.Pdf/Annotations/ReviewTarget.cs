@@ -12,13 +12,13 @@ public sealed record ReviewTargetPage(int PageIndex, IReadOnlyList<HighlightRect
 /// What was just read, located on the page: the thing a note or highlight made while listening is
 /// put on (ADR-0014).
 /// </summary>
-/// <param name="SegmentId">The passage.</param>
+/// <param name="SegmentId">The passage; null for text marked by hand that no passage reads (a running head, say).</param>
 /// <param name="UnitId">The sentence, or null when the target is the whole passage.</param>
 /// <param name="Pages">Per page it touches, in reading order.</param>
 /// <param name="QuotedText">The document's own text for it.</param>
 /// <param name="ExtractionRevision">The extraction the ranges index into.</param>
 public sealed record ReviewTarget(
-    string SegmentId,
+    string? SegmentId,
     string? UnitId,
     IReadOnlyList<ReviewTargetPage> Pages,
     string QuotedText,
@@ -34,6 +34,42 @@ public sealed record ReviewTarget(
         ArgumentNullException.ThrowIfNull(unit);
         return TextNormaliser.Dehyphenate(unit.OriginalText, unit.LineBreakOffsets.ToHashSet()).Text.Trim();
     }
+
+    /// <summary>
+    /// A range of one page's text marked by hand (a drag in annotate mode): its boxes, its quote,
+    /// and the passage that reads it, if one does, so the note can be read from.
+    /// </summary>
+    /// <returns>Null when the range has no glyphs.</returns>
+    public static ReviewTarget? ForRange(NarrationPlan? plan, ExtractionSnapshot snapshot, PageTextIndex page, TextRange range,
+        IReadOnlyDictionary<char, string>? ligatures = null)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentNullException.ThrowIfNull(page);
+        var rects = page.Rects(range);
+        if (rects.Count == 0) return null;
+        string text = page.Text.Text;
+        int start = Math.Clamp(range.Start, 0, text.Length);
+        int end = Math.Clamp(range.End, start, text.Length);
+        string quote = PageQuote.Of(text, start, end, ligatures ?? new Dictionary<char, string>());
+
+        string? segmentId = null, unitId = null;
+        if (plan is not null)
+        {
+            var unit = plan.Units.FirstOrDefault(u => u.Anchors.Any(a => a.PageIndex == page.PageIndex
+                && a.SourceCharRange is { } r && r.Start < end && start < r.End));
+            if (unit is not null)
+            {
+                unitId = unit.Id;
+                segmentId = plan.Segments.FirstOrDefault(s => s.ReadingUnitIds.Contains(unit.Id))?.Id;
+            }
+        }
+        return new ReviewTarget(segmentId, unitId,
+            [new ReviewTargetPage(page.PageIndex, rects, [new LinkedRange(page.PageIndex, start, end - start)])],
+            quote, snapshot.Identity.ExtractionRevision) { ByHand = true };
+    }
+
+    /// <summary>Marked by hand over a range of text, not on what was just read: never the same mark as one made by N or H.</summary>
+    public bool ByHand { get; init; }
 
     /// <summary>The page the target starts on.</summary>
     public int FirstPage => Pages[0].PageIndex;
@@ -122,10 +158,84 @@ public sealed class PageTextCache
         _snapshot = snapshot;
     }
 
+    /// <summary>The document's unmapped ligatures, worked out when first needed (<see cref="PageQuote.Ligatures"/>).</summary>
+    public IReadOnlyDictionary<char, string> Ligatures => _ligatures ??= PageQuote.Ligatures(_snapshot);
+
+    private IReadOnlyDictionary<char, string>? _ligatures;
+
     public PageTextIndex? For(int pageIndex)
     {
         if (_pages.TryGetValue(pageIndex, out var index)) return index;
         if (_snapshot.Page(pageIndex) is not { } page) return null;
         return _pages[pageIndex] = PageTextIndex.Build(page);
     }
+}
+
+/// <summary>
+/// A page's raw text as a reader would quote it, by the rules reading units are built with
+/// (<c>ReadingUnitBuilder</c>): PDFium's line-end hyphen marker restored and the word joined across
+/// the break, a ligature glyph the document has identified written as its letters, and a glyph no
+/// one could identify left out, never guessed.
+/// </summary>
+public static class PageQuote
+{
+    /// <summary>PDFium reports a hyphen that ends a line as U+0002 (the same value is a ligature in some fonts; position decides).</summary>
+    private const char LineEndHyphen = '\u0002';
+
+    public static string Of(string text, int start, int end, IReadOnlyDictionary<char, string> ligatures)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        ArgumentNullException.ThrowIfNull(ligatures);
+        var sb = new System.Text.StringBuilder(end - start);
+        var breaks = new HashSet<int>();
+        for (int i = start; i < end; i++)
+        {
+            char c = text[i];
+            if (c == '\n') { breaks.Add(sb.Length); sb.Append('\n'); continue; }
+            if (!IsUnmapped(c)) { sb.Append(c); continue; }
+            if (IsLineEndHyphen(text, i)) sb.Append('-');
+            else if (ligatures.TryGetValue(c, out var letters) && InsideAWord(text, i)) sb.Append(letters);
+            else sb.Append(' ');
+        }
+        string joined = TextNormaliser.Dehyphenate(sb.ToString(), breaks).Text;
+        return string.Join(' ', joined.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    /// <summary>
+    /// The ligatures a document's text layer left unmapped, worked out from all its pages at once
+    /// (<see cref="UnmappedGlyphResolver.Infer"/>), as reading units are.
+    /// </summary>
+    public static IReadOnlyDictionary<char, string> Ligatures(ExtractionSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        return UnmappedGlyphResolver.Infer(snapshot.Pages.SelectMany(p => Tokens(p.Text)));
+    }
+
+    private static IEnumerable<string> Tokens(string text)
+    {
+        var token = new System.Text.StringBuilder();
+        bool unmapped = false;
+        for (int i = 0; i <= text.Length; i++)
+        {
+            if (i == text.Length || char.IsWhiteSpace(text[i]))
+            {
+                if (unmapped) yield return token.ToString();
+                token.Clear();
+                unmapped = false;
+                continue;
+            }
+            if (IsLineEndHyphen(text, i)) { token.Append('-'); continue; }
+            token.Append(text[i]);
+            unmapped |= IsUnmapped(text[i]);
+        }
+    }
+
+    private static bool IsUnmapped(char c) => UnmappedGlyphResolver.IsUnmapped(c) && !char.IsWhiteSpace(c);
+
+    private static bool IsLineEndHyphen(string text, int i)
+        => text[i] == LineEndHyphen && i > 0 && char.IsLetter(text[i - 1])
+           && (i + 1 == text.Length || text[i + 1] is '\n' or '\r');
+
+    private static bool InsideAWord(string text, int i)
+        => (i > 0 && char.IsLetter(text[i - 1])) || (i + 1 < text.Length && char.IsLetter(text[i + 1]));
 }

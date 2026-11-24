@@ -169,6 +169,35 @@
         </ScrollViewer>
       </TabItem>
 
+      <!-- ================= Annotations ================= -->
+      <TabItem Header="Annotations">
+        <ScrollViewer Padding="8,0,16,16">
+          <StackPanel Spacing="6">
+            <TextBlock Classes="section first" Text="Your name" />
+            <TextBlock Classes="hint" Text="Signs each annotation you make, as a PDF reader shows its author. Leave it empty to sign none. Annotations already made keep the name they were made with." />
+            <Grid ColumnDefinitions="180,*">
+              <TextBlock Classes="label" Text="Author" />
+              <TextBox Grid.Column="1" Text="{Binding AnnotationAuthor}" PlaceholderText="No name" MaxWidth="320"
+                       HorizontalAlignment="Left" MinWidth="260" />
+            </Grid>
+
+            <TextBlock Classes="section" Text="What the colours mean" />
+            <TextBlock Classes="hint" Text="Five colours, the same as RailReader2's. Name them for how you review (an error, a question, a good point); the names are shown on the toolbar and in exported notes. Keys 1 to 5 choose a colour in annotate mode." />
+            <ItemsControl ItemsSource="{Binding AnnotationColours}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:ColourNameSetting">
+                  <Grid ColumnDefinitions="180,*" Margin="0,3">
+                    <Border Width="40" Height="18" CornerRadius="4" Background="{Binding Swatch}" HorizontalAlignment="Left"
+                            BorderThickness="1" BorderBrush="{DynamicResource SystemControlForegroundBaseLowBrush}" />
+                    <TextBox Grid.Column="1" Text="{Binding Name}" MinWidth="260" MaxWidth="320" HorizontalAlignment="Left" />
+                  </Grid>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
       <!-- ================= Speech ================= -->
       <TabItem Header="Speech">
         <ScrollViewer Padding="8,0,16,16">
