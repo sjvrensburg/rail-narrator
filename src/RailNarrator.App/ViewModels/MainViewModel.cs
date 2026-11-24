@@ -118,6 +118,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         SetUpReview();
         SetUpAnnotateMode();
         SetUpExport();
+        SetUpRevision();
         ResumeFollow = new RelayCommand(() => _services.Coordinator.ResumeFollow(), () => FollowSuspended, OnCommandError);
         ZoomIn = new RelayCommand(() => ApplyZoom(Zoom * 1.25), () => HasDocument, OnCommandError);
         ZoomOut = new RelayCommand(() => ApplyZoom(Zoom / 1.25), () => HasDocument, OnCommandError);
@@ -599,7 +600,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         // The colour names are the reader's: another reviewer's yellow is not the reader's "Note".
         var notes = ReviewNotes.Select(item => new ExportedNote(item.PageIndex, item.Kind,
             !item.FromPdf && palette.TryGetValue(item.Annotation.Color, out var name) ? name : null,
-            item.Quote, item.Note, item.Annotation.Author, item.FromPdf)).ToList();
+            item.Quote, item.Note, item.Annotation.Author, item.FromPdf) { Unplaced = item.Unplaced }).ToList();
         return ReviewMarkdown.Build(Path.GetFileName(DocumentPath ?? "document"), notes, DateOnly.FromDateTime(DateTime.Now));
     }
 
@@ -668,6 +669,148 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         var (added, skipped) = session.Import(imported);
         ShowNotice($"Imported {added} annotation{(added == 1 ? "" : "s")}" + (skipped > 0 ? $"; {skipped} were already here." : ".")
             + (added > 0 ? " Ctrl+Z takes them out again." : ""));
+    }
+
+    // ---- notes from an earlier version of the PDF (ADR-0014) ------------------------------------
+
+    public RelayCommand BringEarlierNotes { get; private set; } = null!;
+    public RelayCommand BringNotesFromFile { get; private set; } = null!;
+    public RelayCommand<ReviewNoteItem> PlaceAsBefore { get; private set; } = null!;
+    public RelayCommand<ReviewNoteItem> DiscardUnplaced { get; private set; } = null!;
+
+    private bool _carrying;
+
+    private void SetUpRevision()
+    {
+        BringEarlierNotes = new RelayCommand(
+            async () => { if (_review?.Earlier is { CarriedUtc: null } e) await BringNotesFromAsync(e.DocumentContentHash, null); },
+            () => _review?.Earlier is { CarriedUtc: null } && _snapshot is not null && !_carrying && !Busy, OnCommandError);
+        BringNotesFromFile = new RelayCommand(BringNotesFromFileAsync, () => _session is not null && _snapshot is not null && !_carrying && !Busy, OnCommandError);
+        PlaceAsBefore = new RelayCommand<ReviewNoteItem>(item =>
+        {
+            if (_session is not { } session || _snapshot is not { } snapshot) return;
+            if (!session.PlaceAsBefore(item.Annotation, snapshot.Pages.Count))
+            {
+                var missing = session.PlacesAsBefore(item.Annotation).Where(p => p >= snapshot.Pages.Count).Select(p => (p + 1).ToString());
+                ShowNotice($"This version has no page {string.Join(" or ", missing)}; the note can only be discarded.");
+                return;
+            }
+            GoToReviewNote(ReviewNotes.FirstOrDefault(n => ReferenceEquals(n.Annotation, item.Annotation)) ?? item);
+        });
+        DiscardUnplaced = new RelayCommand<ReviewNoteItem>(item => _session?.Discard(item.Annotation));
+    }
+
+    private void RefreshRevisionCommands()
+    {
+        BringEarlierNotes?.RaiseCanExecuteChanged();
+        BringNotesFromFile?.RaiseCanExecuteChanged();
+    }
+
+    /// <summary>
+    /// A document opened at a path whose PDF had other contents when it was annotated: says how many
+    /// notes the earlier version has, and offers to bring them over.
+    /// </summary>
+    private async Task OfferEarlierNotesAsync(ReviewDocument review)
+    {
+        if (review.Earlier is not { CarriedUtc: null } earlier) return;
+        var loaded = await Task.Run(() => _services.ReviewAnnotations.Peek(earlier.DocumentContentHash));
+        if (!ReferenceEquals(_review, review) || review.Earlier?.CarriedUtc is not null) return;
+        if (loaded.Problem is { } problem)
+        {
+            Notes.Add($"Annotations of the earlier version: {problem}");
+            ShowLastingNotice($"This PDF changed since you annotated it, and the notes on the earlier version could not be read. {problem}");
+            return;
+        }
+        int count = ReviewCarryOver.CountNotes(loaded.Document);
+        if (count == 0) return;
+        // The notice may outlive the document: the action is for this one only.
+        ShowLastingNotice($"This PDF changed since you annotated it: {NoteCount(count)} on the earlier version can be brought over.",
+            "Bring them over", () => RunObserved(BringNotesAsync(loaded.Document, earlier.DocumentContentHash, review), "Could not bring the notes over"));
+    }
+
+    private static string NoteCount(int count) => count == 1 ? "1 note" : $"{count} notes";
+
+    /// <summary>Review ▸ Bring notes from another version of this PDF…: a PDF chosen by the reader, by its contents.</summary>
+    private async Task BringNotesFromFileAsync()
+    {
+        if (_review is not { } review || TopLevelProvider?.Invoke() is not { } top) return;
+        var files = await top.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "Bring notes from another version of this PDF",
+            AllowMultiple = false,
+            FileTypeFilter = [new FilePickerFileType("PDF") { Patterns = ["*.pdf"] }],
+        });
+        if (files.Count == 0 || files[0].TryGetLocalPath() is not { } path) return;
+        string hash = await Task.Run(() => CacheKey.Sha256HexOfFile(path));
+        if (!ReferenceEquals(_review, review)) return;
+        if (hash == review.DocumentContentHash)
+        {
+            ShowNotice($"{Path.GetFileName(path)} is this same PDF.");
+            return;
+        }
+        await BringNotesFromAsync(hash, Path.GetFileName(path));
+    }
+
+    private async Task BringNotesFromAsync(string hash, string? name)
+    {
+        if (_review is not { } review) return;
+        if (review.Earlier is { CarriedUtc: not null } e && e.DocumentContentHash == hash)
+        {
+            ShowNotice("The notes on that version were brought over already. Ctrl+Z undoes it, if it was the last change.");
+            return;
+        }
+        var loaded = await Task.Run(() => _services.ReviewAnnotations.Peek(hash));
+        if (!ReferenceEquals(_review, review)) return;
+        if (loaded.Problem is { } problem)
+        {
+            ShowNotice($"The notes on {(name ?? "the earlier version")} could not be read. {problem}");
+            return;
+        }
+        if (ReviewCarryOver.CountNotes(loaded.Document) == 0)
+        {
+            ShowNotice(name is null ? "The earlier version has no notes to bring over." : $"No notes are kept for {name}.");
+            return;
+        }
+        await BringNotesAsync(loaded.Document, hash, review);
+    }
+
+    /// <summary>
+    /// Matches the earlier version's notes against this one's text off the UI thread, then adds what
+    /// was placed and keeps the rest, as one undoable step.
+    /// </summary>
+    private async Task BringNotesAsync(ReviewDocument earlier, string hash, ReviewDocument forReview)
+    {
+        if (!ReferenceEquals(_review, forReview))
+        {
+            ShowNotice("That offer was for another document.");
+            return;
+        }
+        if (_session is not { } session || _review is not { } review || _snapshot is not { } snapshot || _carrying) return;
+        if (review.Earlier is { CarriedUtc: not null } e && e.DocumentContentHash == hash) return;
+        _carrying = true;
+        RefreshRevisionCommands();
+        try
+        {
+            var plan = Plan;
+            var carried = await Task.Run(() => ReviewCarryOver.Match(earlier, plan, snapshot));
+            if (!ReferenceEquals(_review, review) || !ReferenceEquals(_snapshot, snapshot)) return;
+            session.CarryOver(carried, hash);
+            const string where = "at the end of Review notes, to place as before or discard";
+            string text = (carried.NotesPlaced, carried.NotesUnplaced) switch
+            {
+                (0, 1) => $"The note could not be placed by its text; it is {where}.",
+                (0, var n) => $"None of the {NoteCount(n)} could be placed by their text; they are {where}.",
+                (var p, 0) => $"Brought over {NoteCount(p)} by their text.",
+                var (p, n) => $"Brought over {NoteCount(p)} by their text; {n} not placed {(n == 1 ? "is" : "are")} {where}.",
+            };
+            ShowLastingNotice(text + " Ctrl+Z undoes this.");
+            Notes.Add($"Annotations: brought over {carried.NotesPlaced} of {carried.NotesPlaced + carried.NotesUnplaced} notes from version {hash[..12]}.");
+        }
+        finally
+        {
+            _carrying = false;
+            RefreshRevisionCommands();
+        }
     }
 
     private async Task<string?> PickSaveAsync(string title, string suggested, string kind, string pattern)
@@ -1150,6 +1293,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         foreach (var command in new[] { NoteOnSentence, NoteOnPassage, HighlightSentence, HighlightPassage, SaveNote,
                      SaveNoteAndResume, CancelNote, UndoAnnotation, RedoAnnotation, DeleteSelectedAnnotation, ToggleAnnotateMode })
             command.RaiseCanExecuteChanged();
+        RefreshRevisionCommands();
     }
 
     /// <summary>
@@ -1291,6 +1435,15 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     private void GoToReviewNote(ReviewNoteItem item)
     {
         if (_session is null) return;
+        if (item.Unplaced)
+        {
+            if (_snapshot is { } snapshot && item.PageNow < snapshot.Pages.Count) PageRequested?.Invoke(item.PageNow);
+            StatusMessage = (item.HasQuote ? "Its words are not in this version." : "It was on no text.")
+                + (item.PageNow != item.PageIndex
+                    ? $" Its page is page {item.PageNow + 1} now, by the notes found there; Place as before puts it in the same place on it."
+                    : " Place as before puts it in the same place on the same page.");
+            return;
+        }
         _session.Selected = item.Annotation;
         if (RailReader.Core.Services.AnnotationGeometry.GetAnnotationBounds(item.Annotation) is { } b)
             AnnotationFocusRequested?.Invoke(item.PageIndex, new PageRect(b.Left, b.Top, b.Right, b.Bottom));
@@ -1373,6 +1526,17 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
                 }
             foreach (var x in items.OrderBy(x => x.Item.PageIndex).ThenBy(x => x.Segment).ThenBy(x => x.Top).ThenBy(x => x.Left))
                 ReviewNotes.Add(x.Item);
+            // Brought from an earlier version but not placed: last, by their page there.
+            foreach (var (page, list) in review.Unplaced.Pages.OrderBy(p => p.Key))
+                foreach (var annotation in list)
+                {
+                    var link = session.UnplacedLinkOf(annotation);
+                    if (link?.GroupId is { } group && group != annotation.NativeId) continue;
+                    if (annotation.InReplyTo is not null) continue;   // goes with the note it answers
+                    string? note = annotation is TextNoteAnnotation n ? n.EffectiveContents : annotation.Contents;
+                    ReviewNotes.Add(new ReviewNoteItem(annotation, session.EarlierPageOf(annotation) ?? page, null, link?.QuotedText ?? "",
+                        string.IsNullOrWhiteSpace(note) ? null : note, Unplaced: true) { PageNow = page });
+                }
         }
         OnPropertyChanged(nameof(HasReviewNotes));
         RefreshExportCommands();
@@ -1397,6 +1561,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             Notes.Add($"Annotations: {problem}");
             ShowLastingNotice(problem);
         }
+        else RunObserved(OfferEarlierNotesAsync(loaded.Document), "Could not look for notes on the earlier version");
     }
 
     private void DetachReview()

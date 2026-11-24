@@ -178,7 +178,13 @@ product's settings.
 The reader's own annotations (notes and markup made while listening, ADR-0014) are
 not narration highlights and do not go through Core's store either: they are kept in
 Rail Narrator's data directory, keyed by the PDF's content hash, in Core's JSON
-format. The PDF is changed only by exporting an annotated copy.
+format. The PDF is changed only by exporting an annotated copy. A revised PDF has another hash;
+`index.json` (path → last hash) finds the earlier version, and `ReviewCarryOver` brings its notes
+over by the words they quote, keeping the rest as not placed (`earlier.json`, `unplaced.json`).
+
+On the reading surface the layers are, bottom to top: the page raster (with its colour filter),
+the PDF's own annotations and the reader's (`AnnotationLayer`'s copy), a markup being dragged,
+the outline of a note being written, then the narration highlight, which stays on top.
 
 ## Maths
 

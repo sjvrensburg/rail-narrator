@@ -159,4 +159,39 @@ public sealed class ReviewExportTests : IDisposable
 
             """.Replace("\r\n", "\n"), md);
     }
+
+    [Fact]
+    public void NotesNotPlacedFromAnEarlierVersionAreListedApart_WithTheirPageThere()
+    {
+        var notes = new List<ExportedNote>
+        {
+            new(0, "Highlight", null, "The estimator is consistent.", "Under which conditions?", null, false),
+            new(3, "Highlight", null, "We drop the outliers.", "Why drop them?", null, false) { Unplaced = true },
+        };
+
+        string md = ReviewMarkdown.Build("paper.pdf", notes, new DateOnly(2026, 11, 24));
+
+        Assert.Equal("""
+            # Review notes: paper.pdf
+
+            24 November 2026 · 1 annotation, and 1 from an earlier version not placed in this one
+
+            ## Page 1
+
+            **Highlight**
+
+            > The estimator is consistent.
+
+            Under which conditions?
+
+            ## From an earlier version, not found in this one
+
+            **Highlight · earlier page 4**
+
+            > We drop the outliers.
+
+            Why drop them?
+
+            """.Replace("\r\n", "\n"), md);
+    }
 }
