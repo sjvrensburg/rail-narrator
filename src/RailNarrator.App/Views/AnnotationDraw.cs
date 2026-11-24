@@ -57,3 +57,30 @@ internal sealed class AnnotationDraw : ICustomDrawOperation
 
     public void Dispose() { }
 }
+
+/// <summary>Draws the markup being dragged in annotate mode, with Core's preview renderer, on the render thread.</summary>
+/// <remarks>The annotation is made anew at each pointer move and never changed after, so it may be held here.</remarks>
+internal sealed class MarkupPreviewDraw(Rect bounds, RailReader.Core.Models.Annotation preview, PageTransform transform) : ICustomDrawOperation
+{
+    public Rect Bounds { get; } = bounds;
+
+    public bool HitTest(Point p) => false;
+
+    public bool Equals(ICustomDrawOperation? other) => false;
+
+    public void Render(ImmediateDrawingContext context)
+    {
+        if (context.TryGetFeature<ISkiaSharpApiLeaseFeature>() is not { } feature) return;
+        using var lease = feature.Lease();
+        var canvas = lease.SkCanvas;
+        canvas.Save();
+        try
+        {
+            canvas.ClipRect(new SKRect((float)Bounds.Left, (float)Bounds.Top, (float)Bounds.Right, (float)Bounds.Bottom));
+            MarkupPreview.Draw(canvas, transform, preview);
+        }
+        finally { canvas.Restore(); }
+    }
+
+    public void Dispose() { }
+}

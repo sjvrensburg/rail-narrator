@@ -301,6 +301,29 @@ public sealed class SettingsViewModel : ViewModelBase
         }
     }
 
+    // ---- Annotations: apply at once ----------------------------------------------------------
+
+    /// <summary>The name annotations are signed with; empty for none.</summary>
+    public string AnnotationAuthor
+    {
+        get => _s.AnnotationAuthor ?? "";
+        set => SaveLive(s => s with { AnnotationAuthor = Blank(value) });
+    }
+
+    /// <summary>The five colours and what each means, for the dialogue to name them.</summary>
+    public IReadOnlyList<ColourNameSetting> AnnotationColours => _annotationColours ??= Enumerable.Range(0, ReviewPalette.Count)
+        .Select(i => new ColourNameSetting(i, ReviewPalette.Hex(i), ReviewPalette.NameOf(_s, i), SetColourName)).ToList();
+
+    private IReadOnlyList<ColourNameSetting>? _annotationColours;
+
+    private void SetColourName(int index, string name)
+    {
+        var names = Enumerable.Range(0, ReviewPalette.Count).Select(i => ReviewPalette.NameOf(_s, i)).ToArray();
+        names[index] = string.IsNullOrWhiteSpace(name) ? ReviewPalette.DefaultNames[index] : name.Trim();
+        SaveLive(s => s with { AnnotationColourNames = names.SequenceEqual(ReviewPalette.DefaultNames) ? null : names });
+        _main.RefreshPalette();
+    }
+
     // ---- Reading: applies at once ------------------------------------------------------------
 
     public double FollowAutoResumeSeconds
@@ -559,6 +582,8 @@ public sealed class SettingsViewModel : ViewModelBase
             HighlightHighContrast = _s.HighlightHighContrast,
             DarkMode = _s.DarkMode,
             UiFontScale = _s.UiFontScale,
+            AnnotationAuthor = _s.AnnotationAuthor,
+            AnnotationColourNames = _s.AnnotationColourNames,
         };
     }
 
@@ -605,6 +630,9 @@ public sealed class SettingsViewModel : ViewModelBase
             SidebarWidth = 300,
             SidebarSection = "Outline",
             ShowAnnotations = true,
+            AnnotationAuthor = null,
+            AnnotationColourNames = null,
+            AnnotationColourIndices = null,
         });
 
     private static string? Blank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();

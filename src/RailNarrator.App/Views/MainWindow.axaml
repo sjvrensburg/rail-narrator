@@ -115,6 +115,15 @@
         <MenuItem Header="_Undo" Command="{Binding UndoAnnotation}" InputGesture="Ctrl+Z" />
         <MenuItem Header="_Redo" Command="{Binding RedoAnnotation}" InputGesture="Ctrl+Shift+Z" />
         <MenuItem Header="_Delete the selected annotation" Command="{Binding DeleteSelectedAnnotation}" InputGesture="Delete" />
+        <Separator />
+        <MenuItem Header="_Annotate mode" ToggleType="CheckBox" IsChecked="{Binding AnnotateMode, Mode=TwoWay}" InputGesture="Ctrl+E" />
+        <MenuItem Header="_Tool">
+          <MenuItem Header="_Highlight" ToggleType="Radio" IsChecked="{Binding IsHighlightTool, Mode=OneWay}" Command="{Binding ChooseTool}" CommandParameter="Highlight" />
+          <MenuItem Header="_Underline" ToggleType="Radio" IsChecked="{Binding IsUnderlineTool, Mode=OneWay}" Command="{Binding ChooseTool}" CommandParameter="Underline" />
+          <MenuItem Header="_Strike out" ToggleType="Radio" IsChecked="{Binding IsStrikeOutTool, Mode=OneWay}" Command="{Binding ChooseTool}" CommandParameter="StrikeOut" />
+          <MenuItem Header="S_quiggle" ToggleType="Radio" IsChecked="{Binding IsSquigglyTool, Mode=OneWay}" Command="{Binding ChooseTool}" CommandParameter="Squiggly" />
+          <MenuItem Header="S_elect" ToggleType="Radio" IsChecked="{Binding IsSelectTool, Mode=OneWay}" Command="{Binding ChooseTool}" CommandParameter="None" />
+        </MenuItem>
       </MenuItem>
       <MenuItem Header="_Maths">
         <MenuItem Header="Mark this passage as _maths" Command="{Binding MarkAsMaths}" />
@@ -232,6 +241,37 @@
                   AutomationProperties.Name="Highlight what was just read">
             <c:Icon Data="{StaticResource IconHighlighter}" />
           </Button>
+          <Button Classes="toolBtn borderless" Classes.active="{Binding AnnotateMode}" Command="{Binding ToggleAnnotateMode}"
+                  ToolTip.Tip="Annotate mode: drag over text to mark it, click an annotation to select it (Ctrl+E; Escape leaves)"
+                  AutomationProperties.Name="Annotate mode">
+            <c:Icon Data="{StaticResource IconPencil}" />
+          </Button>
+          <StackPanel Orientation="Horizontal" Spacing="2" IsVisible="{Binding AnnotateMode}" VerticalAlignment="Center">
+            <Button Classes="toolBtn" Classes.active="{Binding IsHighlightTool}" Command="{Binding ChooseTool}" CommandParameter="Highlight"
+                    Content="Highlight" ToolTip.Tip="Drag over text to highlight it" />
+            <Button Classes="toolBtn" Classes.active="{Binding IsUnderlineTool}" Command="{Binding ChooseTool}" CommandParameter="Underline"
+                    Content="Underline" ToolTip.Tip="Drag over text to underline it" />
+            <Button Classes="toolBtn" Classes.active="{Binding IsStrikeOutTool}" Command="{Binding ChooseTool}" CommandParameter="StrikeOut"
+                    Content="Strike out" ToolTip.Tip="Drag over text to strike it out" />
+            <Button Classes="toolBtn" Classes.active="{Binding IsSquigglyTool}" Command="{Binding ChooseTool}" CommandParameter="Squiggly"
+                    Content="Squiggle" ToolTip.Tip="Drag over text to underline it with a wavy line" />
+            <Button Classes="toolBtn" Classes.active="{Binding IsSelectTool}" Command="{Binding ChooseTool}" CommandParameter="None"
+                    Content="Select" ToolTip.Tip="Click an annotation to select it; then 1–5 recolour it, N writes its note, Delete removes it" />
+            <ItemsControl ItemsSource="{Binding Palette}" VerticalAlignment="Center" Margin="6,0,0,0">
+              <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate><StackPanel Orientation="Horizontal" Spacing="3" /></ItemsPanelTemplate>
+              </ItemsControl.ItemsPanel>
+              <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="vm:PaletteColour">
+                  <Button Width="22" Height="22" Padding="0" CornerRadius="11" Background="{Binding Brush}"
+                          BorderThickness="1" BorderBrush="{DynamicResource SystemControlForegroundBaseMediumBrush}"
+                          ToolTip.Tip="{Binding Tip}" AutomationProperties.Name="{Binding Name}"
+                          Command="{Binding $parent[ItemsControl].((vm:MainViewModel)DataContext).ChooseColour}" CommandParameter="{Binding}" />
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+            <TextBlock Text="{Binding ActiveColour.Name}" VerticalAlignment="Center" Margin="6,0,0,0" Classes="secondary" />
+          </StackPanel>
 
           <Border Classes="toolSep" />
 

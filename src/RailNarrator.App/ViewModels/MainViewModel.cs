@@ -113,6 +113,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         Replay = new RelayCommand(() => { _pendingStartSegmentId = null; return _services.Coordinator.ReplaySegmentAsync(); }, CanRead, OnCommandError, allowWhileRunning: true);
         ToggleFollow = new RelayCommand(CycleFollowMode, null, OnCommandError);
         SetUpReview();
+        SetUpAnnotateMode();
         ResumeFollow = new RelayCommand(() => _services.Coordinator.ResumeFollow(), () => FollowSuspended, OnCommandError);
         ZoomIn = new RelayCommand(() => ApplyZoom(Zoom * 1.25), () => HasDocument, OnCommandError);
         ZoomOut = new RelayCommand(() => ApplyZoom(Zoom / 1.25), () => HasDocument, OnCommandError);
@@ -539,10 +540,199 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         DeleteReviewNote = new RelayCommand<ReviewNoteItem>(item => _session?.Delete(item.Annotation));
     }
 
+    // ---- annotate mode: marking text by hand ---------------------------------------------------
+
+    private bool _annotateMode;
+    private AnnotationTool _tool = AnnotationTool.Highlight;
+    private MarkupDrag? _drag;
+    private (int Page, float X, float Y)? _pressedAt;
+    private Dictionary<AnnotationTool, int>? _colourIndices;
+
+    /// <summary>
+    /// Annotate mode (Ctrl+E): a left drag over text marks it with the chosen tool and a click
+    /// selects an annotation, instead of reading from there and panning. A middle drag still pans.
+    /// </summary>
+    public bool AnnotateMode
+    {
+        get => _annotateMode;
+        set
+        {
+            if (!Set(ref _annotateMode, value)) return;
+            CancelAnnotateDrag();
+            StatusMessage = value
+                ? "Annotate mode: drag over text to mark it; click an annotation to select it. Escape or Ctrl+E leaves."
+                : "Annotate mode off: a click reads from there again.";
+            InvalidateSurface?.Invoke();
+        }
+    }
+
+    /// <summary>The markup tool in annotate mode; <see cref="AnnotationTool.None"/> selects.</summary>
+    public AnnotationTool ActiveTool
+    {
+        get => _tool;
+        private set
+        {
+            if (!Set(ref _tool, value)) return;
+            foreach (var name in new[] { nameof(IsHighlightTool), nameof(IsUnderlineTool), nameof(IsStrikeOutTool),
+                         nameof(IsSquigglyTool), nameof(IsSelectTool), nameof(ActiveColourIndex), nameof(ActiveColour) })
+                OnPropertyChanged(name);
+        }
+    }
+
+    public bool IsHighlightTool => _tool == AnnotationTool.Highlight;
+    public bool IsUnderlineTool => _tool == AnnotationTool.Underline;
+    public bool IsStrikeOutTool => _tool == AnnotationTool.StrikeOut;
+    public bool IsSquigglyTool => _tool == AnnotationTool.Squiggly;
+    public bool IsSelectTool => _tool == AnnotationTool.None;
+
+    /// <summary>The five colours, with what the reader calls them.</summary>
+    public IReadOnlyList<PaletteColour> Palette => _palette ??= BuildPalette();
+
+    private IReadOnlyList<PaletteColour>? _palette;
+
+    private IReadOnlyList<PaletteColour> BuildPalette() => Enumerable.Range(0, ReviewPalette.Count)
+        .Select(i => new PaletteColour(i, ReviewPalette.Hex(i), ReviewPalette.NameOf(_services.CurrentSettings, i))).ToList();
+
+    /// <summary>The colour names changed in Settings.</summary>
+    public void RefreshPalette()
+    {
+        _palette = null;
+        OnPropertyChanged(nameof(Palette));
+        OnPropertyChanged(nameof(ActiveColour));
+    }
+
+    /// <summary>The colour the active tool marks with (a highlight's for the select tool).</summary>
+    public int ActiveColourIndex => ColourIndexOf(_tool == AnnotationTool.None ? AnnotationTool.Highlight : _tool);
+
+    public PaletteColour ActiveColour => Palette[ActiveColourIndex];
+
+    private int ColourIndexOf(AnnotationTool tool)
+    {
+        _colourIndices ??= (_services.CurrentSettings.AnnotationColourIndices ?? new Dictionary<string, int>())
+            .Where(kv => Enum.TryParse<AnnotationTool>(kv.Key, out _) && kv.Value >= 0 && kv.Value < ReviewPalette.Count)
+            .ToDictionary(kv => Enum.Parse<AnnotationTool>(kv.Key), kv => kv.Value);
+        return _colourIndices.TryGetValue(tool, out int index) ? index : ReviewPalette.DefaultIndexFor(tool);
+    }
+
+    /// <summary>The markup being dragged, to draw; null when none.</summary>
+    public Annotation? MarkupPreview => _drag?.Preview;
+
+    public int MarkupPreviewPage => _drag?.PageIndex ?? -1;
+
+    public RelayCommand ToggleAnnotateMode { get; private set; } = null!;
+    public RelayCommand<string> ChooseTool { get; private set; } = null!;
+    public RelayCommand<PaletteColour> ChooseColour { get; private set; } = null!;
+
+    private void SetUpAnnotateMode()
+    {
+        ToggleAnnotateMode = new RelayCommand(() => AnnotateMode = !AnnotateMode, () => _session is not null, OnCommandError);
+        ChooseTool = new RelayCommand<string>(name =>
+        {
+            if (!Enum.TryParse<AnnotationTool>(name, out var tool)) return;
+            ActiveTool = tool;
+            AnnotateMode = true;
+        });
+        ChooseColour = new RelayCommand<PaletteColour>(colour => UseColour(colour.Index));
+    }
+
+    /// <summary>
+    /// A colour chosen (a swatch, or keys 1 to 5): the active tool marks with it from now on, and a
+    /// selected annotation takes it.
+    /// </summary>
+    public void UseColour(int index)
+    {
+        if (index < 0 || index >= ReviewPalette.Count) return;
+        if (_session?.Selected is { } selected) _session.Recolour(selected, ReviewPalette.Hex(index));
+        // With the select tool, a colour is for the selection only: the tools keep their own.
+        if (_tool != AnnotationTool.None)
+        {
+            ColourIndexOf(_tool);
+            _colourIndices![_tool] = index;
+            var indices = _colourIndices.ToDictionary(kv => kv.Key.ToString(), kv => kv.Value);
+            PersistPreference(s => s with { AnnotationColourIndices = indices });
+            _services.CurrentSettings = _services.CurrentSettings with { AnnotationColourIndices = indices };
+            OnPropertyChanged(nameof(ActiveColourIndex));
+            OnPropertyChanged(nameof(ActiveColour));
+        }
+        StatusMessage = $"{ReviewPalette.NameOf(_services.CurrentSettings, index)} ({index + 1}).";
+    }
+
+    /// <summary>The name annotations are signed with now (Settings ▸ Annotations).</summary>
+    private string? Author => string.IsNullOrWhiteSpace(_services.CurrentSettings.AnnotationAuthor)
+        ? null : _services.CurrentSettings.AnnotationAuthor.Trim();
+
+    /// <summary>
+    /// A left press on the page in annotate mode, in page points. True when it is taken (always, in
+    /// annotate mode: a click there selects; it never reads from there).
+    /// </summary>
+    public bool AnnotatePress(int pageIndex, double pageX, double pageY)
+    {
+        if (!_annotateMode || _session is null) return false;
+        CancelAnnotateDrag();
+        float x = (float)pageX, y = (float)pageY;
+        _pressedAt = (pageIndex, x, y);
+        if (_tool != AnnotationTool.None && _pageText?.For(pageIndex) is { } page)
+        {
+            var (drag, refusal) = MarkupDrag.Begin(page, _tool, ReviewPalette.Hex(ColourIndexOf(_tool)), ReviewPalette.OpacityFor(_tool), x, y);
+            _drag = drag;
+            if (refusal is not null) StatusMessage = refusal;
+        }
+        return true;
+    }
+
+    public void AnnotateMove(double pageX, double pageY)
+    {
+        if (_drag is null) return;
+        _drag.Move((float)pageX, (float)pageY);
+        InvalidateSurface?.Invoke();
+    }
+
+    /// <summary>The press released: a drag marks its text, anything else is a click that selects.</summary>
+    public void AnnotateRelease()
+    {
+        var drag = _drag;
+        var pressed = _pressedAt;
+        _drag = null;
+        _pressedAt = null;
+        if (_session is null) return;
+        if (drag?.Range is { } range && _snapshot is { } snapshot && _pageText?.For(drag.PageIndex) is { } page
+            && ReviewTarget.ForRange(Plan, snapshot, page, range, _pageText.Ligatures) is { } target)
+        {
+            _session.Author = Author;
+            _session.Markup(target, drag.Tool, null, drag.Colour, drag.Opacity);
+            StatusMessage = $"Marked: “{Shorten(target.QuotedText)}”. N on it writes a note; Delete removes it.";
+        }
+        else if (pressed is { } at) SelectAt(at.Page, at.X, at.Y);
+        InvalidateSurface?.Invoke();
+    }
+
+    public void CancelAnnotateDrag()
+    {
+        bool had = _drag is not null;
+        _drag = null;
+        _pressedAt = null;
+        if (had) InvalidateSurface?.Invoke();
+    }
+
+    /// <summary>Selects the annotation under a page point (the topmost), or none.</summary>
+    private void SelectAt(int pageIndex, float x, float y)
+    {
+        if (_session is null || _review is null) return;
+        var onPage = _review.PageAnnotations(pageIndex);
+        Annotation? hit = null;
+        for (int i = onPage.Count - 1; i >= 0 && hit is null; i--)
+            if (RailReader.Core.Services.AnnotationGeometry.HitTest(onPage[i], x, y)) hit = onPage[i];
+        _session.Selected = hit;
+        if (hit is not null)
+            StatusMessage = "Selected. A colour (1 to 5) recolours it, N writes its note, Delete removes it.";
+    }
+
+    private static string Shorten(string text) => text.Length <= 60 ? text : text[..57] + "…";
+
     private void RefreshReviewCommands()
     {
         foreach (var command in new[] { NoteOnSentence, NoteOnPassage, HighlightSentence, HighlightPassage, SaveNote,
-                     SaveNoteAndResume, CancelNote, UndoAnnotation, RedoAnnotation, DeleteSelectedAnnotation })
+                     SaveNoteAndResume, CancelNote, UndoAnnotation, RedoAnnotation, DeleteSelectedAnnotation, ToggleAnnotateMode })
             command.RaiseCanExecuteChanged();
     }
 
@@ -566,6 +756,13 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     /// </summary>
     private async Task BeginNoteAsync(bool wholePassage)
     {
+        // In annotate mode, a selected annotation is the one the note is for.
+        if (_annotateMode && _session?.Selected is { } chosen)
+        {
+            if (_playback.IsAudible) await Coordinator.PauseAsync();
+            OpenNoteEditorFor(chosen);
+            return;
+        }
         // Found before pausing: the pause must not move what "just read" means.
         if (JustRead(wholePassage) is not { } target)
         {
@@ -593,6 +790,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             StatusMessage = wholePassage ? "This passage is already highlighted." : "This sentence is already highlighted.";
             return;
         }
+        _session.Author = Author;
         _session.Highlight(target);
         StatusMessage = wholePassage ? "Passage highlighted." : "Sentence highlighted.";
     }
@@ -636,6 +834,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     {
         if (_draft is not { } draft || _session is null) return;
         string text = NoteEditorText;
+        _session.Author = Author;
         if (draft.Existing is { } existing) _session.SetNote(existing, text);
         else if (draft.Target is { } target && !string.IsNullOrWhiteSpace(text)) _session.Highlight(target, text);
         CloseNoteEditor(string.IsNullOrWhiteSpace(text) && draft.Existing is null ? "No note written; nothing was added." : null);
@@ -760,6 +959,10 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         _review = null;
         _annotationLayer = null;
         _session = null;
+        _annotateMode = false;
+        _drag = null;
+        _pressedAt = null;
+        OnPropertyChanged(nameof(AnnotateMode));
         _pageText = null;
         _lastCue = null;
         RebuildReviewNotes();

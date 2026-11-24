@@ -115,6 +115,31 @@ public sealed class SettingsStoreFollowModeTests : IDisposable
     }
 
     [Fact]
+    public void TheAnnotationPreferencesComeBackAsSaved_AndAnOlderFileHasNone()
+    {
+        string path = Path.Combine(_dir, "settings.json");
+        var store = new RailNarrator.Infrastructure.SettingsStore(path);
+        store.Save(RailNarrator.Infrastructure.RailNarratorSettings.Default with
+        {
+            AnnotationAuthor = "A. Reviewer",
+            AnnotationColourNames = ["Unclear", "Good", "Wrong", "Cite", "Other"],
+            AnnotationColourIndices = new Dictionary<string, int> { ["Highlight"] = 3, ["StrikeOut"] = 2 },
+        });
+
+        var loaded = store.Load();
+        Assert.Equal("A. Reviewer", loaded.AnnotationAuthor);
+        Assert.Equal(["Unclear", "Good", "Wrong", "Cite", "Other"], loaded.AnnotationColourNames!);
+        Assert.Equal(3, loaded.AnnotationColourIndices!["Highlight"]);
+
+        File.WriteAllText(path, """{ "PlaybackRate": 1.5 }""");
+        var older = store.Load();
+        Assert.Null(store.LastError);
+        Assert.Null(older.AnnotationAuthor);
+        Assert.Null(older.AnnotationColourNames);
+        Assert.True(older.ShowAnnotations);
+    }
+
+    [Fact]
     public void FollowMode_IsSavedByName()
     {
         string path = Path.Combine(_dir, "settings.json");

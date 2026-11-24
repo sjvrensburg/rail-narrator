@@ -240,6 +240,18 @@ public sealed record RailNarratorSettings
     /// <summary>The reader's own annotations are drawn on the page (ADR-0014). On by default.</summary>
     public bool ShowAnnotations { get; init; } = true;
 
+    /// <summary>The name annotations are signed with (a PDF annotation's author). None by default.</summary>
+    public string? AnnotationAuthor { get; init; }
+
+    /// <summary>
+    /// What each of the five annotation colours means to the reader (yellow, green, red, blue,
+    /// black), shown beside them and in exported notes; null for the defaults.
+    /// </summary>
+    public IReadOnlyList<string>? AnnotationColourNames { get; init; }
+
+    /// <summary>Each markup tool's colour, by tool name, as an index into the five; a tool not named has Core's default.</summary>
+    public IReadOnlyDictionary<string, int>? AnnotationColourIndices { get; init; }
+
     /// <summary>Dark theme for the window. Light by default, as RailReader2.</summary>
     public bool DarkMode { get; init; }
 

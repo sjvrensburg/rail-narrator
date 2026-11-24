@@ -41,6 +41,9 @@ public sealed record ReviewLink(
     /// page, and they are kept, edited and removed as one. The first one's id; null when alone.
     /// </summary>
     public string? GroupId { get; init; }
+
+    /// <summary>Made over a range of text by hand (annotate mode), not on what was just read.</summary>
+    public bool ByHand { get; init; }
 }
 
 /// <summary>

@@ -28,6 +28,11 @@ public partial class ShortcutsDialog : Window
             ("Ctrl+Z / Ctrl+Shift+Z", "Undo or redo an annotation (also Ctrl+Y)"),
             ("Delete", "Delete the selected annotation"),
             ("Click a note's mark", "Show the note (double-click to edit it)"),
+            ("Ctrl+E", "Annotate mode on or off: a drag over text marks it with the chosen tool, a click selects"),
+            ("1 to 5", "In annotate mode: choose a colour (and recolour the selected annotation)"),
+            ("N", "In annotate mode, with an annotation selected: write its note"),
+            ("Escape", "Leave annotate mode"),
+            ("Middle drag", "Pan the page, in annotate mode too"),
         ]),
         ("Following", [
             ("Ctrl+F", "Follow the reading on or off"),
