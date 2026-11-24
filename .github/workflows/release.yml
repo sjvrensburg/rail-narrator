@@ -1,0 +1,109 @@
+name: Release
+
+# Builds the Linux and Windows downloads for a v* tag and publishes them as a GitHub release, with
+# notes from docs/releases/<tag>.md (required) and SHA-256 sums. Bump VersionPrefix in
+# Directory.Build.props before tagging: the tag must match it.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Tag, version and notes agree
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="$(grep -m1 '<VersionPrefix>' Directory.Build.props | sed -E 's#.*<VersionPrefix>(.*)</VersionPrefix>.*#\1#')"
+          [[ "$tag" == "v$version" ]] || { echo "Tag $tag does not match VersionPrefix $version." >&2; exit 1; }
+          [[ -f "docs/releases/$tag.md" ]] || { echo "docs/releases/$tag.md is missing." >&2; exit 1; }
+
+  linux:
+    needs: check
+    # The oldest supported runner, so the bundled native libraries (Phonon's above all, which is
+    # built here) need no newer glibc than Ubuntu 22.04's.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+      - name: Test
+        run: dotnet test RailNarrator.slnx -c Release
+      - name: Package
+        env:
+          WITH_PHONON: "yes"
+          COMPRESS: "gz"
+        run: packaging/build-release.sh
+      - name: glibc floor
+        run: |
+          dir=$(echo dist/rail-narrator-*-linux-x64/usr/lib/rail-narrator)
+          worst=$(for f in "$dir"/*.so; do objdump -T "$f" | grep -oE 'GLIBC_[0-9.]+'; done | sort -Vu | tail -1)
+          echo "Highest glibc symbol version needed: $worst"
+          [[ "$(printf '%s\n' "$worst" GLIBC_2.35 | sort -V | tail -1)" == GLIBC_2.35 ]] \
+            || { echo "A bundled library needs newer than glibc 2.35." >&2; exit 1; }
+      - uses: actions/upload-artifact@v7
+        with:
+          name: linux
+          path: dist/*.tar.gz
+
+  windows:
+    needs: check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+      - name: Test
+        run: dotnet test RailNarrator.slnx -c Release
+      - name: Package
+        shell: bash
+        env:
+          WITH_PORTAUDIO: "yes"
+          WITH_PHONON: "yes"
+        run: packaging/build-windows.sh
+      - name: Native libraries present
+        shell: bash
+        run: |
+          dir=$(echo dist/rail-narrator-*-win-x64)
+          ls -l "$dir/portaudio.dll" "$dir/ptts_ffi.dll" "$dir/install-phonon.sh" "$dir/LICENSE"
+          grep -q ptts_speak_aligned "$dir/ptts_ffi.dll"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: dist/*.zip
+
+  release:
+    needs: [linux, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v8
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd assets
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          gh release create "$GITHUB_REF_NAME" * \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Rail Narrator ${GITHUB_REF_NAME#v}" \
+            --notes-file "../docs/releases/$GITHUB_REF_NAME.md"

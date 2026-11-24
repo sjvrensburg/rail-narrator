@@ -1,0 +1,56 @@
+Rail Narrator: third-party software in this release
+
+Rail Narrator itself is MIT-licensed (LICENSE). A release also carries the software below, each
+under its own licence. Licence texts that a component ships with are in the licenses folder;
+voices/LICENSE is that of the Kokoro voices.
+
+Bundled code
+  RailReaderCore (RailReader.Core and its packages)   MIT
+  Avalonia (UI)                                       MIT
+  SkiaSharp, HarfBuzzSharp                            MIT
+  PDFium (bblanchon.PDFium builds), PDFtoImage        Apache-2.0; MIT
+  ONNX Runtime and its WebGPU plugin                  MIT (Microsoft); their own third-party
+                                                      notices, Dawn, Tint and the DirectX
+                                                      Shader Compiler among them, are in
+                                                      licenses/onnxruntime-*.txt
+  ANGLE (Windows: av_libglesv2.dll)                   BSD-3-Clause
+  KokoroSharp                                         MIT
+  MisakiSharp (pronunciation)                         Apache-2.0
+  NumSharp                                            Apache-2.0
+  NAudio, OpenTK                                      MIT
+  Concentus (Opus codec)                              BSD-3-Clause
+  RapidOcrNet                                         Apache-2.0
+  NetTopologySuite                                    BSD-3-Clause
+  Clipper2                                            BSL-1.0
+  Anthropic .NET SDK                                  Apache-2.0
+  OpenAI .NET SDK                                     MIT
+  Tmds.DBus.Protocol, MicroCom                        MIT
+  Inter typeface                                      SIL Open Font License 1.1
+  Lucide icons                                        ISC
+  PortAudio v19.7.0 (Windows: portaudio.dll)          MIT-style (licenses/portaudio.txt)
+  Phonon runtime: Gradium's xn-ptts v0.7.1            MIT OR Apache-2.0, built with Rail
+    (libptts_ffi.so / ptts_ffi.dll)                   Narrator's word-timing patch
+    It links about 300 Rust crates, all under permissive licences (MIT, Apache-2.0, BSD,
+    ISC, Zlib, Unicode-3.0 and similar) except two under MPL-2.0, used unmodified:
+    colored 3.1.1 and option-ext 0.2.0. Their source is at https://crates.io/crates/colored
+    and https://crates.io/crates/option-ext. The library's sources and its exact
+    dependency versions are xn-ptts at commit 5f9522b3e245846d312caaeb460d3dcae5d1a991
+    (https://github.com/gradium-ai/xn-ptts), with tools/phonon-word-timing.patch from
+    https://github.com/sjvrensburg/rail-narrator.
+  The .NET runtime                                    MIT
+
+Bundled data
+  Kokoro voices (voices/*.npy)                        Apache-2.0 (voices/LICENSE)
+  PP-OCRv5 recognition models (RapidOcrNet)           Apache-2.0
+
+Downloaded only when you ask, under their own licences (shown before downloading)
+  Kokoro-82M speech model                             Apache-2.0
+  Phonon phonon-31m-en and voices (Gradium)           Apache-2.0
+  Docling Heron layout model                          Apache-2.0
+  PP-DocLayoutV3 layout model                         Apache-2.0
+  PP-FormulaNet_plus-M formula model                  Apache-2.0
+  Montreal Forced Aligner English models              CC BY 4.0
+
+Not included
+  ffmpeg is not part of Rail Narrator. Exporting an audiobook runs the ffmpeg you installed
+  yourself, as a separate program.

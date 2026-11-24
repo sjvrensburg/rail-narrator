@@ -9,6 +9,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 ROOT="$PWD"
+. "$ROOT/packaging/common.sh"
 
 CONFIG="${CONFIG:-Release}"
 RID="${RID:-linux-x64}"
@@ -80,10 +81,9 @@ Optional: layout analysis on the GPU (setting LayoutAcceleration, default Auto)
 
 Downloaded on explicit user approval (never bundled, never fetched implicitly)
   Phonon model        phonon-31m-en and 25 English voices, 70 MB, Apache-2.0, by
-                      Gradium. Installed by tools/setup-phonon.sh from the source
-                      tree; its runtime, libptts_ffi.so (MIT OR Apache-2.0), is
-                      bundled when the archive was built with Rust, else that
-                      script builds it too. Speech engine "phonon"; ADR-0009.
+                      Gradium. Installed by ./install-phonon.sh (needs curl); its
+                      runtime, libptts_ffi.so (MIT OR Apache-2.0), is bundled.
+                      Speech engine "phonon"; ADR-0009.
   Kokoro ONNX model   163.6 MB, Apache-2.0. See docs/model-manifest.json.
   ZONOS3-Mini GGUFs   ~2.9 GB total, Apache-2.0 weights / MIT runtime. Only if the
                       ZONOS3 provider is selected; a sidecar built from source.
@@ -101,14 +101,24 @@ Run:  usr/bin/rail-narrator [file.pdf]
 Install into a prefix, e.g.:
   cp -r usr /usr/local        # or \$HOME/.local
 
-Models are not included. On first run the Models panel shows the size and licence
-of each asset before anything is downloaded. See docs/model-manifest.json.
+Models are not included. Get a voice first:
+  Kokoro: Models and endpoints > Download Kokoro speech model, in the app; or
+  Phonon: ./install-phonon.sh (about 70 MB; needs curl).
+Each download shows its size and licence before anything is fetched.
+
+Licence: LICENSE (MIT); bundled components: THIRD-PARTY-NOTICES.txt.
 
 A PDF passed on the command line is opened but never read aloud automatically.
 TXT
 
+add_release_files "$OUT/$NAME"
+
+# COMPRESS=gz for a .tar.gz, which every Linux can open; the default is zstd when it is there.
 ARCHIVE="$OUT/${NAME}.tar.zst"
-if command -v zstd >/dev/null 2>&1; then
+if [[ "${COMPRESS:-}" == "gz" ]]; then
+  ARCHIVE="$OUT/${NAME}.tar.gz"
+  tar -C "$OUT" -czf "$ARCHIVE" "$NAME"
+elif command -v zstd >/dev/null 2>&1; then
   tar -C "$OUT" --zstd -cf "$ARCHIVE" "$NAME"
 else
   ARCHIVE="$OUT/${NAME}.tar.gz"

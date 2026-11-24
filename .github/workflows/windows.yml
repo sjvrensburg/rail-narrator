@@ -72,7 +72,7 @@ jobs:
         shell: bash
         run: |
           dir=$(echo dist/rail-narrator-*-win-x64)
-          ls -l "$dir/portaudio.dll" "$dir/ptts_ffi.dll"
+          ls -l "$dir/portaudio.dll" "$dir/ptts_ffi.dll" "$dir/install-phonon.sh" "$dir/LICENSE" "$dir/THIRD-PARTY-NOTICES.txt" "$dir/licenses"/*
           grep -q ptts_speak_aligned "$dir/ptts_ffi.dll"
 
       # The bundled portaudio.dll loads and answers: version, initialise, devices (a runner has

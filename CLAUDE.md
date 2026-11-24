@@ -41,7 +41,7 @@ tools/RailNarrator.MathBench/bin/Release/net10.0/rail-narrator-mathbench paper.p
 dotnet build tools/RailNarrator.OrderSurvey -c Release
 tools/RailNarrator.OrderSurvey/bin/Release/net10.0/rail-narrator-order-survey heron <heron-int8.onnx> out.json [--max-pages 20] <pdf-or-dir>...
 
-./packaging/build-release.sh                       # self-contained linux-x64 archive into dist/
+./packaging/build-release.sh                       # self-contained linux-x64 archive into dist/ (COMPRESS=gz for .tar.gz)
 ./packaging/build-windows.sh                       # win-x64 folder + zip; on Windows (Git Bash) also builds portaudio.dll and ptts_ffi.dll
 src/RailNarrator.Cli/bin/Release/net10.0/rail-narrator-cli narrate paper.pdf   # the headless commands as a console program (what Windows uses)
 bash tools/setup-word-alignment.sh                 # optional MFA runtime (needs micromamba, several GB)
@@ -51,7 +51,7 @@ tools/setup-phonon.sh                              # optional: Phonon engine (ne
 
 There is no separate lint step: `TreatWarningsAsErrors` is on for every project except `RailNarrator.App`, whose Avalonia XAML compiler warnings (AVLN…) are not turned into errors. The App is still expected to build with 0 warnings: after XAML changes, check the raw output of `dotnet build src/RailNarrator.App -c Release --no-incremental` (through `rtk proxy` on a machine where rtk filters command output), since an incremental build skips unchanged XAML and a filtered summary can hide AVLN lines. Avalonia 12 obsoleted `Watermark`; use `PlaceholderText`.
 
-The local build and test run is the check before a pull request. The one CI workflow, `.github/workflows/windows.yml`, builds, tests and packages on a Windows runner (pull requests to `main`), because Windows cannot be checked here. Work goes on a `feat/`, `fix/`, `docs/` or `chore/` branch and is merged by pull request.
+The local build and test run is the check before a pull request. `.github/workflows/windows.yml` builds, tests and packages on a Windows runner for pull requests to `main`, because Windows cannot be checked here. `.github/workflows/release.yml` makes a release from a `v*` tag: the tag must equal `v` + `VersionPrefix` and `docs/releases/<tag>.md` must exist (it is the release notes); Linux is built on Ubuntu 22.04 and fails if a bundled library needs glibc newer than 2.35 (Phonon's, built on this Fedora machine, needs 2.43, so never upload a locally built Linux archive). Both downloads carry `LICENSE`, `THIRD-PARTY-NOTICES.txt` (`packaging/`, keep it in step with the bundled packages), `licenses/`, and `install-phonon.sh` (`tools/setup-phonon.sh` with `PHONON_MODEL_ONLY` defaulting to 1; `packaging/common.sh`). The README is for readers; build, layout and release detail is in `docs/development.md`. Work goes on a `feat/`, `fix/`, `docs/` or `chore/` branch and is merged by pull request.
 
 Opt-in integration tests do nothing unless their environment is set. Most are reported as Skipped, but the Kokoro tests in `ProviderTests` and the real-runtime tests in `PhononProviderTests` return early and are reported as Passed, so a green run does not show that either engine spoke. `docs/status.md` counts those as opt-in (four of Phonon, one of Kokoro with durations), so its totals differ from the runner's by five.
 
