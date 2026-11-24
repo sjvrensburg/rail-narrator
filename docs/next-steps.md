@@ -64,6 +64,8 @@ Since PR #10:
 
 ## Recently landed
 
+- **Fixes from a review of the whole code base** (`fix/review-findings-narration-settings-script-edit`): the save-narration notice now narrates the document it was shown for, even after another is opened (it took the open one's path, writing one document's narration over another's), and a failure before the job started no longer leaves Stop narration on a disposed token; a settings file that cannot be parsed is set aside, and one that cannot be read is not saved over, instead of the defaults replacing endpoints and keys at the first zoom; a script correction is applied to the plan under the coordinator's lock, so an interpretation resolved meanwhile is not dropped. The first is checked by reading the code (the App has no tests), the third by the existing coordinator suite only.
+
 - **Four reports narrated to audiobooks** (`fix/gui-test-findings`, `status.md` item 99): 248
   pages, seven hours of audio at about ten times real time, every maths passage interpreted, the
   audio sampled against the script by speech recognition. Fixed on the way: a stray half

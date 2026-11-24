@@ -345,13 +345,35 @@ public sealed class SettingsStore
                 // are usable and the corruption is reported rather than hidden.
                 return loaded ?? RailNarratorSettings.Default;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is JsonException or NotSupportedException or ArgumentException)
             {
-                LastError = $"Could not read settings ({ex.GetType().Name}: {ex.Message}); using defaults.";
+                // Not settings any more, but it may hold endpoints and an API key: set aside, never
+                // written over by the defaults' first save (it keeps its 0600 mode through the rename).
+                string aside = Path.Combine(Path.GetDirectoryName(_path)!,
+                    $"{Path.GetFileNameWithoutExtension(_path)}.unreadable-{DateTime.UtcNow:yyyyMMddHHmmss}{Path.GetExtension(_path)}");
+                try
+                {
+                    File.Move(_path, aside);
+                    LastError = $"Could not read settings ({ex.GetType().Name}: {ex.Message}); using defaults. The file was kept as {aside}.";
+                }
+                catch (Exception moveError) when (moveError is IOException or UnauthorizedAccessException)
+                {
+                    _saveBlocked = true;
+                    LastError = $"Could not read settings ({ex.GetType().Name}: {ex.Message}), nor set the file aside; using defaults, and changes are not saved over it.";
+                }
+                return RailNarratorSettings.Default;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // There but not readable now: it may be readable next time, so it is not saved over.
+                _saveBlocked = true;
+                LastError = $"Could not read settings ({ex.GetType().Name}: {ex.Message}); using defaults, and changes are not saved over the file.";
                 return RailNarratorSettings.Default;
             }
         }
     }
+
+    private bool _saveBlocked;
 
     /// <summary>Set when <see cref="Load"/> fell back to defaults, so the UI can say so.</summary>
     public string? LastError { get; private set; }
@@ -365,6 +387,7 @@ public sealed class SettingsStore
         ArgumentNullException.ThrowIfNull(settings);
         lock (_gate)
         {
+            if (_saveBlocked) return;   // the file could not be read: nothing is written over it (LastError says so)
             // Write to a temporary file and rename, so a crash mid-write cannot leave a truncated
             // settings file that resets every preference on next start. The temporary file is
             // created with the final mode, so the key is never on disk readable by others, not even
