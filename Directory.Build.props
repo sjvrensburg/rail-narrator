@@ -5,7 +5,7 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <VersionPrefix>0.1.1</VersionPrefix>
+    <VersionPrefix>0.1.2</VersionPrefix>
     <Product>Rail Narrator</Product>
     <Company>Rail Narrator</Company>
     <Copyright>Copyright (c) Rail Narrator contributors</Copyright>

@@ -80,6 +80,115 @@ public sealed class NarrationCoordinatorTests
         Assert.Equal(plan.Segments[0].SpokenText, tts.Requests[0].Text);
     }
 
+    /// <summary>
+    /// A speech engine that, like Phonon, speaks one passage at a time and stops when cancelled.
+    /// Counts the passages it finished speaking.
+    /// </summary>
+    private sealed class OneAtATimeProvider(TimeSpan perPassage) : ITtsProvider
+    {
+        private readonly FakeTtsProvider _inner = new(new FakeTtsOptions(Latency: perPassage));
+        private readonly SemaphoreSlim _gate = new(1, 1);
+        public int Finished;
+        public string ProviderId => _inner.ProviderId;
+        public Task<TtsCapabilities> GetCapabilitiesAsync(CancellationToken ct = default) => _inner.GetCapabilitiesAsync(ct);
+        public Task<IReadOnlyList<TtsVoice>> ListVoicesAsync(CancellationToken ct = default) => _inner.ListVoicesAsync(ct);
+        public Task<ProviderSelfTestResult> SelfTestAsync(string voiceId, CancellationToken ct = default) => _inner.SelfTestAsync(voiceId, ct);
+        public async Task<TtsSynthesisResult> SynthesizeAsync(TtsSynthesisRequest request, CancellationToken ct = default)
+        {
+            await _gate.WaitAsync(ct);
+            try
+            {
+                var result = await _inner.SynthesizeAsync(request, ct);
+                Interlocked.Increment(ref Finished);
+                return result;
+            }
+            finally { _gate.Release(); }
+        }
+        public ValueTask DisposeAsync() => _inner.DisposeAsync();
+    }
+
+    /// <summary>
+    /// Next pressed many times quickly. Each seek's own passage was synthesised with the caller's
+    /// token, which nothing cancels, so every overtaken seek kept its synthesis queued at an engine
+    /// that speaks one passage at a time: after 60 presses the reader waited 15 to 45 s in silence
+    /// (found by driving the application, with Phonon). A seek overtaken by another now drops its
+    /// synthesis, and the last one is spoken promptly.
+    /// </summary>
+    [Fact]
+    public async Task ManyQuickSeeks_DropTheSynthesisOfThoseOvertaken()
+    {
+        var tts = new OneAtATimeProvider(TimeSpan.FromMilliseconds(150));
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(tts, transport,
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 1, LookaheadSeconds: 0));
+        var plan = PlanWith(60);
+        await coordinator.LoadPlanAsync(plan);
+        await coordinator.PlayAsync();
+        await WaitUntil(() => transport.PlayCount > 0, what: "playback to start");
+
+        var seeks = new List<Task>();
+        for (int i = 0; i < 30; i++)
+        {
+            seeks.Add(coordinator.NextSegmentAsync());   // not awaited, as the window does not
+            await Task.Delay(10);
+        }
+        string target = plan.Segments[30].Id;
+        var burstEnd = System.Diagnostics.Stopwatch.StartNew();
+        await WaitUntil(() => transport.Loaded.LastOrDefault().SegmentId == target && coordinator.Snapshot.State == PlaybackState.Playing,
+            timeoutMs: 10_000, what: "the last seek's passage to play");
+        long waited = burstEnd.ElapsedMilliseconds;
+        await Task.WhenAll(seeks).WaitAsync(TimeSpan.FromSeconds(10));
+
+        // Before: about 30 passages spoken one after another (4.5 s). Now the first passage, the
+        // last seek's, the odd one already under way when it was overtaken, and the lookahead.
+        Assert.True(tts.Finished <= 6, $"{tts.Finished} passages were spoken in full for 30 seeks.");
+        Assert.True(waited < 2000, $"The last seek's passage played {waited} ms after the burst.");
+    }
+
+    /// <summary>
+    /// The voice changed several times quickly while reading. The second change found the transport
+    /// stopped by the first, took it for not reading, and did not start again; the first, overtaken,
+    /// gave up its own start. Reading stopped with the status left at "Synthesising speech" (found by
+    /// driving the application). Reading now carries on in the last voice chosen.
+    /// </summary>
+    [Fact]
+    public async Task QuickVoiceChangesWhileReading_CarryOnReadingInTheLastVoice()
+    {
+        var tts = new OneAtATimeProvider(TimeSpan.FromMilliseconds(150));
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(tts, transport,
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 1, LookaheadSeconds: 0));
+        await coordinator.LoadPlanAsync(PlanWith(10));
+        await coordinator.PlayAsync();
+        await WaitUntil(() => transport.State == PlaybackState.Playing, what: "playback to start");
+
+        var changes = new List<Task>();
+        foreach (string voice in new[] { "voice-a", "voice-b", "voice-c" })
+        {
+            changes.Add(coordinator.SetVoiceAsync(voice));   // not awaited, as the window does not
+            await Task.Delay(20);
+        }
+        await Task.WhenAll(changes).WaitAsync(TimeSpan.FromSeconds(10));
+
+        await WaitUntil(() => transport.State == PlaybackState.Playing && coordinator.Snapshot.State == PlaybackState.Playing,
+            timeoutMs: 5000, what: "reading to carry on");
+        Assert.Equal("voice-c", transport.Loaded[^1].Asset.VoiceId);
+    }
+
+    /// <summary>A voice chosen while nothing is being read starts nothing: a document is never read unasked.</summary>
+    [Fact]
+    public async Task AVoiceChosenWhileStopped_StartsNothing()
+    {
+        var tts = new OneAtATimeProvider(TimeSpan.FromMilliseconds(20));
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(tts, transport);
+        await coordinator.LoadPlanAsync(PlanWith(3));
+        await coordinator.SetVoiceAsync("voice-a");
+        await coordinator.SetVoiceAsync("voice-b");
+        await Task.Delay(300);
+        Assert.Equal(0, transport.PlayCount);
+    }
+
     [Fact]
     public async Task PreviousAndNext_OnAnEmptyPlan_AreNoOpsNotThrows()
     {
