@@ -65,13 +65,25 @@ public sealed class EngineLockingTests
         var transitionTimes = new ConcurrentQueue<long>();
         using var stop = new CancellationTokenSource();
         var uiWork = new ConcurrentQueue<Action>();
+        // Every snapshot and engine state, timed, for the failure message: the race this test
+        // provokes has been seen only on a Windows runner, so the log is the only view of it.
+        var events = new ConcurrentQueue<string>();
+        void Note(string what) { events.Enqueue($"{clock.ElapsedMilliseconds}ms {what}"); while (events.Count > 400) events.TryDequeue(out _); }
+        coordinator.SnapshotChanged += snap => Note($"snapshot {snap.State} #{snap.SegmentIndex} gen {snap.Generation}/{coordinator.Generation} '{snap.Message}'");
+        engine.StateChanged += state => Note($"engine {state}");
+        engine.ClipCompleted += id => Note($"engine completed {id}");
+        engine.ClipAdvanced += (done, started) => Note($"engine advanced {done} -> {started}");
         coordinator.SnapshotChanged += snap => uiWork.Enqueue(() =>
         {
             if (snap.Generation != coordinator.Generation || snap.SegmentIndex == lastIndex) return;
             lastIndex = snap.SegmentIndex;
             Interlocked.Increment(ref transitions);
             transitionTimes.Enqueue(clock.ElapsedMilliseconds);
-            if (snap.SegmentId is { } id) _ = coordinator.GoToSegmentAsync(id);
+            if (snap.SegmentId is { } id)
+            {
+                Note($"seek to {id} (gen {coordinator.Generation})");
+                _ = coordinator.GoToSegmentAsync(id).ContinueWith(t => Note($"seek to {id} ended {t.Status}{(t.Exception is { } e ? " " + e.InnerException?.Message : "")}"), TaskScheduler.Default);
+            }
         });
         var ui = new Thread(() =>
         {
@@ -105,6 +117,7 @@ public sealed class EngineLockingTests
             $"Transitions at (ms): {string.Join(", ", transitionTimes.Take(20))}. " +
             $"Last snapshot: {last.State}, passage {last.SegmentIndex}, position {last.PositionSeconds:F3} s of {last.ClipDurationSeconds:F3} s, " +
             $"buffered ahead {last.BufferedAheadSeconds:F3} s, message '{last.Message}'; engine {engine.State}; " +
-            $"device presented {device.PresentedFrames}, queued {device.QueuedFrames}; UI ticks {Interlocked.Read(ref heartbeat)}.");
+            $"device presented {device.PresentedFrames}, queued {device.QueuedFrames}; UI ticks {Interlocked.Read(ref heartbeat)}.\n" +
+            "Last events:\n" + string.Join("\n", events.TakeLast(40)));
     }
 }
