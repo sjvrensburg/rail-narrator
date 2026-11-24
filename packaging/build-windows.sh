@@ -15,6 +15,8 @@
 #   PORTAUDIO_DLL=path     use this portaudio.dll instead of building one
 #   WITH_PORTAUDIO=yes|no  require / skip PortAudio (default: build it when cmake is available)
 #   WITH_PHONON=yes|no     require / skip Phonon's runtime (default: build it when cargo is available)
+#   WITH_INSTALLER=yes|no  require / skip rail-narrator-setup-x64.exe (installer/rail-narrator.iss;
+#                          default: build it when Inno Setup's ISCC is installed)
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -151,4 +153,20 @@ else
 fi
 
 echo "==> $ARCHIVE ($(du -h "$ARCHIVE" | cut -f1))"
+
+# ---- the installer ---------------------------------------------------------------------------
+iscc=""
+for candidate in "$(command -v iscc 2>/dev/null || true)" "$(command -v ISCC.exe 2>/dev/null || true)" \
+                 "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" "/c/Program Files/Inno Setup 6/ISCC.exe"; do
+  [[ -n "$candidate" && -x "$candidate" ]] && { iscc="$candidate"; break; }
+done
+if [[ "${WITH_INSTALLER:-auto}" != "no" && $ON_WINDOWS == 1 && -n "$iscc" ]]; then
+  "$iscc" /Q "/DAPP_VERSION=$VERSION" "/DSOURCE_DIR=$(cygpath -w "$STAGE")" "/DOUTPUT_DIR=$(cygpath -w "$OUT")" \
+    "$(cygpath -w "$ROOT/installer/rail-narrator.iss")"
+  echo "==> $OUT/rail-narrator-setup-x64.exe ($(du -h "$OUT/rail-narrator-setup-x64.exe" | cut -f1))"
+elif [[ "${WITH_INSTALLER:-auto}" == "yes" ]]; then
+  echo "WITH_INSTALLER=yes needs Windows with Inno Setup 6 (ISCC.exe)." >&2; exit 1
+else
+  echo "==> No installer (Inno Setup's ISCC is not installed, or this is not Windows)."
+fi
 echo "==> staging dir: $STAGE"

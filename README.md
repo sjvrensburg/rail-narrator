@@ -44,25 +44,37 @@ Download the latest version from the
 
 ### Linux (x64)
 
-You need PortAudio for sound: `sudo apt install libportaudio2` on Debian and Ubuntu, or
-`sudo dnf install portaudio` on Fedora.
+**AppImage** (simplest): download `rail-narrator-x86_64.AppImage`, make it executable and run
+it. It includes everything it needs, sound included.
 
 ```bash
-tar -xzf rail-narrator-0.1.0-linux-x64.tar.gz
-cd rail-narrator-0.1.0-linux-x64
-usr/bin/rail-narrator            # or: usr/bin/rail-narrator paper.pdf
+chmod +x rail-narrator-x86_64.AppImage
+./rail-narrator-x86_64.AppImage            # or: ./rail-narrator-x86_64.AppImage paper.pdf
 ```
 
-To install it for your user, with a menu entry and PDF file association:
+[AppImageUpdate](https://github.com/AppImageCommunity/AppImageUpdate) can bring it up to the
+latest release, and tools such as Gear Lever add it to your applications menu.
+
+**Archive:** `rail-narrator-<version>-linux-x64.tar.gz` needs PortAudio for sound
+(`sudo apt install libportaudio2` on Debian and Ubuntu, `sudo dnf install portaudio` on Fedora).
 
 ```bash
+tar -xzf rail-narrator-*-linux-x64.tar.gz
+cd rail-narrator-*-linux-x64
+usr/bin/rail-narrator                      # or install it for your user, with a menu entry:
 cp -r usr/. ~/.local/
 ```
 
+Either needs a Linux from 2022 or later (glibc 2.35: Ubuntu 22.04, Debian 12, Fedora 36).
+
 ### Windows (x64), preview
 
-Unzip `rail-narrator-0.1.0-win-x64.zip` anywhere and run `rail-narrator.exe`. The download is
-not code-signed, so Windows SmartScreen may warn you. Choose **More info**, then **Run anyway**.
+Run `rail-narrator-setup-x64.exe`. It installs for your user, needs no administrator rights, and
+can add Rail Narrator to *Open with* for PDFs. If you'd rather not install anything, unzip
+`rail-narrator-<version>-win-x64.zip` anywhere and run `rail-narrator.exe`.
+
+Neither is code-signed, so Windows SmartScreen may warn you. Choose **More info**, then
+**Run anyway**.
 
 ## Getting started
 
@@ -72,8 +84,7 @@ not code-signed, so Windows SmartScreen may warn you. Choose **More info**, then
      app. For word-by-word highlighting, also download *Kokoro with word timing* (163 MB) and set
      *Settings* ▸ *Reading* ▸ *Word timing* to *The speech engine's own timing*.
    - **Phonon:** a faster voice, with British and American accents and word-by-word timing
-     built in. Run `install-phonon.sh` from the folder you unpacked (about 70 MB; it needs
-     `curl`). On Windows, run it from Git Bash.
+     built in. Open *Models and endpoints* ▸ *Download Phonon speech model* (71 MB).
 
    Then choose the voice in *Settings* ▸ *Speech* ▸ *Engine*, and restart when asked. If both
    are installed, Phonon is used.

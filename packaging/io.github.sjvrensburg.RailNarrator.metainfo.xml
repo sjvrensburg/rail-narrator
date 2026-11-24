@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.sjvrensburg.RailNarrator</id>
+
+  <name>Rail Narrator</name>
+  <summary>Reads PDFs aloud, highlighting each passage on the page and saying what the maths means</summary>
+
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+
+  <developer id="io.github.sjvrensburg">
+    <name>Stefan van Rensburg</name>
+  </developer>
+
+  <launchable type="desktop-id">io.github.sjvrensburg.RailNarrator.desktop</launchable>
+
+  <description>
+    <p>
+      Rail Narrator reads a PDF aloud. While it reads, it highlights the passage being spoken in
+      the page itself and keeps that passage in view. It is made for papers and technical
+      documents: pointed at a language model, it says what an equation means rather than reading
+      out its symbols.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>The passage being read highlighted where it is printed, word by word with a voice that times its words</li>
+      <li>Maths read for its meaning through a local language model or Claude, or read as notation by an on-device formula model</li>
+      <li>Running heads, footnotes, references, figures and contents pages skipped</li>
+      <li>Notes and highlights while you listen, kept beside the PDF and never written into it</li>
+      <li>A whole document narrated ahead of time, and an audiobook with chapters made from it</li>
+      <li>Speech, layout and formula models that run on your own computer</li>
+    </ul>
+  </description>
+
+  <categories>
+    <category>Office</category>
+    <category>Viewer</category>
+    <category>Accessibility</category>
+  </categories>
+
+  <url type="homepage">https://github.com/sjvrensburg/rail-narrator</url>
+  <url type="bugtracker">https://github.com/sjvrensburg/rail-narrator/issues</url>
+
+  <content_rating type="oars-1.1" />
+
+  <provides>
+    <binary>rail-narrator</binary>
+    <mediatype>application/pdf</mediatype>
+  </provides>
+
+  <releases>
+    <release version="0.1.1" date="2026-11-24">
+      <description>
+        <p>An AppImage for Linux and an installer for Windows, and Phonon's speech model downloadable from inside the application.</p>
+      </description>
+    </release>
+    <release version="0.1.0" date="2026-11-24">
+      <description>
+        <p>The first release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

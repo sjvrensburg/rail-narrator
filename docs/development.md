@@ -104,16 +104,21 @@ Recorded in `docs/decisions/`, each with the measurement that drove it:
 ## Building a release
 
 Releases are built by `.github/workflows/release.yml` when a `v*` tag is pushed: the Linux
-archive on Ubuntu 22.04 (so the bundled native libraries need no newer glibc than that), the
-Windows zip on Windows, both with Phonon's runtime, and a GitHub release with both and their
-SHA-256 sums. The notes come from `docs/releases/<tag>.md`, which must exist. Bump
-`VersionPrefix` in `Directory.Build.props` first.
+archive and AppImage on Ubuntu 22.04 (so the bundled native libraries need no newer glibc than
+that; `packaging/check-glibc.sh` enforces 2.35), the Windows zip and installer on Windows, all with
+Phonon's runtime, and a GitHub release with them and their SHA-256 sums. The notes come from
+`docs/releases/<tag>.md`, which must exist. Before tagging, bump `VersionPrefix` in
+`Directory.Build.props` and add a `<release>` to
+`packaging/io.github.sjvrensburg.RailNarrator.metainfo.xml`. `.github/workflows/packages.yml`
+builds the same packages for every pull request and tries them: the AppImage is run, and the
+installer is installed, run and uninstalled.
 
 Locally:
 
 ```bash
 ./packaging/build-release.sh          # self-contained linux-x64 archive (COMPRESS=gz for .tar.gz)
-./packaging/build-windows.sh          # self-contained win-x64 folder and zip
+./packaging/build-windows.sh          # self-contained win-x64 folder and zip (and the installer, with Inno Setup)
+./packaging/build-appimage.sh         # the AppImage, from build-release.sh's staging tree
 ```
 
 The Linux archive is an FHS-shaped tree (`usr/bin`, `usr/lib/rail-narrator`,

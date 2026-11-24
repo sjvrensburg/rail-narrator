@@ -67,12 +67,13 @@ public sealed class ServiceRegistry : IAsyncDisposable
     /// Phonon's library and model folder: the settings, else the library beside the application (the
     /// release archive ships it there) or the setup script's, and the setup script's model.
     /// </summary>
-    private static (string Library, string Model) PhononPaths(RailNarratorSettings settings)
+    public static (string Library, string Model) PhononPaths(RailNarratorSettings settings)
     {
         string installed = Path.Combine(XdgPaths.Data, "phonon");
         string beside = Path.Combine(AppContext.BaseDirectory, PhononTtsProvider.LibraryFileName);
         string library = settings.PhononLibraryPath ?? (File.Exists(beside) ? beside : Path.Combine(installed, PhononTtsProvider.LibraryFileName));
-        return (library, settings.PhononModelDirectory ?? Path.Combine(installed, "phonon-31m-en"));
+        // The same folder Models and endpoints ▸ Download Phonon fills (PhononModel), and tools/setup-phonon.sh.
+        return (library, settings.PhononModelDirectory ?? PhononModel.DefaultDirectory);
     }
     public required IAudioOutputDevice AudioDevice { get; init; }
     public required AudioPlaybackEngine AudioEngine { get; init; }

@@ -155,6 +155,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         DownloadLayoutModelGpu = new RelayCommand(() => ConfirmDownload(ModelManifest.LayoutHeron), () => !Busy && !LayoutModelGpuInstalled, OnCommandError);
         // The vocabulary first: the model is of no use without it, and it is the small one.
         DownloadFormulaModel = new RelayCommand(() => ConfirmDownload(ModelManifest.FormulaModelConfig, ModelManifest.FormulaModel), () => !Busy && !FormulaModelInstalled, OnCommandError);
+        DownloadPhonon = new RelayCommand(ConfirmPhononDownload, () => !Busy && PhononRuntimePresent && !PhononModelInstalled, OnCommandError);
         RegenerateMaths = new RelayCommand(() => RegenerateMathsAsync(), () => MathsReview is { CanRegenerate: true }, OnCommandError);
         ApplyMathsEdit = new RelayCommand(() => ApplyMathsEditAsync(), () => !Busy, OnCommandError);
     }
@@ -2051,11 +2052,18 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     /// <summary>PP-FormulaNet_plus-M and its vocabulary (ADR-0011).</summary>
     public RelayCommand DownloadFormulaModel { get; }
 
+    /// <summary>
+    /// Phonon's model and 25 voices (ADR-0009), into the folder the application reads them from.
+    /// Offered only where Phonon's runtime is present: beside the application in a release, or
+    /// where tools/setup-phonon.sh put it.
+    /// </summary>
+    public RelayCommand DownloadPhonon { get; }
+
     // Whether each model is already where the application looks for it. Only a file's presence is
     // checked (hashing hundreds of MB on the UI thread is not acceptable); the download verifies it.
     // A model downloaded in this session counts as installed although it is used after a restart.
 
-    private (bool, bool, bool, bool, bool)? _modelsInstalled;
+    private (bool, bool, bool, bool, bool, bool)? _modelsInstalled;
 
     private bool KokoroModelInstalled
         => File.Exists(_services.CurrentSettings.KokoroModelPath ?? _services.Models.PathFor(ModelManifest.KokoroFp16));
@@ -2073,6 +2081,12 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     private bool FormulaModelInstalled
         => File.Exists(_services.CurrentSettings.FormulaModelPath ?? _services.Models.PathFor(ModelManifest.FormulaModel))
         && File.Exists(_services.CurrentSettings.FormulaModelConfigPath ?? _services.Models.PathFor(ModelManifest.FormulaModelConfig));
+
+    private bool PhononRuntimePresent => File.Exists(ServiceRegistry.PhononPaths(_services.CurrentSettings).Library);
+
+    private string PhononModelDirectory => ServiceRegistry.PhononPaths(_services.CurrentSettings).Model;
+
+    private bool PhononModelInstalled => PhononModel.IsInstalled(PhononModelDirectory);
 
     private static string ModelMenuHeader(bool installed, string download, string name)
         => installed ? $"{name}: installed" : download;
@@ -2093,12 +2107,15 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public string DownloadFormulaModelHeader => ModelMenuHeader(FormulaModelInstalled,
         $"Download _formula model ({ModelManifest.FormulaModel.HumanSize})…", "Formula model");
 
+    public string DownloadPhononHeader => ModelMenuHeader(PhononModelInstalled,
+        $"Download _Phonon speech model ({PhononModel.TotalBytes / 1_000_000.0:F0} MB)…", "Phonon speech model");
+
     /// <summary>Re-reads which models are installed, for the Models menu (called as the menu opens and after a download).</summary>
     public void RefreshModelMenu()
     {
         // Only on a change: a header notified while the menu opens is laid out again after the popup
         // has taken its width, and comes out clipped.
-        var installed = (KokoroModelInstalled, KokoroTimedModelInstalled, LayoutModelInstalled, LayoutModelGpuInstalled, FormulaModelInstalled);
+        var installed = (KokoroModelInstalled, KokoroTimedModelInstalled, LayoutModelInstalled, LayoutModelGpuInstalled, FormulaModelInstalled, PhononModelInstalled);
         if (installed == _modelsInstalled) return;
         _modelsInstalled = installed;
         OnPropertyChanged(nameof(DownloadKokoroModelHeader));
@@ -2106,6 +2123,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         OnPropertyChanged(nameof(DownloadLayoutModelHeader));
         OnPropertyChanged(nameof(DownloadLayoutModelGpuHeader));
         OnPropertyChanged(nameof(DownloadFormulaModelHeader));
+        OnPropertyChanged(nameof(DownloadPhononHeader));
+        DownloadPhonon.RaiseCanExecuteChanged();
         DownloadKokoroModel.RaiseCanExecuteChanged();
         DownloadKokoroTimedModel.RaiseCanExecuteChanged();
         DownloadLayoutModel.RaiseCanExecuteChanged();
@@ -2931,6 +2950,41 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         return Task.CompletedTask;
     }
 
+    /// <summary>Asks before Phonon's model and voices are fetched, with their size, licence and source.</summary>
+    private void ConfirmPhononDownload()
+    {
+        long mb = (long)Math.Round(PhononModel.TotalBytes / 1_000_000.0);
+        ShowNotice($"Download Phonon (phonon-31m-en and 25 English voices): {mb} MB, {PhononModel.Licence}, from huggingface.co?", "Download",
+            () => RunObserved(DownloadPhononAsync(), "The download failed"));
+    }
+
+    private async Task DownloadPhononAsync()
+    {
+        Busy = true;
+        try
+        {
+            string directory = PhononModelDirectory;
+            StatusMessage = $"Downloading Phonon ({PhononModel.TotalBytes / 1_000_000.0:F0} MB, {PhononModel.Licence})…";
+            await PhononModel.InstallAsync(directory, progress: new Progress<(int Done, int Total, DownloadProgress File)>(p =>
+                Dispatcher.UIThread.Post(() => StatusMessage =
+                    $"Phonon: file {p.Done + 1} of {p.Total}, {p.File.Phase}"
+                    + (p.File.BytesTotal > 0 ? $" {p.File.BytesReceived / 1_000_000.0:F1} / {p.File.BytesTotal / 1_000_000.0:F1} MB" : ""))));
+            StatusMessage = "Phonon downloaded and verified.";
+            Notes.Add($"Phonon is installed at {directory}. Restart to enable it.");
+            ShowNotice("Phonon is installed. Rail Narrator uses it after a restart (Settings ▸ Speech ▸ Engine chooses between voices).",
+                "Restart now", () => RestartRequested?.Invoke());
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"Download failed: {ex.Message}";
+        }
+        finally
+        {
+            Busy = false;
+            RefreshModelMenu();
+        }
+    }
+
     /// <summary>Downloads a model's files in the order given; the last one names the model in the messages.</summary>
     private async Task DownloadModelAsync(params ModelAsset[] assets)
     {
@@ -3013,6 +3067,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         DownloadLayoutModel.RaiseCanExecuteChanged();
         DownloadLayoutModelGpu.RaiseCanExecuteChanged();
         DownloadFormulaModel.RaiseCanExecuteChanged();
+        DownloadPhonon.RaiseCanExecuteChanged();
         ApplyMathsEdit.RaiseCanExecuteChanged();
         CloseDocument.RaiseCanExecuteChanged();
         NarrateDocument.RaiseCanExecuteChanged();
