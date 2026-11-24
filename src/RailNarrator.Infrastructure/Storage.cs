@@ -237,6 +237,9 @@ public sealed record RailNarratorSettings
     /// <summary>The sidebar section left open: Outline, Script, MathsReview or Notes.</summary>
     public string SidebarSection { get; init; } = "Outline";
 
+    /// <summary>The reader's own annotations are drawn on the page (ADR-0014). On by default.</summary>
+    public bool ShowAnnotations { get; init; } = true;
+
     /// <summary>Dark theme for the window. Light by default, as RailReader2.</summary>
     public bool DarkMode { get; init; }
 

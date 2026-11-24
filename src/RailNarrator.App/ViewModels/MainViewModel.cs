@@ -7,6 +7,7 @@ using RailNarrator.App.Composition;
 using RailNarrator.Domain;
 using RailNarrator.Infrastructure;
 using RailNarrator.Pdf;
+using RailNarrator.Pdf.Annotations;
 using RailNarrator.Speech;
 
 namespace RailNarrator.App.ViewModels;
@@ -83,6 +84,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             ? effect : ColourEffect.None;
         _highlightHighContrast = services.CurrentSettings.HighlightHighContrast;
         _transcriptVisible = services.CurrentSettings.SidebarVisible;
+        _showAnnotations = services.CurrentSettings.ShowAnnotations;
 
         foreach (string note in services.StartupNotes) Notes.Add(note);
 
@@ -136,8 +138,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         MarkAsMaths = new RelayCommand(() => RegionOverrideRequested?.Invoke(true), () => HasDocument && Playback.ActiveCue is not null);
         RestoreAsProse = new RelayCommand(() => RegionOverrideRequested?.Invoke(false), () => HasDocument && Playback.ActiveCue is not null);
         RefreshRecent();
-        NoticeAction = new RelayCommand(() => { var action = Notice?.Action; Notice = null; action?.Invoke(); });
-        DismissNotice = new RelayCommand(() => Notice = null);
+        NoticeAction = new RelayCommand(() => { var action = Notice?.Action; CloseNotice(); action?.Invoke(); });
+        DismissNotice = new RelayCommand(CloseNotice);
         TestMathEndpoint = new RelayCommand(() => TestMathEndpointAsync(), () => !Busy, OnCommandError);
         TestVisionEndpoint = new RelayCommand(() => TestVisionEndpointAsync(), () => !Busy, OnCommandError);
         DownloadKokoroModel = new RelayCommand(() => ConfirmDownload(ModelManifest.KokoroFp16), () => !Busy && !KokoroModelInstalled, OnCommandError);
@@ -443,6 +445,76 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     public RelayCommand ToggleSidebar { get; }
 
+    // ---- the reader's annotations (ADR-0014) --------------------------------------------------
+
+    private ReviewDocument? _review;
+    private AnnotationLayer? _annotationLayer;
+    private bool _showAnnotations;
+    private string? _lastAnnotationSaveError;
+
+    /// <summary>The open document's annotations, ready to draw; null with no document.</summary>
+    public AnnotationLayer? AnnotationLayer => _annotationLayer;
+
+    /// <summary>The reader's annotations are drawn on the page. Remembered.</summary>
+    public bool ShowAnnotations
+    {
+        get => _showAnnotations;
+        set
+        {
+            if (!Set(ref _showAnnotations, value)) return;
+            PersistPreference(s => s with { ShowAnnotations = value });
+            InvalidateSurface?.Invoke();
+        }
+    }
+
+    private void AttachReview(ReviewLoadResult loaded)
+    {
+        DetachReview();
+        _review = loaded.Document;
+        _annotationLayer = new AnnotationLayer(loaded.Document);
+        _review.Changed += OnReviewChanged;
+        _lastAnnotationSaveError = null;
+        if (loaded.Problem is { } problem)
+        {
+            Notes.Add($"Annotations: {problem}");
+            ShowLastingNotice(problem);
+        }
+    }
+
+    private void DetachReview()
+    {
+        if (_review is not null) _review.Changed -= OnReviewChanged;
+        _review = null;
+        _annotationLayer = null;
+    }
+
+    /// <summary>Every change is saved as it is made, and shown.</summary>
+    private void OnReviewChanged()
+    {
+        if (_review is { } review) _ = SaveReviewAsync(review);
+        InvalidateSurface?.Invoke();
+    }
+
+    private async Task SaveReviewAsync(ReviewDocument review)
+    {
+        try
+        {
+            await _services.ReviewAnnotations.SaveAsync(review);
+            _lastAnnotationSaveError = null;
+        }
+        catch (Exception ex)
+        {
+            // Not thrown: nobody awaits a save. Said once per reason, not once per keystroke.
+            if (_lastAnnotationSaveError == ex.Message) return;
+            _lastAnnotationSaveError = ex.Message;
+            Notes.Add($"Annotations were not saved: {ex.Message}");
+            ShowLastingNotice($"Your annotations could not be saved: {ex.Message}");
+        }
+    }
+
+    /// <summary>Waits for every annotation save asked for so far.</summary>
+    private Task FlushReviewAsync() => _services.ReviewAnnotations.FlushAsync();
+
     // ---- outline ------------------------------------------------------------------------------
 
     /// <summary>The document's own outline (its PDF bookmarks); empty when it has none.</summary>
@@ -545,7 +617,31 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public bool HasNotice => _notice is not null;
 
     public void ShowNotice(string text, string? actionLabel = null, Action? action = null)
-        => Notice = new StatusNotice(text, actionLabel, action);
+    {
+        var notice = new StatusNotice(text, actionLabel, action);
+        // A lasting notice is not replaced: the newest of the others waits behind it.
+        if (_notice is { Lasting: true }) _waitingNotice = notice;
+        else Notice = notice;
+    }
+
+    /// <summary>
+    /// A notice the reader must see, about their own work (annotations not read or not saved).
+    /// Later notices wait until it is dismissed; start-up's own, such as an engine that is not
+    /// installed, would otherwise replace it before it could be read.
+    /// </summary>
+    public void ShowLastingNotice(string text, string? actionLabel = null, Action? action = null)
+    {
+        if (_notice is { Lasting: false } current) _waitingNotice = current;
+        Notice = new StatusNotice(text, actionLabel, action, Lasting: true);
+    }
+
+    private StatusNotice? _waitingNotice;
+
+    private void CloseNotice()
+    {
+        Notice = _waitingNotice;
+        _waitingNotice = null;
+    }
 
     public RelayCommand NoticeAction { get; }
 
@@ -570,7 +666,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         if (!HasDocument || IsLoading) return;
         _pendingStartSegmentId = null;
         await SavePositionAsync();
+        await FlushReviewAsync();
         await Coordinator.StopAsync();
+        DetachReview();
         _snapshot = null;
         Plan = null;
         DocumentPath = null;
@@ -960,6 +1058,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         {
             // The document being replaced keeps its place, even if the new one fails to open.
             await SavePositionAsync();
+            await FlushReviewAsync();
             await Coordinator.StopAsync();
 
             // The speech model takes a second or two to start. It starts now, beside the extraction,
@@ -1052,6 +1151,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
             ReportLoading("Starting the voice");
             var position = await _services.PlanStore.TryGetPositionAsync(hash);
+            var review = await Task.Run(() => _services.ReviewAnnotations.Load(hash, path));
             (string? ProviderId, IReadOnlyList<TtsVoice> Voices, IReadOnlyList<string> Devices) available = (null, [], []);
             try { available = await voices; }
             catch (Exception ex)
@@ -1072,6 +1172,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             pendingNarration = null;
             committed = true;
             OnPropertyChanged(nameof(PlaysSavedNarration));
+            AttachReview(review);
 
             RebuildTranscript();
             ShowVoices(available);
@@ -1814,6 +1915,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             kokoro.FellBackToCpu -= OnKokoroFellBack;
         }
         await SavePositionAsync();
+        DetachReview();
+        await FlushReviewAsync();
     }
 }
 

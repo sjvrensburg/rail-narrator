@@ -604,6 +604,7 @@ public sealed class SettingsViewModel : ViewModelBase
             SidebarVisible = false,
             SidebarWidth = 300,
             SidebarSection = "Outline",
+            ShowAnnotations = true,
         });
 
     private static string? Blank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
