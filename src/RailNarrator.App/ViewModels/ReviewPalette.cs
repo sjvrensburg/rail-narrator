@@ -28,11 +28,17 @@ public static class ReviewPalette
     {
         AnnotationTool.Underline or AnnotationTool.Squiggly => 1,
         AnnotationTool.StrikeOut => 2,
+        AnnotationTool.FreeText => 4,
         _ => 0,
     };
 
-    /// <summary>Core's opacity for a markup tool: a highlight is a translucent fill, the line markups are solid.</summary>
-    public static float OpacityFor(AnnotationTool tool) => tool == AnnotationTool.Highlight ? 0.35f : 1f;
+    /// <summary>Core's opacity for a tool: a highlight is a translucent fill, a note nearly solid, the line markups and text solid.</summary>
+    public static float OpacityFor(AnnotationTool tool) => tool switch
+    {
+        AnnotationTool.Highlight => 0.35f,
+        AnnotationTool.TextNote => 0.9f,
+        _ => 1f,
+    };
 
     public static IBrush Brush(int index) => new SolidColorBrush(Color.Parse(Hex(index)));
 }

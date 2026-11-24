@@ -240,6 +240,9 @@ public sealed record RailNarratorSettings
     /// <summary>The reader's own annotations are drawn on the page (ADR-0014). On by default.</summary>
     public bool ShowAnnotations { get; init; } = true;
 
+    /// <summary>Every note's text is shown on the page, not only the open ones. Off by default.</summary>
+    public bool ExpandAllNotes { get; init; }
+
     /// <summary>The name annotations are signed with (a PDF annotation's author). None by default.</summary>
     public string? AnnotationAuthor { get; init; }
 

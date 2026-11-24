@@ -130,9 +130,9 @@ public sealed class PdfSurface : Control
                 ZoomAbout(viewModel.Zoom, Bounds.Width / 2, Bounds.Height / 2);
             // Annotate mode: a text cursor over the page while a markup tool marks text.
             if (e.PropertyName is nameof(MainViewModel.AnnotateMode) or nameof(MainViewModel.ActiveTool))
-                Cursor = viewModel.AnnotateMode
-                    ? new Cursor(viewModel.IsSelectTool ? StandardCursorType.Arrow : StandardCursorType.Ibeam)
-                    : null;
+                Cursor = !viewModel.AnnotateMode ? null
+                    : new Cursor(viewModel.IsTextMarkupTool ? StandardCursorType.Ibeam
+                        : viewModel.IsSelectTool ? StandardCursorType.Arrow : StandardCursorType.Cross);
             // The View menu's "Fit width" was ticked or cleared.
             if (e.PropertyName == nameof(MainViewModel.FitWidth) && viewModel.FitWidth != _magnification.FitsWidth)
             {
@@ -724,7 +724,7 @@ public sealed class PdfSurface : Control
         var snapshot = layer.ForPage(CurrentPage, _viewModel.ReviewSession?.Selected);
         if (snapshot.Count == 0) return;
         context.Custom(new AnnotationDraw(bounds, snapshot, new PageTransform(Zoom, _offsetX, _offsetY),
-            RailReader.Renderer.Skia.AnnotationRenderer.IsDarkBackdrop(_colourEffect), expandAllNotes: false));
+            RailReader.Renderer.Skia.AnnotationRenderer.IsDarkBackdrop(_colourEffect), _viewModel.ExpandAllNotes));
     }
 
     /// <summary>
@@ -746,6 +746,16 @@ public sealed class PdfSurface : Control
             var (x1, y1) = transform.ToScreen(rect.X + rect.W, rect.Y + rect.H);
             context.DrawRectangle(fill, pen, new Rect(x0, y0, Math.Max(1, x1 - x0), Math.Max(1, y1 - y0)), 2, 2);
         }
+    }
+
+    /// <summary>A page-point rectangle on the page shown, in the control's coordinates; null for another page.</summary>
+    public Rect? ScreenRectOf(int page, PageRect rect)
+    {
+        if (page != CurrentPage) return null;
+        var transform = new PageTransform(Zoom, _offsetX, _offsetY);
+        var (x0, y0) = transform.ToScreen(rect.Left, rect.Top);
+        var (x1, y1) = transform.ToScreen(rect.Right, rect.Bottom);
+        return new Rect(x0, y0, x1 - x0, y1 - y0);
     }
 
     /// <summary>
@@ -852,10 +862,12 @@ public sealed class PdfSurface : Control
             // A note's icon, or the mark of a highlight's note, is the reader's own: a click there
             // opens it (a double click edits it) and does not start reading.
             var (notePageX, notePageY) = new PageTransform(Zoom, _offsetX, _offsetY).ToPage(point.X, point.Y);
-            if (vm.ClickAnnotation(CurrentPage, notePageX, notePageY, e.ClickCount >= 2)) { e.Handled = true; return; }
+            // (With the select tool in annotate mode, a press on a note picks it up to move instead.)
+            if (!(vm.AnnotateMode && vm.IsSelectTool)
+                && vm.ClickAnnotation(CurrentPage, notePageX, notePageY, e.ClickCount >= 2)) { e.Handled = true; return; }
 
             // Annotate mode: the left button marks text and selects; it never reads from there or pans.
-            if (vm.AnnotatePress(CurrentPage, notePageX, notePageY))
+            if (vm.AnnotatePress(CurrentPage, notePageX, notePageY, e.ClickCount >= 2))
             {
                 _annotating = true;
                 e.Pointer.Capture(this);

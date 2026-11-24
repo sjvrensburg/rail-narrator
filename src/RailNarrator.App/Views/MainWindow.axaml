@@ -103,6 +103,7 @@
         </MenuItem>
         <Separator />
         <MenuItem Header="Show _annotations" ToggleType="CheckBox" IsChecked="{Binding ShowAnnotations, Mode=TwoWay}" />
+        <MenuItem Header="_Expand all notes" ToggleType="CheckBox" IsChecked="{Binding ExpandAllNotes, Mode=TwoWay}" />
         <MenuItem Header="_Sidebar: outline, script, maths review, notes" ToggleType="CheckBox"
                   IsChecked="{Binding SidebarVisible, Mode=TwoWay}" InputGesture="F6" />
       </MenuItem>
@@ -122,6 +123,8 @@
           <MenuItem Header="_Underline" ToggleType="Radio" IsChecked="{Binding IsUnderlineTool, Mode=OneWay}" Command="{Binding ChooseTool}" CommandParameter="Underline" />
           <MenuItem Header="_Strike out" ToggleType="Radio" IsChecked="{Binding IsStrikeOutTool, Mode=OneWay}" Command="{Binding ChooseTool}" CommandParameter="StrikeOut" />
           <MenuItem Header="S_quiggle" ToggleType="Radio" IsChecked="{Binding IsSquigglyTool, Mode=OneWay}" Command="{Binding ChooseTool}" CommandParameter="Squiggly" />
+          <MenuItem Header="Sticky _note" ToggleType="Radio" IsChecked="{Binding IsTextNoteTool, Mode=OneWay}" Command="{Binding ChooseTool}" CommandParameter="TextNote" />
+          <MenuItem Header="Te_xt box" ToggleType="Radio" IsChecked="{Binding IsFreeTextTool, Mode=OneWay}" Command="{Binding ChooseTool}" CommandParameter="FreeText" />
           <MenuItem Header="S_elect" ToggleType="Radio" IsChecked="{Binding IsSelectTool, Mode=OneWay}" Command="{Binding ChooseTool}" CommandParameter="None" />
         </MenuItem>
       </MenuItem>
@@ -255,8 +258,12 @@
                     Content="Strike out" ToolTip.Tip="Drag over text to strike it out" />
             <Button Classes="toolBtn" Classes.active="{Binding IsSquigglyTool}" Command="{Binding ChooseTool}" CommandParameter="Squiggly"
                     Content="Squiggle" ToolTip.Tip="Drag over text to underline it with a wavy line" />
+            <Button Classes="toolBtn" Classes.active="{Binding IsTextNoteTool}" Command="{Binding ChooseTool}" CommandParameter="TextNote"
+                    Content="Note" ToolTip.Tip="Click anywhere on the page to put a sticky note there" />
+            <Button Classes="toolBtn" Classes.active="{Binding IsFreeTextTool}" Command="{Binding ChooseTool}" CommandParameter="FreeText"
+                    Content="Text box" ToolTip.Tip="Drag out a box (or click) and write in it on the page" />
             <Button Classes="toolBtn" Classes.active="{Binding IsSelectTool}" Command="{Binding ChooseTool}" CommandParameter="None"
-                    Content="Select" ToolTip.Tip="Click an annotation to select it; then 1–5 recolour it, N writes its note, Delete removes it" />
+                    Content="Select" ToolTip.Tip="Click an annotation to select it, drag a note or text box to move it, double-click to edit; 1–5 recolour, Delete removes" />
             <ItemsControl ItemsSource="{Binding Palette}" VerticalAlignment="Center" Margin="6,0,0,0">
               <ItemsControl.ItemsPanel>
                 <ItemsPanelTemplate><StackPanel Orientation="Horizontal" Spacing="3" /></ItemsPanelTemplate>

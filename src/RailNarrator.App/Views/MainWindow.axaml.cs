@@ -338,8 +338,8 @@ public partial class MainWindow : Window
     {
         _viewModel.NoteEditorOpened += () =>
         {
-            if (_viewModel.NoteTarget is { } target && Surface.ScreenBoundsOf(target) is null)
-                Surface.GoToPage(target.FirstPage);
+            if (_viewModel.NoteAnchor is { } anchor && Surface.ScreenRectOf(anchor.Page, anchor.Rect) is null)
+                Surface.GoToPage(anchor.Page, anchor.Rect);
             // After layout, so the page shown and the card's own size are known.
             Avalonia.Threading.Dispatcher.UIThread.Post(() =>
             {
@@ -349,6 +349,7 @@ public partial class MainWindow : Window
             }, Avalonia.Threading.DispatcherPriority.Loaded);
         };
         NoteEditorBox.AddHandler(KeyDownEvent, OnNoteEditorKeyDown, RoutingStrategies.Tunnel);
+        _viewModel.AnnotationFocusRequested += (page, rect) => Surface.GoToPage(page, rect);
         _viewModel.PropertyChanged += (_, e) =>
         {
             // The card gone: the keyboard goes back to the page, so Space plays again.
@@ -360,12 +361,15 @@ public partial class MainWindow : Window
     private void PlaceNoteCard()
     {
         if (Surface.Parent is not Control area) return;
+        // Measured without the margin it was last placed with: a control's desired size includes its
+        // margin, and the card measured as its own size plus where it last stood.
+        NoteCard.Margin = default;
         NoteCard.Measure(Avalonia.Size.Infinity);
         double width = NoteCard.DesiredSize.Width, height = NoteCard.DesiredSize.Height;
         double areaW = area.Bounds.Width, areaH = area.Bounds.Height;
         const double gap = 10, edge = 8;
         double x, y;
-        if (_viewModel.NoteTarget is { } target && Surface.ScreenBoundsOf(target) is { } text)
+        if (_viewModel.NoteAnchor is { } anchor && Surface.ScreenRectOf(anchor.Page, anchor.Rect) is { } text)
         {
             x = text.Left;
             y = text.Bottom + gap + height <= areaH - edge ? text.Bottom + gap
