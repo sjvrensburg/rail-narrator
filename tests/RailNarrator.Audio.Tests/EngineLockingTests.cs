@@ -136,7 +136,12 @@ public sealed class EngineLockingTests
 
         long lastBeat = -1;
         long stalledSince = Environment.TickCount64, deadline = Environment.TickCount64 + 60_000;
-        while (Interlocked.Read(ref transitions) < segments - 1 && Environment.TickCount64 < deadline)
+        // Done when every transition was seen, or when the reading reached the end: the simulated UI
+        // drops a snapshot whose generation a seek has already overtaken (as the real one does), so a
+        // passage can go by uncounted. A run left stuck anywhere before the end still fails.
+        bool Finished() => Interlocked.Read(ref transitions) >= segments - 1
+            || coordinator.Snapshot is { State: PlaybackState.Completed } end && end.SegmentIndex == segments - 1;
+        while (!Finished() && Environment.TickCount64 < deadline)
         {
             await Task.Delay(100);
             long beat = Interlocked.Read(ref heartbeat);
@@ -146,8 +151,8 @@ public sealed class EngineLockingTests
         }
         stop.Cancel();
         var last = coordinator.Snapshot;
-        Assert.True(Interlocked.Read(ref transitions) >= segments - 1,
-            $"Only {Interlocked.Read(ref transitions)} of {segments - 1} transitions completed in 60 s. " +
+        Assert.True(Finished(),
+            $"Only {Interlocked.Read(ref transitions)} of {segments - 1} transitions completed in 60 s, and the reading did not reach the end. " +
             $"Transitions at (ms): {string.Join(", ", transitionTimes.Take(20))}. " +
             $"Last snapshot: {last.State}, passage {last.SegmentIndex}, position {last.PositionSeconds:F3} s of {last.ClipDurationSeconds:F3} s, " +
             $"buffered ahead {last.BufferedAheadSeconds:F3} s, message '{last.Message}'; engine {engine.State}; " +
