@@ -188,8 +188,9 @@ Windows (x64) is in progress and **not yet run on Windows**:
 ./packaging/build-windows.sh          # self-contained win-x64 folder and zip
 ```
 
-On Windows (Git Bash, with CMake, MSVC and optionally cargo) it also builds PortAudio
-v19.7.0 from a pinned commit and Phonon's `ptts_ffi.dll`; on Linux it cross-publishes the
+On Windows (Git Bash, with CMake, MSVC and cargo) it also builds PortAudio
+v19.7.0 from a pinned commit and Phonon's `ptts_ffi.dll` (the CI package requires both;
+Phonon's model and voices are still installed by `tools/setup-phonon.sh`); on Linux it cross-publishes the
 .NET part only. The folder holds `rail-narrator.exe` and `rail-narrator-cli.exe`, the
 console program for `narrate` and `export`, which a GUI executable cannot serve on
 Windows. Settings go to `%APPDATA%\rail-narrator`, models and caches to

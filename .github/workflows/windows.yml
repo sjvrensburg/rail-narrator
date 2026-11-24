@@ -57,14 +57,23 @@ jobs:
         with:
           global-json-file: global.json
 
-      # PortAudio is built with CMake and MSVC, which the runner has. Phonon's runtime is tried
-      # in its own job below: whether Gradium's crate builds on Windows is not known yet.
+      # PortAudio is built with CMake and MSVC, and Phonon's runtime (ptts_ffi.dll) with the
+      # runner's Rust toolchain (MSVC target). Both are required: a package without either fails.
       - name: Package
         shell: bash
         env:
           WITH_PORTAUDIO: "yes"
-          WITH_PHONON: "no"
+          WITH_PHONON: "yes"
         run: packaging/build-windows.sh
+
+      # The package carries both native libraries, and ptts_ffi.dll has the word-timing call that
+      # only the patched build has (tools/phonon-word-timing.patch).
+      - name: Native libraries present
+        shell: bash
+        run: |
+          dir=$(echo dist/rail-narrator-*-win-x64)
+          ls -l "$dir/portaudio.dll" "$dir/ptts_ffi.dll"
+          grep -q ptts_speak_aligned "$dir/ptts_ffi.dll"
 
       # The bundled portaudio.dll loads and answers: version, initialise, devices (a runner has
       # none, which the smoke tool reports and accepts).
@@ -90,19 +99,3 @@ jobs:
         with:
           name: rail-narrator-win-x64
           path: dist/*.zip
-
-  phonon:
-    runs-on: windows-latest
-    continue-on-error: true
-    steps:
-      - uses: actions/checkout@v6
-      - name: Build Phonon's runtime
-        shell: bash
-        run: |
-          PHONON_RUNTIME_ONLY=1 tools/setup-phonon.sh "$RUNNER_TEMP/phonon"
-          ls -l "$RUNNER_TEMP/phonon"
-      - name: Upload ptts_ffi.dll
-        uses: actions/upload-artifact@v7
-        with:
-          name: ptts-ffi-win-x64
-          path: ${{ runner.temp }}/phonon/ptts_ffi.dll
