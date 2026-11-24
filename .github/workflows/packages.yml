@@ -119,6 +119,8 @@ jobs:
           Start-Process -Wait -FilePath (Join-Path $dir "unins000.exe") -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART"
           if (Test-Path (Join-Path $dir "rail-narrator.exe")) { throw "The uninstaller left the application behind." }
           if (Test-Path "HKCU:\Software\Classes\RailNarrator.PDF") { throw "The uninstaller left the PDF entry behind." }
+          # The CLI's usage exit code (2) is still $LASTEXITCODE, which would fail the step.
+          exit 0
 
       - name: Upload package
         uses: actions/upload-artifact@v7
