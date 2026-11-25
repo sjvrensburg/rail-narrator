@@ -466,10 +466,6 @@ public partial class MainWindow : Window
         }
     }
 
-    /// <summary>
-    /// Opens a loaded document in the reading surface and, when the reading position was restored,
-    /// shows the passage it will resume from rather than the first page.
-    /// </summary>
     /// <summary>Greek letters and the commoner mathematical symbols, which Inter lacks or has few of.</summary>
     private const string MathsSample = "αβγδεζηθικλμνξοπρστυφχψω ΓΔΘΛΞΠΣΦΨΩ ∂∑∏∫√∞≤≥≠≈±×÷·′″∈∉⊂⊆∪∩∀∃→←↔⇒⇔ℝℕℤ";
 
@@ -491,10 +487,17 @@ public partial class MainWindow : Window
         foreach (string text in texts)
             foreach (var (style, weight, size) in styles)
                 Avalonia.Threading.Dispatcher.UIThread.Post(
-                    () => _ = new Avalonia.Media.TextFormatting.TextLayout(text, new Avalonia.Media.Typeface(FontFamily, style, weight), size, null),
+                    () =>
+                    {
+                        using var layout = new Avalonia.Media.TextFormatting.TextLayout(text, new Avalonia.Media.Typeface(FontFamily, style, weight), size, null);
+                    },
                     Avalonia.Threading.DispatcherPriority.Background);
     }
 
+    /// <summary>
+    /// Opens a loaded document in the reading surface and, when the reading position was restored,
+    /// shows the passage it will resume from rather than the first page.
+    /// </summary>
     private async Task ShowDocumentAsync(string path)
     {
         try

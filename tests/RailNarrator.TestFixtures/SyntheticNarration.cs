@@ -213,8 +213,12 @@ public sealed class FakeAudioTransport : IAudioTransport
     public event Action<string>? Underflow;
     public event Action<string>? DeviceFailed;
 
-    public Task LoadAsync(string segmentId, SpeechAsset asset, ReadOnlyMemory<byte> pcm, CancellationToken ct = default)
+    /// <summary>How long Load takes. The real engine decodes and renders the clip on the thread pool.</summary>
+    public TimeSpan LoadDelay { get; set; }
+
+    public async Task LoadAsync(string segmentId, SpeechAsset asset, ReadOnlyMemory<byte> pcm, CancellationToken ct = default)
     {
+        if (LoadDelay > TimeSpan.Zero) await Task.Delay(LoadDelay, ct).ConfigureAwait(false);
         if (FailLoadWith is { } reason) throw new InvalidOperationException(reason);
         Loaded.Add((segmentId, asset, pcm.Length));
         CurrentSegmentId = segmentId;
@@ -223,7 +227,6 @@ public sealed class FakeAudioTransport : IAudioTransport
         ClipDurationSeconds = asset.DurationSeconds;
         PositionSeconds = 0;
         FlushOnLoadCount++;
-        return Task.CompletedTask;
     }
 
     public Task PlayAsync(CancellationToken ct = default)
@@ -305,10 +308,13 @@ public sealed class FakeAudioTransport : IAudioTransport
         return Task.CompletedTask;
     }
 
-    public Task SetPlaybackRateAsync(double rate, CancellationToken ct = default)
+    /// <summary>How long a rate change takes. The real engine re-renders the clips on the thread pool.</summary>
+    public TimeSpan RateDelay { get; set; }
+
+    public async Task SetPlaybackRateAsync(double rate, CancellationToken ct = default)
     {
+        if (RateDelay > TimeSpan.Zero) await Task.Delay(RateDelay, ct).ConfigureAwait(false);
         PlaybackRate = rate;
-        return Task.CompletedTask;
     }
 
     /// <summary>Raises clip completion, as the real transport does once the last samples have drained.</summary>

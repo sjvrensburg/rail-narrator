@@ -210,6 +210,13 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     private long _startPendingFor = -1;
 
     private void MarkStartPending(long generation) => Interlocked.Exchange(ref _startPendingFor, generation);
+
+    /// <summary>
+    /// The start for <paramref name="generation"/> is over, whether it played, gave up or failed. A
+    /// start that failed (no engine, a synthesis error) left the mark set, and a voice chosen
+    /// afterwards took it for reading and began to read unasked. A newer start keeps its own mark.
+    /// </summary>
+    private void EndStartPending(long generation) => Interlocked.CompareExchange(ref _startPendingFor, -1, generation);
     private Task? _prepareLoop;
     private bool _disposed;
     private bool _followSuspended;
@@ -352,6 +359,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         }
         if (resume is { } r)
         {
+            if (load != Interlocked.Read(ref _loadSequence)) return;
             _options = _options with
             {
                 VoiceId = r.VoiceId ?? _options.VoiceId,
@@ -359,6 +367,11 @@ public sealed class NarrationCoordinator : IAsyncDisposable
                 PlaybackRate = r.PlaybackRate <= 0 ? 1.0 : r.PlaybackRate,
             };
             await _audio.SetPlaybackRateAsync(_options.PlaybackRate, ct).ConfigureAwait(false);
+            // The speed takes a while to apply (the clips are re-rendered). A later document, or a
+            // Play of this one, may have begun meanwhile; this load says nothing over it. A Play
+            // prepares for itself, and the aligner is still this document's to start.
+            if (load != Interlocked.Read(ref _loadSequence)) return;
+            if (gen != Generation) { WarmUpAligner(); return; }
         }
 
         // Idle, not Preparing: nothing has been asked to play. Lookahead runs in the background, and
@@ -437,14 +450,18 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             return;
         }
         MarkStartPending(gen);
-        // A fresh start is a request to read from here: following resumes, as for a seek.
-        lock (_gate) _followSuspended = false;
-        Publish(PlaybackState.Preparing, "Preparing speech");
-        StartPreparation(gen);
-        await PreRollAsync(gen, ct).ConfigureAwait(false);
-        if (gen != Generation) return;
-        if (!await WaitForSegmentAsync(_segmentIndex, gen, PlaybackState.Preparing, ct).ConfigureAwait(false)) return;
-        await StartCurrentSegmentAsync(gen, ct).ConfigureAwait(false);
+        try
+        {
+            // A fresh start is a request to read from here: following resumes, as for a seek.
+            lock (_gate) _followSuspended = false;
+            Publish(PlaybackState.Preparing, "Preparing speech");
+            StartPreparation(gen);
+            await PreRollAsync(gen, ct).ConfigureAwait(false);
+            if (gen != Generation) return;
+            if (!await WaitForSegmentAsync(_segmentIndex, gen, PlaybackState.Preparing, ct).ConfigureAwait(false)) return;
+            await StartCurrentSegmentAsync(gen, ct).ConfigureAwait(false);
+        }
+        finally { EndStartPending(gen); }
     }
 
     /// <summary>
@@ -533,21 +550,25 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         if (index < 0) return;
         long gen = AdvanceGeneration();
         MarkStartPending(gen);
-        // The reader asked to read from this passage (Next, Previous, a click, the script list), so
-        // a pause in following from browsing ends here rather than leaving the view where it was
-        // while the reading starts somewhere else.
-        lock (_gate) { _seekIndex = index; _seekGeneration = gen; _followSuspended = false; }
-        Publish(PlaybackState.Seeking, "Seeking");
-        await _audio.StopAsync(ct).ConfigureAwait(false);
-        lock (_gate)
+        try
         {
-            if (gen != Generation) return;   // superseded by a later seek while stopping
-            _segmentIndex = index;
-            _seekGeneration = -1;
+            // The reader asked to read from this passage (Next, Previous, a click, the script list), so
+            // a pause in following from browsing ends here rather than leaving the view where it was
+            // while the reading starts somewhere else.
+            lock (_gate) { _seekIndex = index; _seekGeneration = gen; _followSuspended = false; }
+            Publish(PlaybackState.Seeking, "Seeking");
+            await _audio.StopAsync(ct).ConfigureAwait(false);
+            lock (_gate)
+            {
+                if (gen != Generation) return;   // superseded by a later seek while stopping
+                _segmentIndex = index;
+                _seekGeneration = -1;
+            }
+            StartPreparation(gen);
+            if (!await WaitForSegmentAsync(index, gen, PlaybackState.Seeking, ct).ConfigureAwait(false)) return;
+            await StartCurrentSegmentAsync(gen, ct, withinSegmentSeconds).ConfigureAwait(false);
         }
-        StartPreparation(gen);
-        if (!await WaitForSegmentAsync(index, gen, PlaybackState.Seeking, ct).ConfigureAwait(false)) return;
-        await StartCurrentSegmentAsync(gen, ct, withinSegmentSeconds).ConfigureAwait(false);
+        finally { EndStartPending(gen); }
     }
 
     public Task NextSegmentAsync(CancellationToken ct = default)
@@ -649,7 +670,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         // Another voice was asked for: the recording is in its own, so the engine speaks from here.
         _recording = null;
         long generation = AdvanceGeneration();
-        if (wasPlaying) MarkStartPending(generation);
+        if (wasPlaying && _plan is not null) MarkStartPending(generation);
         // Discarded now, with the change, not once the transport has stopped: a seek that finishes
         // while it is stopping would otherwise find the old voice's clip ready and play it.
         lock (_gate) _prepared.Clear();
@@ -667,9 +688,13 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         StartPreparation(generation);
         if (_plan is not null && wasPlaying)
         {
-            if (await WaitForSegmentAsync(Math.Max(0, _segmentIndex), generation, PlaybackState.Preparing, ct).ConfigureAwait(false)
-                && generation == Generation)
-                await StartCurrentSegmentAsync(generation, ct).ConfigureAwait(false);
+            try
+            {
+                if (await WaitForSegmentAsync(Math.Max(0, _segmentIndex), generation, PlaybackState.Preparing, ct).ConfigureAwait(false)
+                    && generation == Generation)
+                    await StartCurrentSegmentAsync(generation, ct).ConfigureAwait(false);
+            }
+            finally { EndStartPending(generation); }
         }
         PublishSnapshotOnly();
     }
@@ -1623,9 +1648,18 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         }
         if (generation != Generation) return;
 
+        // Each await can be overtaken (a seek, Stop, a voice change, a new document), and the
+        // operation that overtook it has the transport from then on: this one stops there. Going
+        // on, it played the old clip and said Playing over the newer operation's own start.
         await _audio.LoadAsync(segmentId, prepared.Asset, prepared.Pcm, ct).ConfigureAwait(false);
-        if (withinSeconds > 0) await _audio.SeekAsync(withinSeconds, ct).ConfigureAwait(false);
+        if (generation != Generation) return;
+        if (withinSeconds > 0)
+        {
+            await _audio.SeekAsync(withinSeconds, ct).ConfigureAwait(false);
+            if (generation != Generation) return;
+        }
         await _audio.PlayAsync(ct).ConfigureAwait(false);
+        if (generation != Generation) return;
         // Playing now: the transport says so from here.
         Interlocked.CompareExchange(ref _startPendingFor, -1, generation);
         Publish(PlaybackState.Playing, null);
@@ -1709,6 +1743,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             {
                 Publish(PlaybackState.Error, null, NarrationError.SpeechSynthesisFailed(ex.Message, segmentId));
             }
+            finally { EndStartPending(gen); }
         });
     }
 

@@ -52,13 +52,26 @@ public static class LetterNames
     {
         "sub", "super", "squared", "cubed", "hat", "bar", "tilde", "prime", "star", "dagger", "transpose", "inverse",
         "plus", "minus", "times", "equals", "over", "divided", "is", "are", "and", "or", "denotes", "represents", "has", "must",
+        // ...and words an article is never followed by: "the sum over a of x", "from a to b".
+        "be", "of", "in", "to", "from", "with", "at", "on", "by", "than", "then",
     };
 
+    // Words that only a symbol follows: "x sub a", "the constant a".
     private static readonly HashSet<string> BeforeASymbol = new(StringComparer.OrdinalIgnoreCase)
     {
-        "sub", "super", "plus", "minus", "times", "equals", "over", "let", "parameter", "constant", "coefficient", "scalar",
-        "vector", "matrix", "variable", "letter", "point", "given",
+        "sub", "super", "parameter", "constant", "coefficient", "scalar", "vector", "matrix", "variable", "letter",
     };
+
+    // Words the article follows as often as the symbol: "x plus a" but "plus a constant", "let a be"
+    // but "let a model", "given a" but "given a sample". Beside them "a" is the symbol only when what
+    // comes next says so (AfterASymbol, another lone letter, an operator); otherwise a noun is to come.
+    private static readonly HashSet<string> BeforeEither = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "plus", "minus", "times", "equals", "over", "given", "point", "let",
+    };
+
+    // Signs an article never stands before: "a + b", "a = 2", "a^2".
+    private const string Operators = "+-−=<>^_*/×·≤≥≠≈∈|";
 
     /// <summary>The name of an ASCII letter, as a word an engine pronounces as the letter.</summary>
     public static string Of(char letter) => Names[char.ToLowerInvariant(letter) - 'a'];
@@ -111,19 +124,25 @@ public static class LetterNames
         while (after < s.Length && s[after] == ' ') after++;
         // An article has a noun to come: "a" before the end of a clause is a symbol.
         if (after >= s.Length || s[after] is ',' or '.' or ';' or ':' or ')' or '?' or '!') return true;
+        if (Operators.Contains(s[after])) return true;
         string next = WordAt(s, after, out int nextEnd);
         // "a sub-sample" is an article before a hyphenated word.
-        if (AfterASymbol.Contains(next) && !(nextEnd < s.Length && s[nextEnd] == '-')) return true;
+        bool hyphenated = nextEnd < s.Length && s[nextEnd] == '-';
+        if (AfterASymbol.Contains(next) && !hyphenated) return true;
 
         int before = i - 1;
         while (before >= 0 && s[before] == ' ') before--;
-        bool sentenceStart = before < 0 || s[before] is '.' or '?' or '!' or ':';
+        // An opening bracket or quotation mark can begin a sentence too: "(A similar bound holds.)"
+        bool sentenceStart = before < 0 || s[before] is '.' or '?' or '!' or ':' or '(' or '[' or '"' or '“' or '‘';
         // A capital "A" inside a sentence is a name ("the matrix A times x"), not the article.
         if (s[i] == 'A' && !sentenceStart) return true;
         if (before < 0) return false;
         int start = before;
         while (start >= 0 && char.IsLetter(s[start])) start--;
-        return BeforeASymbol.Contains(s.Substring(start + 1, before - start));
+        string previous = s.Substring(start + 1, before - start);
+        if (BeforeASymbol.Contains(previous)) return true;
+        // "plus a b": another lone letter after it. "over a window": a noun.
+        return BeforeEither.Contains(previous) && next.Length == 1 && !hyphenated;
     }
 
     private static string WordAt(string s, int start, out int end)

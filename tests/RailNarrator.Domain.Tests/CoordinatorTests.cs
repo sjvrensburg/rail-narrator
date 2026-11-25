@@ -189,6 +189,86 @@ public sealed class NarrationCoordinatorTests
         Assert.Equal(0, transport.PlayCount);
     }
 
+    /// <summary>Speaks in every voice but one, and refuses that one.</summary>
+    private sealed class RefusesOneVoice(string voice) : ITtsProvider
+    {
+        private readonly FakeTtsProvider _inner = new();
+        public string ProviderId => _inner.ProviderId;
+        public Task<TtsCapabilities> GetCapabilitiesAsync(CancellationToken ct = default) => _inner.GetCapabilitiesAsync(ct);
+        public Task<IReadOnlyList<TtsVoice>> ListVoicesAsync(CancellationToken ct = default) => _inner.ListVoicesAsync(ct);
+        public Task<ProviderSelfTestResult> SelfTestAsync(string voiceId, CancellationToken ct = default) => _inner.SelfTestAsync(voiceId, ct);
+        public ValueTask DisposeAsync() => _inner.DisposeAsync();
+        public Task<TtsSynthesisResult> SynthesizeAsync(TtsSynthesisRequest request, CancellationToken ct = default)
+            => request.VoiceId == voice ? throw new InvalidOperationException("The engine refused this voice.") : _inner.SynthesizeAsync(request, ct);
+    }
+
+    /// <summary>
+    /// A Play that failed is over: choosing another voice afterwards starts nothing. The start was
+    /// still marked as under way, so the voice change took it for reading and read in the new voice.
+    /// </summary>
+    [Fact]
+    public async Task AVoiceChosenAfterAFailedStart_StartsNothing()
+    {
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(new RefusesOneVoice("fake-default"), transport,
+            options: new NarrationCoordinatorOptions(VoiceId: "fake-default"));
+        await coordinator.LoadPlanAsync(PlanWith(3));
+        await coordinator.PlayAsync();
+        await WaitUntil(() => coordinator.Snapshot.Error is not null, what: "the failed start");
+
+        await coordinator.SetVoiceAsync("fake-alternate");
+        await Task.Delay(300);
+        Assert.Equal(0, transport.PlayCount);
+    }
+
+    /// <summary>
+    /// A start overtaken while its clip loads stops there. It went on to play the old clip and to
+    /// say Playing after the reader had pressed Stop.
+    /// </summary>
+    [Fact]
+    public async Task AStartOvertakenWhileItsClipLoads_DoesNotPlay()
+    {
+        var transport = new FakeAudioTransport { LoadDelay = TimeSpan.FromMilliseconds(200) };
+        await using var coordinator = new NarrationCoordinator(new FakeTtsProvider(), transport);
+        await coordinator.LoadPlanAsync(PlanWith(3));
+        var play = coordinator.PlayAsync();
+        await WaitUntil(() => transport.Loaded.Count == 0 && coordinator.Snapshot.State == PlaybackState.Preparing, what: "the start");
+        await Task.Delay(50);   // the clip is synthesised at once; its load takes 200 ms
+
+        await coordinator.StopAsync();
+        await play;
+
+        Assert.Equal(0, transport.PlayCount);
+        Assert.Equal(PlaybackState.Idle, coordinator.Snapshot.State);
+    }
+
+    /// <summary>
+    /// A load overtaken while it set the resumed speed publishes nothing afterwards. It said Idle
+    /// over the next document's Play, which was preparing its first passage.
+    /// </summary>
+    [Fact]
+    public async Task ALoadOvertakenWhileItSetsTheSpeed_DoesNotPublishOverTheNextDocument()
+    {
+        var tts = new FakeTtsProvider(new FakeTtsOptions(Latency: TimeSpan.FromSeconds(2)));
+        var transport = new FakeAudioTransport { RateDelay = TimeSpan.FromMilliseconds(300) };
+        await using var coordinator = new NarrationCoordinator(tts, transport,
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 1, LookaheadSeconds: 0));
+        var first = PlanWith(2);
+        var resume = new ReaderPosition("first", first.Segments[0].Id, 0, 0, null, MathMode.Interpret, 1, FollowMode.Follow, 1.5);
+
+        var slow = coordinator.LoadPlanAsync(first, resume);
+        await Task.Delay(50);   // the first load is setting the speed
+        transport.RateDelay = TimeSpan.Zero;
+        await coordinator.LoadPlanAsync(PlanWith(4));
+        var play = coordinator.PlayAsync();
+        await WaitUntil(() => coordinator.Snapshot.State == PlaybackState.Preparing, what: "the second document's Play");
+
+        await slow;
+        Assert.Equal(PlaybackState.Preparing, coordinator.Snapshot.State);
+        await coordinator.StopAsync();
+        await play;
+    }
+
     [Fact]
     public async Task PreviousAndNext_OnAnEmptyPlan_AreNoOpsNotThrows()
     {
