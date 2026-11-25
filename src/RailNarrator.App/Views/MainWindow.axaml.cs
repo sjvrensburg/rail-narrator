@@ -274,7 +274,8 @@ public partial class MainWindow : Window
         SidebarSplitter.DragCompleted += (_, _) =>
         {
             _sidebarWidth = Math.Clamp(ContentGrid.ColumnDefinitions[0].ActualWidth, SidebarMinWidth, SidebarMaxWidth);
-            _viewModel.PersistSettings(s => s with { SidebarWidth = Math.Round(_sidebarWidth) });
+            double width = Math.Round(_sidebarWidth);
+            _viewModel.PersistPreference(s => s with { SidebarWidth = width });
         };
     }
 
@@ -303,7 +304,7 @@ public partial class MainWindow : Window
             if (section.IsExpanded)
             {
                 foreach (var (other, _) in _sections) if (other != section) other.IsExpanded = false;
-                _viewModel.PersistSettings(s => s with { SidebarSection = name });
+                _viewModel.PersistPreference(s => s with { SidebarSection = name });
             }
             UpdateSectionRows();
         }

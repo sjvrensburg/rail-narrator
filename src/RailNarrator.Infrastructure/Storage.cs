@@ -439,6 +439,91 @@ public sealed class SettingsStore
     }
 
     private const UnixFileMode OwnerOnly = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+    // ---- changes written in the background ----------------------------------------------------
+
+    private readonly object _queueGate = new();
+    private List<Func<RailNarratorSettings, RailNarratorSettings>> _queued = [];
+    private Task _writing = Task.CompletedTask;
+
+    /// <summary>Raised, on a thread-pool thread, when a change queued by <see cref="UpdateLater"/> could not be written.</summary>
+    public event Action<Exception>? BackgroundWriteFailed;
+
+    /// <summary>
+    /// Reads, changes and writes the file on the thread pool, in the order changes are asked for;
+    /// changes asked for while one is being written are written together. For a preference the
+    /// window changes: done on the UI thread, every change of speed, zoom or sidebar read, parsed
+    /// and wrote the file there, which a slow disk or a virus scanner makes a visible pause.
+    /// </summary>
+    public void UpdateLater(Func<RailNarratorSettings, RailNarratorSettings> update)
+    {
+        ArgumentNullException.ThrowIfNull(update);
+        lock (_queueGate)
+        {
+            _queued.Add(update);
+            // A write already waiting to run takes this change with it.
+            if (_queued.Count > 1) return;
+            _writing = _writing.ContinueWith(_ => WriteQueued(), CancellationToken.None,
+                TaskContinuationOptions.None, TaskScheduler.Default);
+        }
+    }
+
+    /// <summary>
+    /// Reads, changes and writes the file now, after every change still queued, and returns what was
+    /// written. A failure is thrown to the caller.
+    /// </summary>
+    public RailNarratorSettings Update(Func<RailNarratorSettings, RailNarratorSettings> update)
+    {
+        ArgumentNullException.ThrowIfNull(update);
+        Flush();
+        lock (_gate)
+        {
+            var changed = update(Load());
+            Save(changed);
+            return changed;
+        }
+    }
+
+    /// <summary>Returns once every change queued so far has been written (or has failed and been reported).</summary>
+    public void Flush()
+    {
+        while (true)
+        {
+            Task writing;
+            lock (_queueGate) writing = _writing;
+            writing.Wait();
+            // Done when nothing is queued and no write was scheduled behind the one just waited for;
+            // a change queued meanwhile always has one, since the first change queued schedules it.
+            lock (_queueGate)
+                if (_queued.Count == 0 && ReferenceEquals(writing, _writing)) return;
+        }
+    }
+
+    private void WriteQueued()
+    {
+        List<Func<RailNarratorSettings, RailNarratorSettings>> batch;
+        lock (_queueGate)
+        {
+            if (_queued.Count == 0) return;
+            batch = _queued;
+            _queued = [];
+        }
+        try
+        {
+            lock (_gate)
+            {
+                var settings = Load();
+                foreach (var update in batch) settings = update(settings);
+                Save(settings);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Nobody awaits a queued change, so whatever stopped it is reported, never left in a
+            // faulted task that would stop the changes queued behind it from being waited for.
+            BackgroundWriteFailed?.Invoke(ex);
+        }
+    }
 }
 
 /// <summary>

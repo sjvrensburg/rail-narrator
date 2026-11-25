@@ -249,6 +249,7 @@ public sealed class SettingsViewModel : ViewModelBase
     {
         _main = main ?? throw new ArgumentNullException(nameof(main));
         _services = main.Services;
+        _services.Settings.Flush();   // a preference the window is still saving
         _s = _services.Settings.Load();
         _startupEngine = EngineSignature(_services.CurrentSettings);
         _restartPending = EngineSignature(_s) != _startupEngine;
