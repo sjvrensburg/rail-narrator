@@ -49,6 +49,11 @@
   </provides>
 
   <releases>
+    <release version="0.1.5" date="2026-11-25">
+      <description>
+        <p>Fixes playback getting stuck or starting on its own after quick presses, edits and voice changes, and reads a lone letter "a" in maths as the letter rather than the article more reliably.</p>
+      </description>
+    </release>
     <release version="0.1.4" date="2026-11-25">
       <description>
         <p>Fixes short freezes of the window: when changing the speed, when starting or replaying a passage, and when first opening the review notes.</p>
