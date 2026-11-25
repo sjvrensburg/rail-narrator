@@ -110,6 +110,16 @@ server. The model's `inference.yml` is looked for beside it as `<name>_inference
   gaps after the marker. Check a screenshot first: keys sent while the loading card is up measure
   nothing. A scanned or image-heavy PDF is the test that matters; a page of plain text renders in
   10 ms and never stalled.
+
+  Each `frame gap` line also carries the runtime's counters over the gap
+  (`gc=0/0/1 pause=2 ms jit=+12 methods 3 ms contention=+1 alloc=+36.5 MB`: collections by
+  generation, time paused for them, methods compiled and the time it took, contended lock
+  acquisitions, bytes allocated). A thread of its own asks the UI thread to answer every 20 ms and
+  logs `ui stall 125 ms …` with the same counters when the answer is late. Read them together: a
+  gap with no `ui stall` beside it is the render thread's or the compositor's; a stall with a large
+  `alloc` and no GC pause is the application's own work on the UI thread; one with nothing
+  allocated is the UI thread waiting, usually on a lock (`contention`); a large `pause` is the
+  collector; many `jit` methods is code run for the first time.
 - **The first click after the window appears can land somewhere else.** The headless compositor's
   own cursor starts at the centre of the output, and one XTEST press was delivered there instead
   of where XTEST had moved the pointer: it hit a passage in the middle of the page and started a

@@ -68,7 +68,7 @@ public sealed class NullAudioTransport : IAudioTransport
     public Task ResumeAsync(CancellationToken ct = default) => Task.CompletedTask;
     public Task StopAsync(CancellationToken ct = default) => Task.CompletedTask;
     public Task SeekAsync(double seconds, CancellationToken ct = default) => Task.CompletedTask;
-    public void SetPlaybackRate(double rate) { }
+    public Task SetPlaybackRateAsync(double rate, CancellationToken ct = default) => Task.CompletedTask;
     public event Action<PlaybackState>? StateChanged { add { } remove { } }
     public event Action<string>? ClipCompleted { add { } remove { } }
     public event Action<string>? Underflow { add { } remove { } }

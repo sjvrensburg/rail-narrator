@@ -305,7 +305,11 @@ public sealed class FakeAudioTransport : IAudioTransport
         return Task.CompletedTask;
     }
 
-    public void SetPlaybackRate(double rate) => PlaybackRate = rate;
+    public Task SetPlaybackRateAsync(double rate, CancellationToken ct = default)
+    {
+        PlaybackRate = rate;
+        return Task.CompletedTask;
+    }
 
     /// <summary>Raises clip completion, as the real transport does once the last samples have drained.</summary>
     public void RaiseClipCompleted(string segmentId) => ClipCompleted?.Invoke(segmentId);

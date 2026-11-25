@@ -43,8 +43,12 @@ public interface IAudioTransport
     /// <summary>Seeks within the loaded clip. Must flush stale audio before presenting new samples.</summary>
     Task SeekAsync(double seconds, CancellationToken ct = default);
 
-    /// <summary>Sets a pitch-preserving rate. Changing the sample rate alone is not a valid implementation.</summary>
-    void SetPlaybackRate(double rate);
+    /// <summary>
+    /// Sets a pitch-preserving rate. Changing the sample rate alone is not a valid implementation.
+    /// Re-rendering audio at the new rate is slow for a long passage; an implementation does it off
+    /// the caller's thread, which is often the UI thread.
+    /// </summary>
+    Task SetPlaybackRateAsync(double rate, CancellationToken ct = default);
 
     /// <summary>Raised on every state transition, on the coordinator's thread.</summary>
     event Action<PlaybackState>? StateChanged;
@@ -354,7 +358,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
                 FollowMode = r.FollowMode,
                 PlaybackRate = r.PlaybackRate <= 0 ? 1.0 : r.PlaybackRate,
             };
-            _audio.SetPlaybackRate(_options.PlaybackRate);
+            await _audio.SetPlaybackRateAsync(_options.PlaybackRate, ct).ConfigureAwait(false);
         }
 
         // Idle, not Preparing: nothing has been asked to play. Lookahead runs in the background, and
@@ -585,11 +589,11 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         return i < 0 || i >= plan.SegmentCount ? Task.CompletedTask : GoToSegmentAsync(plan.Segments[i].Id, 0, ct);
     }
 
-    public void SetPlaybackRate(double rate)
+    public async Task SetPlaybackRateAsync(double rate, CancellationToken ct = default)
     {
         double clamped = Math.Clamp(rate, 0.5, 3.0);
         _options = _options with { PlaybackRate = clamped };
-        _audio.SetPlaybackRate(clamped);
+        await _audio.SetPlaybackRateAsync(clamped, ct).ConfigureAwait(false);
         PublishSnapshotOnly();
     }
 
