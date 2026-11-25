@@ -443,14 +443,24 @@ public interface IPlanStore
 /// Where the reader left off. Restored on open; never triggers auto-play.
 /// </summary>
 /// <param name="DocumentContentHash">Content identity, so a moved file keeps its position.</param>
-/// <param name="SegmentId">Unit to resume from.</param>
-/// <param name="PageIndex">Zero-based page.</param>
+/// <param name="SegmentId">Unit to resume from: an id in the plan named by <paramref name="PlanId"/>.</param>
+/// <param name="PageIndex">Zero-based page on which the passage starts.</param>
 /// <param name="PositionInSegmentSeconds">Offset within the segment's clip.</param>
 /// <param name="VoiceId">Selected voice.</param>
 /// <param name="MathMode">Selected maths mode.</param>
 /// <param name="Zoom">The user's preferred magnification. Restored, not reset.</param>
 /// <param name="FollowMode">Follow preference.</param>
 /// <param name="PlaybackRate">Pitch-preserving speed.</param>
+/// <param name="PlanId">
+/// The plan <paramref name="SegmentId"/> belongs to (<see cref="ResumePoint.PlanKey"/>). A passage id is its place in one plan
+/// ("s00042"), so once the document is planned again (another version of the planner, another
+/// layout model) the same id can name another passage. Null in a position saved before it was kept.
+/// </param>
+/// <param name="SourceCharOffset">
+/// Where the passage starts in the page's text (UTF-16), which planning does not change: how a
+/// position is found again in a plan it was not saved against (<see cref="ResumePoint.Find"/>).
+/// Null for a passage with no text behind it, or in a position saved before it was kept.
+/// </param>
 public sealed record ReaderPosition(
     string DocumentContentHash,
     string? SegmentId,
@@ -460,7 +470,9 @@ public sealed record ReaderPosition(
     MathMode MathMode,
     double Zoom,
     FollowMode FollowMode,
-    double PlaybackRate);
+    double PlaybackRate,
+    string? PlanId = null,
+    int? SourceCharOffset = null);
 
 /// <summary>
 /// The extraction boundary. Implemented by the RailReaderCore adapter; consumed by the planner.

@@ -236,9 +236,6 @@ In rough priority order:
 - **Kokoro's CPU thread default.** 4–6 threads were about 10 % faster than the provider's 8 on the
   i7-12700H; re-measure on the reference machine before changing it.
 
-- **Saving a restored position as a passage id.** When the plan changes (new layout model, a
-  version bump), the saved id can point at a different passage. Store a page plus text-offset
-  anchor and map it onto the new plan.
 - **Make rule-read passages cheaper.** A passage that ends up read by rule costs a thinking
   attempt (often running out of tokens), a thinking-off retry, a refusal and then a
   transcription: about 66 s for a lead-in. That is the main reason model time is close to

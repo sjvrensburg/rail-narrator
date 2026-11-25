@@ -530,3 +530,41 @@ public sealed class UnsavedPreferencesNoteTests : IDisposable
         new UnsavedPreferencesNote(Path.Combine(blocked, "unsaved-preferences.txt")).Record(new IOException("disk full"));
     }
 }
+
+/// <summary>The reading position on disk, with the plan and page place it is now saved with.</summary>
+public sealed class ReaderPositionStorageTests : IDisposable
+{
+    private readonly string _root = Path.Combine(Path.GetTempPath(), "rn-position-" + Guid.NewGuid().ToString("N"));
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
+    }
+
+    private static ReaderPosition Position() => new("doc", "s00003", 1, 0.5, "af_heart", MathMode.Interpret, 1.5,
+        FollowMode.Follow, 1.25, PlanId: "plan-before", SourceCharOffset: 21);
+
+    [Fact]
+    public async Task APosition_IsReadBackWithItsPlanAndItsPlaceOnThePage()
+    {
+        var store = new DiskPlanStore(_root);
+        await store.SavePositionAsync(Position());
+        Assert.Equal(Position(), await store.TryGetPositionAsync("doc"));
+    }
+
+    [Fact]
+    public async Task APositionSavedByAnEarlierVersion_IsStillRead_WithNoPlanOrPlace()
+    {
+        var store = new DiskPlanStore(_root);
+        await store.SavePositionAsync(Position());
+        string file = Path.Combine(_root, "doc", "position.json");
+        // The file as versions up to 0.1.5 wrote it: the same fields without the two new ones.
+        var json = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(file))!.AsObject();
+        json.Remove("PlanId");
+        json.Remove("SourceCharOffset");
+        File.WriteAllText(file, json.ToJsonString());
+
+        var read = await store.TryGetPositionAsync("doc");
+        Assert.Equal(Position() with { PlanId = null, SourceCharOffset = null }, read);
+    }
+}
