@@ -754,3 +754,42 @@ public sealed class FollowModeJsonConverter : JsonConverter<FollowMode>
     public override void Write(Utf8JsonWriter writer, FollowMode value, JsonSerializerOptions options)
         => writer.WriteStringValue(value.ToString());
 }
+
+/// <summary>
+/// A preference that could not be written while the application closed, kept for the next start
+/// to tell the reader. Raised at closing, a failure reached only a window that was going away.
+/// </summary>
+/// <remarks>
+/// Kept in the state directory (<see cref="XdgPaths.State"/>), not beside the settings, whose
+/// directory is the one that just refused a write. Holds the failure's message only: no setting,
+/// and so no API key, is ever written here.
+/// </remarks>
+public sealed class UnsavedPreferencesNote(string? path = null)
+{
+    private readonly string _path = path ?? Path.Combine(XdgPaths.State, "unsaved-preferences.txt");
+
+    /// <summary>Records why a preference was not saved. Never throws: the application is closing.</summary>
+    public void Record(Exception failure)
+    {
+        ArgumentNullException.ThrowIfNull(failure);
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(_path)!);
+            File.WriteAllText(_path, failure.Message);
+        }
+        catch (Exception) { /* nowhere left to say it: stderr has had it */ }
+    }
+
+    /// <summary>The reason recorded at the last closing, once; null when there is none.</summary>
+    public string? Take()
+    {
+        try
+        {
+            if (!File.Exists(_path)) return null;
+            string reason = File.ReadAllText(_path).Trim();
+            File.Delete(_path);
+            return reason.Length == 0 ? "the reason was not recorded" : reason;
+        }
+        catch (Exception) { return null; }
+    }
+}

@@ -371,7 +371,15 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             // Play of this one, may have begun meanwhile; this load says nothing over it. A Play
             // prepares for itself, and the aligner is still this document's to start.
             if (load != Interlocked.Read(ref _loadSequence)) return;
-            if (gen != Generation) { WarmUpAligner(); return; }
+            if (gen != Generation)
+            {
+                // Overtaken by an operation on this document. A start (Play, a seek) says what is
+                // happening itself; anything else (a voice change while stopped) does not, and the
+                // previous document's state would stay on show.
+                if (Interlocked.Read(ref _startPendingFor) != Generation) Publish(PlaybackState.Idle, null);
+                WarmUpAligner();
+                return;
+            }
         }
 
         // Idle, not Preparing: nothing has been asked to play. Lookahead runs in the background, and
@@ -525,6 +533,9 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         ThrowIfDisposed();
         long gen = Generation;
         await _audio.ResumeAsync(ct).ConfigureAwait(false);
+        // The transport's Resume can wait behind a speed change; Stop or a seek pressed meanwhile
+        // has said what is happening since.
+        if (gen != Generation) return;
         Publish(PlaybackState.Playing, null);
         StartPreparation(gen);
     }
@@ -724,7 +735,9 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             if (now is null || now.ScriptRevision != segment.ScriptRevision || now.Provenance != segment.Provenance) return now;
             _plan = current with { Segments = current.Segments.Select(s => s.Id == segmentId ? fresh : s).ToList() };
         }
+        bool startUnderWay = Interlocked.Read(ref _startPendingFor) == Generation;
         long gen = AdvanceGeneration();
+        if (startUnderWay) MarkStartPending(gen);
         lock (_gate)
         {
             _scheduler = new CueScheduler(_plan!);
@@ -735,6 +748,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         else await _audio.ClearQueuedAsync(ct).ConfigureAwait(false);
         StartPreparation(gen);
         PublishSnapshotOnly();
+        if (startUnderWay) _ = CarryOnOvertakenStartAsync(gen);
         SegmentResolved?.Invoke(fresh);
         return fresh;
     }
@@ -766,7 +780,9 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             documentHash = current.Header.Extraction.DocumentContentHash;
         }
 
+        bool startUnderWay = Interlocked.Read(ref _startPendingFor) == Generation;
         long gen = AdvanceGeneration();
+        if (startUnderWay) MarkStartPending(gen);
         lock (_gate)
         {
             _scheduler = new CueScheduler(_plan!);
@@ -784,6 +800,34 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             await _assetStore.InvalidateAsync(documentHash, ct).ConfigureAwait(false);
         StartPreparation(gen);
         PublishSnapshotOnly();
+        if (startUnderWay) _ = CarryOnOvertakenStartAsync(gen);
+    }
+
+    /// <summary>
+    /// Carries on a start (Play, a seek, a passage giving way to the next) that an edit or a
+    /// regenerated reading overtook. Those change words, not the reading position, and take nothing
+    /// over from the transport; the start they overtook stops at its next check of the generation,
+    /// so without this the reader was left at "Preparing speech" with nothing playing.
+    /// </summary>
+    private async Task CarryOnOvertakenStartAsync(long generation)
+    {
+        try
+        {
+            // The start had already set the passage playing before it found itself overtaken.
+            if (_audio.State == PlaybackState.Playing)
+            {
+                if (generation == Generation) Publish(PlaybackState.Playing, null);
+                return;
+            }
+            if (await WaitForSegmentAsync(Math.Max(0, _segmentIndex), generation, PlaybackState.Preparing, CancellationToken.None).ConfigureAwait(false)
+                && generation == Generation)
+                await StartCurrentSegmentAsync(generation, CancellationToken.None).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Publish(PlaybackState.Error, null, NarrationError.SpeechSynthesisFailed(ex.Message, null));
+        }
+        finally { EndStartPending(generation); }
     }
 
     // ---- preparation ------------------------------------------------------------------
@@ -1732,9 +1776,11 @@ public sealed class NarrationCoordinator : IAsyncDisposable
                     if (gen != Generation || _segmentIndex != index) return;
                     _segmentIndex = index + 1;
                     ReleaseClipsOutsideWindow(plan, index + 1);
+                    // In the same lock as the check: marked after it, a seek that came between
+                    // had its own mark replaced by this older one.
+                    MarkStartPending(gen);
                 }
                 ExtendPreparation(gen);
-                MarkStartPending(gen);
                 if (!await WaitForSegmentAsync(index + 1, gen, PlaybackState.Buffering, CancellationToken.None).ConfigureAwait(false)) return;
                 if (gen != Generation) return;
                 await StartCurrentSegmentAsync(gen, CancellationToken.None).ConfigureAwait(false);

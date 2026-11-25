@@ -494,3 +494,39 @@ public sealed class SettingsStoreBackgroundTests : IDisposable
         Assert.Equal(222, NewStore().Load().SidebarWidth);
     }
 }
+
+/// <summary>A preference that could not be saved at closing, said once at the next start.</summary>
+public sealed class UnsavedPreferencesNoteTests : IDisposable
+{
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), "rn-unsaved-" + Guid.NewGuid().ToString("N"));
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_dir)) Directory.Delete(_dir, recursive: true);
+    }
+
+    [Fact]
+    public void AFailureRecordedAtClosing_IsGivenOnceAtTheNextStart()
+    {
+        string path = Path.Combine(_dir, "state", "unsaved-preferences.txt");
+        new UnsavedPreferencesNote(path).Record(new IOException("Read-only file system"));
+
+        var next = new UnsavedPreferencesNote(path);
+        Assert.Equal("Read-only file system", next.Take());
+        Assert.Null(next.Take());
+        Assert.False(File.Exists(path));
+    }
+
+    [Fact]
+    public void WithNothingRecorded_ThereIsNothingToSay() => Assert.Null(new UnsavedPreferencesNote(Path.Combine(_dir, "none.txt")).Take());
+
+    [Fact]
+    public void AFailureThatCannotBeRecorded_DoesNotThrow()
+    {
+        // The note's directory is a file: nothing can be written there, and closing goes on.
+        Directory.CreateDirectory(_dir);
+        string blocked = Path.Combine(_dir, "blocked");
+        File.WriteAllText(blocked, "");
+        new UnsavedPreferencesNote(Path.Combine(blocked, "unsaved-preferences.txt")).Record(new IOException("disk full"));
+    }
+}

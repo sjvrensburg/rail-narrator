@@ -114,6 +114,36 @@ public sealed class DeviceIntegrationTests
         await engine.StopAsync();
         Assert.Equal(0, engine.PositionSeconds);
     }
+    /// <summary>
+    /// Through a real device: a Resume pressed while a speed change renders a long clip plays on.
+    /// It left the stream stopped (the change's flush after the Resume's start) with the engine
+    /// on Buffering and the clock still.
+    /// </summary>
+    [AudioDeviceFact]
+    public async Task OnARealDevice_AResumeWhileARateChangeRenders_StillPlays()
+    {
+        using var device = new PortAudioOutputDevice();
+        await using var engine = new AudioPlaybackEngine(device);
+        var asset = SyntheticNarration.Clip("rate-probe", 24000 * 120, 24000);
+        await engine.LoadAsync(asset.SegmentId, asset, new byte[24000 * 120 * 4]);
+        await engine.PlayAsync();
+        await Until(() => engine.PositionSeconds >= 0.2);
+        await engine.PauseAsync();
+
+        var change = engine.SetPlaybackRateAsync(1.5);
+        await Task.Delay(20);
+        Assert.False(change.IsCompleted, "the render finished before Resume was pressed");
+        await engine.ResumeAsync();
+        await change;
+
+        double from = engine.PositionSeconds;
+        await Task.Delay(1000);
+        Assert.Equal(PlaybackState.Playing, engine.State);
+        // A second of listening at 1.5x is a second and a half of the clip; the stalled engine moved not at all.
+        Assert.InRange(engine.PositionSeconds - from, 1.2, 1.8);
+        await engine.StopAsync();
+    }
+
     private static async Task Until(Func<bool> predicate)
     {
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));

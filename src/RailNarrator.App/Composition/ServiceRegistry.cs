@@ -28,6 +28,9 @@ namespace RailNarrator.App.Composition;
 public sealed class ServiceRegistry : IAsyncDisposable
 {
     public required SettingsStore Settings { get; init; }
+
+    /// <summary>A preference the last closing could not save, for the next start to say.</summary>
+    public required UnsavedPreferencesNote UnsavedPreferences { get; init; }
     /// <summary>
     /// The settings the application started with. The Settings dialogue updates the reading
     /// preferences in it that apply at once; the engines were built from the rest, which change
@@ -372,6 +375,7 @@ public sealed class ServiceRegistry : IAsyncDisposable
         {
             Recent = new RecentDocumentsStore(),
             Settings = settingsStore,
+            UnsavedPreferences = new UnsavedPreferencesNote(),
             CurrentSettings = settings,
             Extraction = extraction,
             CachedExtraction = new CachingExtractionSource(

@@ -156,6 +156,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         DownloadPhonon = new RelayCommand(ConfirmPhononDownload, () => !Busy && PhononRuntimePresent && !PhononModelInstalled, OnCommandError);
         RegenerateMaths = new RelayCommand(() => RegenerateMathsAsync(), () => MathsReview is { CanRegenerate: true }, OnCommandError);
         ApplyMathsEdit = new RelayCommand(() => ApplyMathsEditAsync(), () => !Busy, OnCommandError);
+        if (services.UnsavedPreferences.Take() is { } unsaved)
+            ShowLastingNotice($"A preference could not be saved when Rail Narrator last closed: {unsaved}");
     }
 
     /// <summary>
@@ -3175,10 +3177,20 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         SaveZoomPreferenceNow();   // a zoom made in the last moments before closing
-        // Written before the window closes: a restart reads them in the new process. Still
-        // listening meanwhile, so a preference that cannot be written is said, not lost unseen.
-        await Task.Run(_services.Settings.Flush);
+        // Written before the window closes: a restart reads them in the new process. A failure
+        // now would reach only a window that is going away, so it is kept for the next start
+        // to say (and written to stderr for a reader at a terminal).
+        Exception? closingFailure = null;
+        void OnClosingWriteFailed(Exception ex) => Interlocked.CompareExchange(ref closingFailure, ex, null);
         _services.Settings.BackgroundWriteFailed -= OnPreferenceWriteFailed;
+        _services.Settings.BackgroundWriteFailed += OnClosingWriteFailed;
+        try { await Task.Run(_services.Settings.Flush); }
+        finally { _services.Settings.BackgroundWriteFailed -= OnClosingWriteFailed; }
+        if (closingFailure is { } failure)
+        {
+            Console.Error.WriteLine($"rail-narrator: a preference could not be saved: {failure.Message}");
+            _services.UnsavedPreferences.Record(failure);
+        }
         _services.Coordinator.SnapshotChanged -= OnSnapshotChanged;
         _services.Coordinator.SegmentResolved -= OnSegmentResolved;
         if (_services.MathResolver is { } maths) maths.EndpointProblem -= OnMathsEndpointProblem;
