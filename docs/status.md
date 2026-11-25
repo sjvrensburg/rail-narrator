@@ -1824,6 +1824,24 @@ threads meeting.
    the same seeded 5-minute run (175 actions, 15 speed changes) gave no stall and no frame gap,
    against 14 stalls before.
 
-   Not reproduced: the 145 ms freeze while annotating. About 40 highlights, undos and redos, cold
-   (the first annotation of a process, on a document with none) and warm, gave no stall, so its
-   cause is still not known; the probe stays, opt-in, to catch it.
+   Not reproduced here: the 145 ms freeze while annotating (see 111).
+
+111. **The first opening of the review notes list** (`fix/review-notes-first-open`, 2026-11-25).
+   The stress run's 145 ms was measured over a step that opened the sidebar for the first time in
+   the process, cycled the colour filter and then annotated. Annotating gave no stall: about 40
+   highlights, undos and redos, cold and warm, with the notes list open or closed, on the old
+   engine and the new. Opening the sidebar on *Review notes* for the first time in a process did:
+   62, 69, 74 and 186 ms in four fresh starts (31 notes), and never again in that process; the
+   other four sections, the menus, the voice list and the note editor stayed under 50 ms, and the
+   Settings window's first opening gave a 69 ms frame gap with no UI stall. A CPU sampling trace of
+   one opening (EventPipe's sample profiler, 1 ms; `docs/testing-real-world.md`) put about half of
+   the UI thread's busy time in laying out the notes' text, most of it the system's font lookups:
+   a typeface for the list's italic and semibold styles (`SKFontManager.MatchFamily`, 2-5 ms each,
+   not cached by Skia) and a fallback for each character of maths the notes quote
+   (`FontManager.TryMatchCharacter`); the rest was building the items and writing the settings.
+   The window now lays out the notes' text and a set of Greek letters and maths symbols in those
+   styles when a document opens, a piece at a time at background priority (`WarmReviewNoteFonts`).
+   In the release build three fresh starts opened the list with no stall and no frame gap, and
+   none appeared while the document loaded.
+   Still on the UI thread, measured but small: `PersistSettings` reads, parses, serialises and
+   writes `settings.json` for each preference changed (about 7 ms of the opening above).

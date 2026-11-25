@@ -39,7 +39,7 @@ public partial class MainWindow : Window
         _viewModel.TopLevelProvider = () => this;
         // The surface only opens a document the view model reports as successfully loaded; a
         // display failure must not take narration down with it, so it is reported, not thrown.
-        _viewModel.DocumentLoaded += path => Avalonia.Threading.Dispatcher.UIThread.Post(() => _ = ShowDocumentAsync(path));
+        _viewModel.DocumentLoaded += path => Avalonia.Threading.Dispatcher.UIThread.Post(() => { _ = ShowDocumentAsync(path); WarmReviewNoteFonts(); });
         Surface.SetColourEffect(_viewModel.ColourEffect, _viewModel.ColourEffectIntensity);
         _viewModel.PropertyChanged += (_, e) =>
         {
@@ -469,6 +469,31 @@ public partial class MainWindow : Window
     /// Opens a loaded document in the reading surface and, when the reading position was restored,
     /// shows the passage it will resume from rather than the first page.
     /// </summary>
+    /// <summary>Greek letters and the commoner mathematical symbols, which Inter lacks or has few of.</summary>
+    private const string MathsSample = "αβγδεζηθικλμνξοπρστυφχψω ΓΔΘΛΞΠΣΦΨΩ ∂∑∏∫√∞≤≥≠≈±×÷·′″∈∉⊂⊆∪∩∀∃→←↔⇒⇔ℝℕℤ";
+
+    /// <summary>
+    /// Lays out text in the review notes list's styles before the list is first shown, one piece at
+    /// a time at background priority. The first opening of the list looked up the system's fonts
+    /// for its italic and semibold styles and a fallback for every character of maths the notes
+    /// quote, on the UI thread: 62-186 ms, while reading. Each piece here is a few milliseconds.
+    /// </summary>
+    private void WarmReviewNoteFonts()
+    {
+        var styles = new (Avalonia.Media.FontStyle Style, Avalonia.Media.FontWeight Weight, double Size)[]
+        {
+            (Avalonia.Media.FontStyle.Italic, Avalonia.Media.FontWeight.Normal, 12),     // the quote
+            (Avalonia.Media.FontStyle.Normal, Avalonia.Media.FontWeight.SemiBold, FontSize), // the note
+            (Avalonia.Media.FontStyle.Normal, Avalonia.Media.FontWeight.Normal, 11),     // page label, buttons
+        };
+        var texts = _viewModel.ReviewNotes.Take(12).Select(n => $"{n.PageLabel} {n.Quote} {n.Note}").Prepend(MathsSample).ToList();
+        foreach (string text in texts)
+            foreach (var (style, weight, size) in styles)
+                Avalonia.Threading.Dispatcher.UIThread.Post(
+                    () => _ = new Avalonia.Media.TextFormatting.TextLayout(text, new Avalonia.Media.Typeface(FontFamily, style, weight), size, null),
+                    Avalonia.Threading.DispatcherPriority.Background);
+    }
+
     private async Task ShowDocumentAsync(string path)
     {
         try
