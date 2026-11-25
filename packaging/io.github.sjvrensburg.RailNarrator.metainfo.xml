@@ -49,6 +49,11 @@
   </provides>
 
   <releases>
+    <release version="0.1.3" date="2026-11-25">
+      <description>
+        <p>Fixes from stress-testing: quick Play/Pause presses are no longer lost, keys are ignored while a file dialog is open, the status bar names the section being read, and the welcome screen and notices are tidier.</p>
+      </description>
+    </release>
     <release version="0.1.2" date="2026-11-24">
       <description>
         <p>Fixes two playback problems: a long silence after skipping through many passages quickly, and reading stopping after the voice was changed several times in a row.</p>
