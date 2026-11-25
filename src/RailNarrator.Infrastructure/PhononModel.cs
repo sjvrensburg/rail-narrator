@@ -20,7 +20,8 @@ public static class PhononModel
 {
     public const string ModelRevision = "92741c5b07d085ff840e26fea8ce43110b87852f";
     public const string VoicesRevision = "da6c9ec0d47be8df5c87c730a3aa97187f3229c3";
-    public const string Licence = "Apache-2.0 (Gradium's phonon-31m-en and voices)";
+    public const string LicenceName = "Apache-2.0";
+    public const string Licence = LicenceName + " (Gradium's phonon-31m-en and voices)";
     private const string Hub = "https://huggingface.co/gradium";
 
     /// <summary>Where the application looks for Phonon's model when no setting says otherwise.</summary>
