@@ -120,6 +120,16 @@ server. The model's `inference.yml` is looked for beside it as `<name>_inference
   `alloc` and no GC pause is the application's own work on the UI thread; one with nothing
   allocated is the UI thread waiting, usually on a lock (`contention`); a large `pause` is the
   collector; many `jit` methods is code run for the first time.
+
+  To see what the UI thread was doing in a stall, record a CPU sampling trace from the start
+  (no attaching): launch with `DOTNET_EnableEventPipe=1`,
+  `DOTNET_EventPipeOutputPath=<file>.nettrace` and
+  `DOTNET_EventPipeConfig='Microsoft-DotNETCore-SampleProfiler:0:5,Microsoft-Windows-DotNETRuntime:0x4C14FCCBD:5'`,
+  end the app with `pkill -TERM -x rail-narrator` so the method names are written, and read the
+  samples in the stall's window with a few lines over `Microsoft.Diagnostics.Tracing.TraceEvent`
+  (`TraceLog.CreateFromEventPipeDataFile`, the SampleProfiler events' `CallStack()`, grouped by
+  thread; the UI thread is the one under `X11PlatformThreading.RunLoop`). A minute of the app is
+  about 75 MB.
 - **The first click after the window appears can land somewhere else.** The headless compositor's
   own cursor starts at the centre of the output, and one XTEST press was delivered there instead
   of where XTEST had moved the pointer: it hit a passage in the middle of the page and started a

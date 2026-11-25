@@ -431,3 +431,66 @@ public sealed class RecentDocumentsStoreTests : IDisposable
         Assert.Empty(store.Load());
     }
 }
+
+/// <summary>
+/// Preferences the window changes are written off the UI thread (<c>SettingsStore.UpdateLater</c>):
+/// in order, none lost, waited for before the dialogue reads the file and before a restart.
+/// </summary>
+public sealed class SettingsStoreBackgroundTests : IDisposable
+{
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), "rn-settings-later-" + Guid.NewGuid().ToString("N"));
+
+    public void Dispose() { if (Directory.Exists(_dir)) Directory.Delete(_dir, recursive: true); }
+
+    private RailNarrator.Infrastructure.SettingsStore NewStore() => new(Path.Combine(_dir, "settings.json"));
+
+    [Fact]
+    public async Task AChangeAskedForLater_IsNotMadeOnTheCallersThread()
+    {
+        var store = NewStore();
+        using var release = new ManualResetEventSlim();
+        // Were the change made on the caller's thread, the call would wait here until released.
+        var call = Task.Run(() => store.UpdateLater(s => { release.Wait(); return s with { SidebarWidth = 410 }; }));
+        var first = await Task.WhenAny(call, Task.Delay(TimeSpan.FromSeconds(5)));
+        Assert.True(first == call, "the change was made on the caller's thread");
+        release.Set();
+        store.Flush();
+        Assert.Equal(410, NewStore().Load().SidebarWidth);
+    }
+
+    [Fact]
+    public void ManyChanges_AreAllWritten_InOrder()
+    {
+        var store = NewStore();
+        for (int i = 0; i < 200; i++) store.UpdateLater(s => s with { SidebarWidth = s.SidebarWidth + 1 });
+        store.UpdateLater(s => s with { SidebarSection = "Notes" });
+        store.Flush();
+        var written = NewStore().Load();
+        Assert.Equal(300 + 200, written.SidebarWidth);
+        Assert.Equal("Notes", written.SidebarSection);
+    }
+
+    [Fact]
+    public void AChangeMadeNow_ComesAfterTheChangesStillQueued()
+    {
+        var store = NewStore();
+        for (int i = 0; i < 50; i++) store.UpdateLater(s => s with { SidebarWidth = s.SidebarWidth + 1 });
+        var now = store.Update(s => s with { SidebarWidth = s.SidebarWidth * 2 });
+        Assert.Equal((300 + 50) * 2, now.SidebarWidth);
+        Assert.Equal(now.SidebarWidth, NewStore().Load().SidebarWidth);
+    }
+
+    [Fact]
+    public void AChangeThatFails_IsReported_AndTheChangesAfterItAreStillWritten()
+    {
+        var store = NewStore();
+        var failures = new List<Exception>();
+        store.BackgroundWriteFailed += ex => { lock (failures) failures.Add(ex); };
+        store.UpdateLater(_ => throw new IOException("disk full"));
+        store.Flush();
+        store.UpdateLater(s => s with { SidebarWidth = 222 });
+        store.Flush();
+        Assert.Equal("disk full", Assert.Single(failures).Message);
+        Assert.Equal(222, NewStore().Load().SidebarWidth);
+    }
+}

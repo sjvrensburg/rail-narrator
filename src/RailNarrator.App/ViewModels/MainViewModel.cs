@@ -92,6 +92,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         foreach (string note in services.StartupNotes) Notes.Add(note);
 
         _services.Coordinator.SnapshotChanged += OnSnapshotChanged;
+        _services.Settings.BackgroundWriteFailed += OnPreferenceWriteFailed;
         _services.Coordinator.SegmentResolved += OnSegmentResolved;
         if (_services.MathResolver is { } maths) maths.EndpointProblem += OnMathsEndpointProblem;
         if (_services.Kokoro is { } kokoro)
@@ -2680,15 +2681,16 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         }
     }
 
-    /// <summary>Saves a preference; a settings file that cannot be written must not break playback.</summary>
-    private void PersistPreference(Func<RailNarratorSettings, RailNarratorSettings> update)
-    {
-        try { PersistSettings(update); }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            Notes.Add($"Could not save the preference: {ex.Message}");
-        }
-    }
+    /// <summary>
+    /// Saves a preference off the UI thread (<see cref="SettingsStore.UpdateLater"/>). A settings
+    /// file that cannot be written must not break playback: the failure is noted. The change must
+    /// capture the values it writes, not read the view model later.
+    /// </summary>
+    public void PersistPreference(Func<RailNarratorSettings, RailNarratorSettings> update)
+        => _services.Settings.UpdateLater(update);
+
+    private void OnPreferenceWriteFailed(Exception ex)
+        => Dispatcher.UIThread.Post(() => Notes.Add($"Could not save the preference: {ex.Message}"));
 
     /// <summary>
     /// Applies a zoom the reader chose (toolbar, keyboard, Ctrl+wheel). It replaces fit-width and
@@ -2705,7 +2707,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     /// <summary>
     /// Saves the zoom preference once the reader has stopped zooming: a turn of the wheel is a
-    /// dozen zooms, and each save reads and rewrites the settings file on this thread.
+    /// dozen zooms, and each save reads and rewrites the settings file.
     /// </summary>
     private void ScheduleZoomPreferenceSave()
     {
@@ -2720,16 +2722,11 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     {
         if (_zoomSaveTimer is not { IsEnabled: true } timer) return;
         timer.Stop();
-        try
-        {
-            // While fitting, the zoom shown is derived from the page and the window; the reader's
-            // own last magnification stays on file.
-            PersistSettings(s => FitWidth ? s with { FitWidth = true } : s with { FitWidth = false, PreferredZoom = Zoom });
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            Notes.Add($"Could not save the preference: {ex.Message}");
-        }
+        // While fitting, the zoom shown is derived from the page and the window; the reader's
+        // own last magnification stays on file.
+        bool fit = FitWidth;
+        double zoom = Zoom;
+        PersistPreference(s => fit ? s with { FitWidth = true } : s with { FitWidth = false, PreferredZoom = zoom });
     }
 
     private void CycleFollowMode()
@@ -3109,11 +3106,13 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     }
 
     /// <summary>Persists a settings change: reads the file, applies <paramref name="update"/>, writes it back (owner-only).</summary>
+    /// <summary>
+    /// Reads, changes and writes the settings now, after any preference still being saved, and
+    /// throws if it cannot (the settings dialogue says so). The main window's own preferences go
+    /// through <see cref="PersistPreference"/>, off the UI thread.
+    /// </summary>
     public void PersistSettings(Func<RailNarratorSettings, RailNarratorSettings> update)
-    {
-        var current = _services.Settings.Load();
-        _services.Settings.Save(update(current));
-    }
+        => _services.Settings.Update(update);
 
     /// <summary>Remembers where the reader stopped. Never triggers auto-play on the next open.</summary>
     public async Task SavePositionAsync()
@@ -3125,11 +3124,16 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         var position = new ReaderPosition(
             _documentHash, snapshot.SegmentId, PageIndex: 0, snapshot.PositionSeconds,
             SelectedVoiceId, _services.CurrentSettings.MathMode, Zoom, FollowMode, PlaybackRate);
+        string? path = _documentPath;
+        double? progress = Plan.SegmentCount > 0 && snapshot.SegmentIndex >= 0 ? (double)snapshot.SegmentIndex / Plan.SegmentCount : null;
         await _saveGate.WaitAsync();
-        try { await _services.PlanStore.SavePositionAsync(position); }
+        try
+        {
+            await _services.PlanStore.SavePositionAsync(position);
+            // On every passage change: the recent list's file is rewritten off the UI thread.
+            if (path is not null && progress is { } p) await Task.Run(() => _recent.Progressed(path, p));
+        }
         finally { _saveGate.Release(); }
-        if (_documentPath is { } path && Plan.SegmentCount > 0 && snapshot.SegmentIndex >= 0)
-            _recent.Progressed(path, (double)snapshot.SegmentIndex / Plan.SegmentCount);
     }
 
     // The loaded document's content hash, computed once at load rather than on every save.
@@ -3176,6 +3180,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         SaveZoomPreferenceNow();   // a zoom made in the last moments before closing
+        _services.Settings.BackgroundWriteFailed -= OnPreferenceWriteFailed;
+        // Written before the window closes: a restart reads them in the new process.
+        await Task.Run(_services.Settings.Flush);
         _services.Coordinator.SnapshotChanged -= OnSnapshotChanged;
         _services.Coordinator.SegmentResolved -= OnSegmentResolved;
         if (_services.MathResolver is { } maths) maths.EndpointProblem -= OnMathsEndpointProblem;
