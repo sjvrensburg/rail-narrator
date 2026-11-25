@@ -1804,10 +1804,6 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     /// <summary>The document was closed: the window releases its pages and shows the welcome screen.</summary>
     public event Action? DocumentClosed;
 
-    /// <summary>
-    /// Closes the document (File ▸ Close, Ctrl+W): where the reader stood is saved first, reading
-    /// stops, and the welcome screen comes back.
-    /// </summary>
     private IReadOnlyList<OutlineHeading> _outlineHeadings = [];
     private (NarrationPlan Plan, SourceMap Map, IReadOnlyList<ReadHeading> Headings)? _readHeadings;
     private string? _sectionSegmentId;
@@ -3105,7 +3101,6 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         }
     }
 
-    /// <summary>Persists a settings change: reads the file, applies <paramref name="update"/>, writes it back (owner-only).</summary>
     /// <summary>
     /// Reads, changes and writes the settings now, after any preference still being saved, and
     /// throws if it cannot (the settings dialogue says so). The main window's own preferences go
@@ -3180,9 +3175,10 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         SaveZoomPreferenceNow();   // a zoom made in the last moments before closing
-        _services.Settings.BackgroundWriteFailed -= OnPreferenceWriteFailed;
-        // Written before the window closes: a restart reads them in the new process.
+        // Written before the window closes: a restart reads them in the new process. Still
+        // listening meanwhile, so a preference that cannot be written is said, not lost unseen.
         await Task.Run(_services.Settings.Flush);
+        _services.Settings.BackgroundWriteFailed -= OnPreferenceWriteFailed;
         _services.Coordinator.SnapshotChanged -= OnSnapshotChanged;
         _services.Coordinator.SegmentResolved -= OnSegmentResolved;
         if (_services.MathResolver is { } maths) maths.EndpointProblem -= OnMathsEndpointProblem;

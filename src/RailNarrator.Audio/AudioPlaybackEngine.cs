@@ -256,6 +256,10 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
         // Stop the producer before swapping buffers or flushing. A stale write after a flush would
         // otherwise queue old-rate samples into the new session even when its cursor is discarded.
         await StopWriterAsync().ConfigureAwait(false);
+        // The device may have presented the queued clip's first frames before the writer, now
+        // stopped, saw it: that clip is current. Left queued, it would be written again from its
+        // start below, and the part already heard heard twice.
+        if (TryPromoteQueued() is { } advanced) ClipAdvanced?.Invoke(advanced.Completed, advanced.Started);
         bool playing = State == PlaybackState.Playing;
         double sourceSeconds;
         float[] source;
@@ -361,9 +365,21 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
         }
     }
 
-    public Task PlayAsync(CancellationToken ct = default)
+    /// <remarks>
+    /// Play and Resume take their turn with the other operations. A Resume pressed while a speed
+    /// change rendered started the device, and the change's flush then stopped it again: Playing,
+    /// with no sound and nothing left to start the device.
+    /// </remarks>
+    public async Task PlayAsync(CancellationToken ct = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        await _operations.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try { PlayCore(); }
+        finally { _operations.Release(); }
+    }
+
+    private void PlayCore()
+    {
         bool nothingLoaded;
         lock (_gate) nothingLoaded = _segmentId is null || _output.Length == 0;
         // State events are raised outside the engine lock. A subscriber (the coordinator) takes its
@@ -372,12 +388,11 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
         if (nothingLoaded)
         {
             SetState(PlaybackState.Buffering);
-            return Task.CompletedTask;
+            return;
         }
         SetState(PlaybackState.Playing);
         _device.Start();
         StartWriter();
-        return Task.CompletedTask;
     }
 
     public async Task PauseAsync(CancellationToken ct = default)
@@ -393,13 +408,18 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
         finally { _operations.Release(); }
     }
 
-    public Task ResumeAsync(CancellationToken ct = default)
+    /// <remarks>In turn with the other operations: see <see cref="PlayAsync"/>.</remarks>
+    public async Task ResumeAsync(CancellationToken ct = default)
     {
-        lock (_gate) if (_state != PlaybackState.Paused) return Task.CompletedTask;
-        _device.Start();
-        SetState(PlaybackState.Playing);
-        StartWriter();
-        return Task.CompletedTask;
+        await _operations.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            lock (_gate) if (_state != PlaybackState.Paused) return;
+            _device.Start();
+            SetState(PlaybackState.Playing);
+            StartWriter();
+        }
+        finally { _operations.Release(); }
     }
 
     public async Task StopAsync(CancellationToken ct = default)

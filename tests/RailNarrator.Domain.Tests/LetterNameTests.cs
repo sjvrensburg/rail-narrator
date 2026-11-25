@@ -27,6 +27,14 @@ public sealed class LetterNameTests
     [InlineData("the matrix A times x", "the matrix eh times ex")]
     [InlineData("Let a be a constant.", "Let eh be a constant.")]
     [InlineData("a squared plus b squared", "eh squared plus bee squared")]
+    [InlineData("x plus a times b", "ex plus eh times bee")]
+    [InlineData("given a, the estimate is", "given eh, the estimate is")]
+    [InlineData("the sum over a of x", "the sum over eh of ex")]
+    [InlineData("integrated from a to b", "integrated from eh to bee")]
+    [InlineData("then a + b is", "then eh + bee is")]
+    [InlineData("the constant a controls the decay", "the constant eh controls the decay")]
+    [InlineData("(A + B) is invertible", "(eh + bee) is invertible")]
+    [InlineData("for the matrix (A) alone", "for the matrix (eh) alone")]
     public void TheSymbolA_IsToldFromTheArticle(string script, string speech) => Assert.Equal(speech, Speech(script));
 
     [Theory]
@@ -37,6 +45,13 @@ public sealed class LetterNameTests
     [InlineData("Therefore I conclude that a limit exists.")]
     [InlineData("See, e.g., Smith, i.e. the U.S. edition.")]
     [InlineData("It doesn't hold for the y's.")]
+    [InlineData("returns averaged over a window of days")]
+    [InlineData("given a sequence of observations")]
+    [InlineData("plus a constant term")]
+    [InlineData("Let a model be fitted.")]
+    [InlineData("at some point a shock arrives")]
+    [InlineData("(A similar bound holds.)")]
+    [InlineData("“A model is a simplification.”")]
     public void ProseIsLeftAsItIs(string script, string? speech = null) => Assert.Equal(speech ?? script, Speech(script));
 
     [Fact]

@@ -487,6 +487,35 @@ public sealed class PlaybackEngineTests
     }
 
     /// <summary>
+    /// Play pressed while a speed change is still rendering waits for it. It started the device
+    /// meanwhile, and the change's flush then stopped it again: playing over, with no sound and
+    /// nothing to start the device, so the reader sat on Buffering.
+    /// </summary>
+    [Fact]
+    public async Task AResumeWhileARateChangeRenders_StillPlays()
+    {
+        var (engine, device, _) = Load(frames: 24000 * 120);
+        await using (engine)
+        {
+            await engine.PlayAsync();
+            await WaitForQueuedAsync(engine, device, 4096);
+            await engine.PauseAsync();
+
+            var change = engine.SetPlaybackRateAsync(1.5);
+            await Task.Delay(20);   // a two-minute clip takes far longer than this to render
+            Assert.False(change.IsCompleted, "the render finished before Resume was pressed");
+            await engine.ResumeAsync();
+            await change;
+
+            Assert.Equal(PlaybackState.Playing, engine.State);
+            Assert.True(device.IsRunning, "the device was left stopped");
+            long written = device.TotalWritten;
+            await WaitUntil(() => { device.AdvanceByFrames(2048); return device.TotalWritten > written + 8192; }, "writing after the resume");
+            Assert.Equal(PlaybackState.Playing, engine.State);
+        }
+    }
+
+    /// <summary>
     /// Several changes asked for while one renders end at the last rate asked for, with the
     /// position held, whatever order their turns come in.
     /// </summary>
