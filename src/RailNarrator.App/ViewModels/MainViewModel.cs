@@ -2369,6 +2369,14 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
             ReportLoading("Starting the voice");
             var position = await _services.PlanStore.TryGetPositionAsync(hash);
+            // Saved against another plan of this document (another planner version, another layout
+            // model): its passage id may name another passage here, so its place on the page decides.
+            if (position is not null)
+            {
+                var stored = position;
+                string? resumeAt = await Task.Run(() => ResumePoint.Find(plan, stored));
+                position = position with { SegmentId = resumeAt };
+            }
             var review = await Task.Run(() => _services.ReviewAnnotations.Load(hash, path));
             // The PDF's own annotations (a co-reviewer's), read-only. Core's reader never throws.
             var inPdf = _services.CurrentSettings.ShowPdfAnnotations
@@ -3118,9 +3126,13 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         // Captured on the caller's thread, then written one at a time: saves now happen on every
         // passage change, and an older position must never land after a newer one.
         var snapshot = Coordinator.Snapshot;
+        // Where the passage is on the page as well as its id, which names it in this plan only:
+        // a later plan of the document finds the place by it (ResumePoint.Find).
+        var place = snapshot.SegmentId is { } segmentId ? ResumePoint.Locate(Plan, segmentId) : null;
         var position = new ReaderPosition(
-            _documentHash, snapshot.SegmentId, PageIndex: 0, snapshot.PositionSeconds,
-            SelectedVoiceId, _services.CurrentSettings.MathMode, Zoom, FollowMode, PlaybackRate);
+            _documentHash, snapshot.SegmentId, PageIndex: place?.Page ?? 0, snapshot.PositionSeconds,
+            SelectedVoiceId, _services.CurrentSettings.MathMode, Zoom, FollowMode, PlaybackRate,
+            PlanId: ResumePoint.PlanKey(Plan), SourceCharOffset: place?.Offset);
         string? path = _documentPath;
         double? progress = Plan.SegmentCount > 0 && snapshot.SegmentIndex >= 0 ? (double)snapshot.SegmentIndex / Plan.SegmentCount : null;
         await _saveGate.WaitAsync();
