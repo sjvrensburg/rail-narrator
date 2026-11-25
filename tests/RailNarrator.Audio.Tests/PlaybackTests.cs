@@ -726,6 +726,42 @@ public sealed class PlaybackEngineTests
         }
     }
 
+    /// <summary>
+    /// A speed change just after the device began presenting the queued clip, before the writer
+    /// noticed, carries on in that clip from where it is. It wrote the queued clip again from its
+    /// start, so its first moments were heard twice and the clock re-based on the old clip's end.
+    /// </summary>
+    [Fact]
+    public async Task ARateChangeJustPastTheBoundary_CarriesOnInTheQueuedClip()
+    {
+        var device = new FakeAudioOutputDevice(new AudioFormat(24000, 1, SampleFormat.Float32LittleEndian))
+        {
+            Devices = [new AudioDeviceInfo("0", "Fake", true, 24000, 1, 0.01)],
+        };
+        // A writer that looks for the boundary only every two seconds, so the test can cross it
+        // between two looks, as a real writer sometimes is between two looks when a change comes.
+        var engine = new AudioPlaybackEngine(device, new AudioEngineOptions(PreferredDeviceRate: 24000, WriterPollMilliseconds: 2000));
+        await using (engine)
+        {
+            await engine.LoadAsync("s0", SyntheticNarration.Clip("s0", 24000, 24000), SyntheticNarration.TonePcm(24000, 24000));
+            (string, string)? advanced = null;
+            engine.ClipAdvanced += (from, to) => advanced = (from, to);
+            Assert.True(await engine.QueueNextAsync("s1", SyntheticNarration.Clip("s1", 24000, 24000), SyntheticNarration.TonePcm(24000, 24000)));
+            await engine.PlayAsync();
+            await WaitUntil(() => device.TotalWritten >= 48000, "both clips written");
+            await Task.Delay(100);   // the writer is now waiting out its poll
+
+            device.AdvanceByFrames(24000 + 2400);   // a tenth of a second into s1
+            Assert.Equal("s0", engine.CurrentSegmentId);   // the writer has not looked yet
+            await engine.SetPlaybackRateAsync(2.0);
+
+            Assert.Equal(("s0", "s1"), advanced);
+            Assert.Equal("s1", engine.CurrentSegmentId);
+            Assert.Null(engine.QueuedSegmentId);
+            Assert.Equal(0.1, engine.PositionSeconds, 2);
+        }
+    }
+
     [Fact]
     public async Task DeviceFailure_IsReportedAsAnError()
     {

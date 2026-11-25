@@ -243,6 +243,30 @@ public sealed class NarrationCoordinatorTests
     }
 
     /// <summary>
+    /// An edit made while a start's clip loads changes words, not the reading: the start carries
+    /// on in the new words. Stopped by the edit's new generation, it left the reader at
+    /// "Preparing speech" with nothing playing.
+    /// </summary>
+    [Fact]
+    public async Task AnEditWhileAStartLoads_StillStartsReading()
+    {
+        var transport = new FakeAudioTransport { LoadDelay = TimeSpan.FromMilliseconds(300) };
+        await using var coordinator = new NarrationCoordinator(new FakeTtsProvider(), transport);
+        var plan = PlanWith(5);
+        await coordinator.LoadPlanAsync(plan);
+        var play = coordinator.PlayAsync();
+        await Task.Delay(100);   // the first passage is synthesised; its load takes 300 ms
+
+        await coordinator.ApplyScriptEditAsync(plan.Segments[3].Id, "An edited sentence.");
+        transport.LoadDelay = TimeSpan.Zero;
+        await play;
+
+        await WaitUntil(() => transport.PlayCount > 0 && coordinator.Snapshot.State == PlaybackState.Playing,
+            what: "reading to start after the edit");
+        Assert.Equal(plan.Segments[0].Id, transport.Loaded[^1].SegmentId);
+    }
+
+    /// <summary>
     /// A load overtaken while it set the resumed speed publishes nothing afterwards. It said Idle
     /// over the next document's Play, which was preparing its first passage.
     /// </summary>

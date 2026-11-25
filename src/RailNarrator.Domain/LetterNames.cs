@@ -53,8 +53,9 @@ public static class LetterNames
         "sub", "super", "squared", "cubed", "hat", "bar", "tilde", "prime", "star", "dagger", "transpose", "inverse",
         "plus", "minus", "times", "equals", "over", "divided", "is", "are", "and", "or", "denotes", "represents", "has", "must",
         // ...and words an article is never followed by: "the sum over a of x", "from a to b",
-        // "let a denote the intercept", "the point a lies on the line". Not "lie": "a lie" is a noun.
-        "be", "of", "in", "to", "from", "with", "at", "on", "by", "than", "then",
+        // "let a denote the intercept", "the point a lies on the line". Not "lie" ("a lie"), "by"
+        // ("a by now classic argument") or "then" ("a then unknown quantity").
+        "be", "of", "in", "to", "from", "with", "at", "on", "than",
         "denote", "satisfy", "satisfies", "lies", "represent", "belong", "belongs", "exceed", "exceeds",
         "converges", "tends",
     };
@@ -123,6 +124,8 @@ public static class LetterNames
 
     private static bool IsSymbolA(string s, int i)
     {
+        // Nothing glues an article to a bracket or a prime: "a(t)", "a′", "a[i]".
+        if (i + 1 < s.Length && s[i + 1] is '(' or '[' or '′' or '″') return true;
         int after = i + 1;
         while (after < s.Length && s[after] == ' ') after++;
         // An article has a noun to come: "a" before the end of a clause is a symbol.
@@ -135,10 +138,14 @@ public static class LetterNames
 
         int before = i - 1;
         while (before >= 0 && s[before] == ' ') before--;
-        // An opening bracket or quotation mark can begin a sentence too: "(A similar bound holds.)"
-        bool sentenceStart = before < 0 || s[before] is '.' or '?' or '!' or ':' or '(' or '[' or '"' or '“' or '‘';
-        // A capital "A" inside a sentence is a name ("the matrix A times x"), not the article.
-        if (s[i] == 'A' && !sentenceStart) return true;
+        // An opening bracket or quotation mark can begin a sentence too: "(A similar bound holds.)",
+        // and a closing one after a sentence's end: "(see Fig. 2.) A similar", "tight.” A model".
+        bool sentenceStart = before < 0 || s[before] is '.' or '?' or '!' or ':' or '(' or '[' or '"' or '“' or '‘'
+            || (s[before] is ')' or ']' or '”' or '’' && before > 0 && s[before - 1] is '.' or '?' or '!');
+        // A capital "A" inside a sentence is a name ("the matrix A times x"), not the article;
+        // before a capitalised word it is a title's or a heading's article ("3.2 A Simple Model").
+        bool titleCase = next.Length > 1 && char.IsUpper(next[0]);
+        if (s[i] == 'A' && !sentenceStart && !titleCase) return true;
         if (before < 0) return false;
         int start = before;
         while (start >= 0 && char.IsLetter(s[start])) start--;
