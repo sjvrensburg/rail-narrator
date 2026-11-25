@@ -362,18 +362,26 @@
           </Button>
           <Button DockPanel.Dock="Right" Classes="toolBtn" Padding="8,2" Margin="10,0,0,0" Command="{Binding NoticeAction}"
                   IsVisible="{Binding Notice.HasAction}" Content="{Binding Notice.ActionLabel}" />
+          <!-- Two lines before it is trimmed: a question cut off before its end ("…from huggingface.co?")
+               cannot be answered. -->
           <TextBlock Text="{Binding Notice.Text}" Foreground="{DynamicResource WarningTextBrush}" FontWeight="SemiBold"
-                     VerticalAlignment="Center" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding Notice.Text}" />
+                     VerticalAlignment="Center" TextWrapping="Wrap" MaxLines="2" TextTrimming="CharacterEllipsis"
+                     ToolTip.Tip="{Binding Notice.Text}" />
         </DockPanel>
         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" Margin="12,0,0,0">
-          <TextBlock Text="{Binding CurrentSection}" IsVisible="{Binding HasCurrentSection}" VerticalAlignment="Center"
-                     MaxWidth="320" TextTrimming="CharacterEllipsis" Classes="secondary"
+          <!-- Trimmed from the start: the heading being read is the end of the trail, and a long
+               parent trimmed at the end left 4.2 and 4.3 looking the same. -->
+          <TextBlock Text="{Binding CurrentSection}" IsVisible="{Binding ShowsCurrentSection}" VerticalAlignment="Center"
+                     MaxWidth="320" TextTrimming="PrefixCharacterEllipsis" Classes="secondary"
                      ToolTip.Tip="{Binding CurrentSectionPath}" />
-          <Border Classes="toolSep" IsVisible="{Binding HasCurrentSection}" />
+          <Border Classes="toolSep" IsVisible="{Binding ShowsCurrentSection}" />
+          <!-- Shown only with a document: the welcome screen has no progress, page or zoom of its own,
+               and the last document's were left there. -->
           <ProgressBar Width="120" Minimum="0" Maximum="1" Value="{Binding Playback.PlanProgress}" VerticalAlignment="Center"
+                       IsVisible="{Binding HasDocument}"
                        ToolTip.Tip="How far through the document" AutomationProperties.Name="How far through the document" />
-          <Border Classes="toolSep" />
-          <StackPanel Orientation="Horizontal" Spacing="4" IsEnabled="{Binding HasDocument}">
+          <Border Classes="toolSep" IsVisible="{Binding HasDocument}" />
+          <StackPanel Orientation="Horizontal" Spacing="4" IsVisible="{Binding HasDocument}">
           <Button Classes="toolBtn borderless" Click="OnPreviousPageClicked" ToolTip.Tip="Previous page (Page Up). Pauses following."
                   AutomationProperties.Name="Previous page">
             <c:Icon Data="{StaticResource IconChevronLeft}" />

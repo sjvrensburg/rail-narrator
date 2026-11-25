@@ -50,6 +50,9 @@ public partial class MainWindow : Window
             // The pointer says "busy" wherever it is in the window while a document is opened.
             if (e.PropertyName is nameof(MainViewModel.IsLoading))
                 Cursor = _viewModel.IsLoading ? new Cursor(StandardCursorType.AppStarting) : null;
+            // At the end of the document nothing is being read: the last word is not left lit.
+            if (e.PropertyName is nameof(MainViewModel.Playback) && _viewModel.Playback.State == PlaybackState.Completed)
+                Surface.ClearHighlight();
         };
         _viewModel.Coordinator.ActiveCueChanged += cue =>
         {
@@ -74,6 +77,7 @@ public partial class MainWindow : Window
             else Avalonia.Threading.Dispatcher.UIThread.Post(Apply);
         };
         AddHandler(KeyDownEvent, OnPreviewKeyDown, RoutingStrategies.Tunnel);
+        AddHandler(TextInputEvent, (_, e) => { if (_viewModel.IsPickerOpen) e.Handled = true; }, RoutingStrategies.Tunnel);
         Closing += OnClosing;
         _viewModel.SettingsRequested += ShowSettings;
         // In code, not XAML: closing the window is the window's to do, and has no command to bind.
@@ -569,6 +573,8 @@ public partial class MainWindow : Window
     /// </remarks>
     private void OnPreviewKeyDown(object? sender, KeyEventArgs e)
     {
+        // A file dialogue is not modal to this window: keys reaching it meanwhile are not for it.
+        if (_viewModel.IsPickerOpen) { e.Handled = true; return; }
         var focused = FocusManager?.GetFocusedElement();
         if (HandleReviewKey(e, focused)) { e.Handled = true; return; }
         if (e.KeyModifiers != KeyModifiers.None) return;

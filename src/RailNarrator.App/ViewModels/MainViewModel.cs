@@ -107,10 +107,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         Pause = new RelayCommand(() => _services.Coordinator.PauseAsync(), () => _playback.IsAudible, OnCommandError);
         // One button: play, pause, or — while a start is still waiting for its audio — cancel that
         // start. Pausing then would not stop it: the start would play when the audio arrived.
-        PlayPause = new RelayCommand(() => IsStarting
-                ? _services.Coordinator.StopAsync()
-                : _playback.IsAudible ? _services.Coordinator.PauseAsync() : StartReadingAsync(),
-            CanRead, OnCommandError, allowWhileRunning: true);
+        PlayPause = new RelayCommand(TogglePlayPauseAsync, CanRead, OnCommandError, allowWhileRunning: true);
         Next = new RelayCommand(() => { _pendingStartSegmentId = null; return _services.Coordinator.NextSegmentAsync(); }, CanRead, OnCommandError, allowWhileRunning: true);
         Previous = new RelayCommand(() => { _pendingStartSegmentId = null; return _services.Coordinator.PreviousSegmentAsync(); }, CanRead, OnCommandError, allowWhileRunning: true);
         Replay = new RelayCommand(() => { _pendingStartSegmentId = null; return _services.Coordinator.ReplaySegmentAsync(); }, CanRead, OnCommandError, allowWhileRunning: true);
@@ -345,6 +342,33 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     /// <summary>The play/pause button's caption: what pressing it will do now.</summary>
     public string PlayButtonText => IsStarting ? "⏹ Cancel" : _playback.IsAudible ? "⏸ Pause" : "▶ Play";
+
+    // What the last Play/Pause press asked for, until a snapshot shows it done (or a moment passes).
+    private bool? _toggleWants;
+    private long _toggleAt;
+    private const long ToggleIntentMs = 1500;
+
+    /// <summary>
+    /// Play, pause, or cancel a start. A press decides from what the previous press asked for while
+    /// the snapshot has not caught up with it: presses a twentieth of a second apart otherwise read
+    /// the same stale state, and one of them was lost (paused twice, or played twice).
+    /// </summary>
+    private Task TogglePlayPauseAsync()
+    {
+        bool? fresh = Environment.TickCount64 - _toggleAt < ToggleIntentMs ? _toggleWants : null;
+        // A start waiting for its audio is cancelled, unless the last press already stopped or paused
+        // it and the snapshot saying so has not arrived.
+        if (IsStarting && fresh is not false)
+        {
+            Remember(false);
+            return _services.Coordinator.StopAsync();
+        }
+        bool audible = fresh ?? _playback.IsAudible;
+        Remember(!audible);
+        return audible ? _services.Coordinator.PauseAsync() : StartReadingAsync();
+
+        void Remember(bool wantsAudible) { _toggleWants = wantsAudible; _toggleAt = Environment.TickCount64; }
+    }
 
     /// <summary>Play: from the heading chosen in the outline if there is one, else from where reading stands.</summary>
     private Task StartReadingAsync()
@@ -654,12 +678,12 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     private async Task ImportJsonAsync()
     {
         if (_session is not { } session || TopLevelProvider?.Invoke() is not { } top) return;
-        var files = await top.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        var files = await InPicker(top.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
             Title = "Import annotations (RailReader2 or Rail Narrator JSON)",
             AllowMultiple = false,
             FileTypeFilter = [new FilePickerFileType("Annotations (JSON)") { Patterns = ["*.json"] }],
-        });
+        }));
         if (files.Count == 0 || files[0].TryGetLocalPath() is not { } path) return;
         string text = await Task.Run(() => File.ReadAllText(path));
         if (ReviewAnnotationJson.Deserialize(text) is not { } imported)
@@ -735,12 +759,12 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     private async Task BringNotesFromFileAsync()
     {
         if (_review is not { } review || TopLevelProvider?.Invoke() is not { } top) return;
-        var files = await top.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        var files = await InPicker(top.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
             Title = "Bring notes from another version of this PDF",
             AllowMultiple = false,
             FileTypeFilter = [new FilePickerFileType("PDF") { Patterns = ["*.pdf"] }],
-        });
+        }));
         if (files.Count == 0 || files[0].TryGetLocalPath() is not { } path) return;
         string hash = await Task.Run(() => CacheKey.Sha256HexOfFile(path));
         if (!ReferenceEquals(_review, review)) return;
@@ -820,14 +844,14 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     private async Task<string?> PickSaveAsync(string title, string suggested, string kind, string pattern)
     {
         if (TopLevelProvider?.Invoke() is not { } top) return null;
-        var file = await top.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+        var file = await InPicker(top.StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
         {
             Title = title,
             SuggestedFileName = suggested,
             SuggestedStartLocation = DocumentPath is { } p ? await top.StorageProvider.TryGetFolderFromPathAsync(Path.GetDirectoryName(p)!) : null,
             FileTypeChoices = [new FilePickerFileType(kind) { Patterns = [pattern] }],
             ShowOverwritePrompt = true,
-        });
+        }));
         string? target = file?.TryGetLocalPath();
         if (target is not null && DocumentPath is { } source
             && string.Equals(Path.GetFullPath(target), Path.GetFullPath(source), StringComparison.Ordinal))
@@ -1649,6 +1673,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         Outline.Clear();
         foreach (var item in items) Outline.Add(item);
         _outlineInOrder = inOrder;
+        _outlineHeadings = inOrder.Select(i => new OutlineHeading(i.Title, i.Page)).ToList();
         OnPropertyChanged(nameof(HasOutline));
         ShowingPage(_shownPage);
     }
@@ -1697,7 +1722,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     /// The heading the page shown falls under, for the status bar: the heading and its parent, as
     /// RailReader2's breadcrumb. A single top-level heading is the paper's own title and is left out.
     /// </summary>
-    public string? CurrentSection { get => _currentSection; private set { if (Set(ref _currentSection, value)) OnPropertyChanged(nameof(HasCurrentSection)); } }
+    public string? CurrentSection { get => _currentSection; private set { if (Set(ref _currentSection, value)) { OnPropertyChanged(nameof(HasCurrentSection)); OnPropertyChanged(nameof(ShowsCurrentSection)); } } }
 
     /// <summary>The full path of the current heading, for the breadcrumb's tooltip.</summary>
     public string? CurrentSectionPath { get => _currentSectionPath; private set => Set(ref _currentSectionPath, value); }
@@ -1706,11 +1731,15 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     public bool HasCurrentSection => _currentSection is not null;
 
+    /// <summary>The section is named in the status bar unless a notice needs its room.</summary>
+    public bool ShowsCurrentSection => HasCurrentSection && !HasNotice;
+
     /// <summary>The view now shows <paramref name="page"/>: the status bar names its section.</summary>
     public void ShowingPage(int page)
     {
         _shownPage = page;
-        var heading = _outlineInOrder.LastOrDefault(i => i.Page is { } p && p <= page);
+        int index = OutlineSections.Find(_outlineHeadings, page, ReadingSegmentOn(page), ReadHeadings());
+        var heading = index >= 0 ? _outlineInOrder[index] : null;
         CurrentSectionPath = heading?.Path;
         var trail = new List<string>();
         for (var h = heading; h is not null; h = h.Parent)
@@ -1729,7 +1758,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     private string? _lastNoticedError;
 
     /// <summary>A notice that takes over the status bar until dismissed or acted on, as RailReader2's toasts.</summary>
-    public StatusNotice? Notice { get => _notice; private set { if (Set(ref _notice, value)) OnPropertyChanged(nameof(HasNotice)); } }
+    public StatusNotice? Notice { get => _notice; private set { if (Set(ref _notice, value)) { OnPropertyChanged(nameof(HasNotice)); OnPropertyChanged(nameof(ShowsCurrentSection)); } } }
 
     public bool HasNotice => _notice is not null;
 
@@ -1778,6 +1807,54 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     /// Closes the document (File ▸ Close, Ctrl+W): where the reader stood is saved first, reading
     /// stops, and the welcome screen comes back.
     /// </summary>
+    private IReadOnlyList<OutlineHeading> _outlineHeadings = [];
+    private (NarrationPlan Plan, SourceMap Map, IReadOnlyList<ReadHeading> Headings)? _readHeadings;
+    private string? _sectionSegmentId;
+
+    /// <summary>The index of the passage being read, when it starts on <paramref name="page"/>.</summary>
+    private int? ReadingSegmentOn(int page)
+    {
+        if (Playback.SegmentId is not { } id || Playback.SegmentIndex < 0
+            || Coordinator.Scheduler?.SourceMap is not { } map || map.Segment(id) is not { } segment) return null;
+        var pages = map.PagesFor(segment.AnchorIds);
+        return pages.Count > 0 && pages[0] == page ? Playback.SegmentIndex : null;
+    }
+
+    /// <summary>The plan's headings with their pages, worked out once per plan.</summary>
+    private IReadOnlyList<ReadHeading> ReadHeadings()
+    {
+        if (_plan is not { } plan || Coordinator.Scheduler?.SourceMap is not { } map) return [];
+        if (_readHeadings is { } cached && ReferenceEquals(cached.Plan, plan) && ReferenceEquals(cached.Map, map)) return cached.Headings;
+        var headings = new List<ReadHeading>();
+        for (int i = 0; i < plan.Segments.Count; i++)
+        {
+            var segment = plan.Segments[i];
+            if (segment.Kind is not (ReadingUnitKind.Heading or ReadingUnitKind.Title)) continue;
+            var pages = map.PagesFor(segment.AnchorIds);
+            // The page's words, not the spoken ones: "2.1" may be read as "two point one".
+            var units = new HashSet<string>(segment.ReadingUnitIds);
+            string text = string.Join(" ", plan.Units.Where(u => units.Contains(u.Id)).Select(u => u.OriginalText));
+            if (pages.Count > 0) headings.Add(new ReadHeading(i, pages[0], text.Length > 0 ? text : segment.SpokenText));
+        }
+        _readHeadings = (plan, map, headings);
+        return headings;
+    }
+
+    private int _pickersOpen;
+
+    /// <summary>
+    /// A file dialogue is open. The portal's dialogue is not modal to the window, so the window's
+    /// shortcuts and typing must be held back while it is up (MainWindow.OnPreviewKeyDown).
+    /// </summary>
+    public bool IsPickerOpen => Volatile.Read(ref _pickersOpen) > 0;
+
+    private async Task<T> InPicker<T>(Task<T> picker)
+    {
+        Interlocked.Increment(ref _pickersOpen);
+        try { return await picker; }
+        finally { Interlocked.Decrement(ref _pickersOpen); }
+    }
+
     private async Task CloseDocumentAsync()
     {
         if (!HasDocument || IsLoading) return;
@@ -1787,6 +1864,9 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         await FlushReviewAsync();
         await Coordinator.StopAsync();
         DetachReview();
+        // No document, no progress: the coordinator keeps its plan, and its last snapshot with it.
+        Playback = Playback with { SegmentId = null, SegmentIndex = 0, SegmentCount = 0, PositionSeconds = 0,
+                                   ClipDurationSeconds = 0, ActiveCue = null, ActiveAnchorIds = [], Preparation = null };
         _snapshot = null;
         Plan = null;
         DocumentPath = null;
@@ -1795,6 +1875,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         RebuildTranscript();
         Outline.Clear();
         _outlineInOrder = [];
+        _outlineHeadings = [];
+        _readHeadings = null;
         OnPropertyChanged(nameof(HasOutline));
         CurrentSection = null;
         CurrentSectionPath = null;
@@ -2148,7 +2230,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     public async Task OpenDocumentAsync(TopLevel? topLevel = null)
     {
         if (topLevel is null) { StatusMessage = "Use File > Open to choose a document."; return; }
-        var files = await topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        var files = await InPicker(topLevel.StorageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
             Title = "Open a PDF to narrate",
             AllowMultiple = false,
@@ -2157,7 +2239,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
                 new FilePickerFileType("PDF documents") { Patterns = ["*.pdf"] },
                 new FilePickerFileType("All files") { Patterns = ["*"] },
             ],
-        });
+        }));
         var file = files.FirstOrDefault();
         if (file is null) return;
         await LoadDocumentAsync(file.Path.LocalPath);
@@ -2691,6 +2773,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         {
             if (snapshot.Generation != Coordinator.Generation) return;
             Playback = snapshot;
+            // A press is done once the reading is in the state it asked for (a start waiting for audio counts).
+            if (_toggleWants is { } wants && (snapshot.IsAudible || snapshot.Preparation is not null) == wants) _toggleWants = null;
             FollowSuspended = snapshot.FollowSuspended;
             if (snapshot.SegmentIndex >= 0 && snapshot.SegmentIndex < Transcript.Count)
             {
@@ -2716,6 +2800,12 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
                 }
             }
             else if (snapshot.Message is { } message) StatusMessage = message;
+            // The section follows the passage on the page being read, not only the page.
+            if (snapshot.SegmentId != _sectionSegmentId)
+            {
+                _sectionSegmentId = snapshot.SegmentId;
+                if (_outlineHeadings.Count > 0) ShowingPage(_shownPage);
+            }
             // Playing carries no message of its own, so the line used to keep whatever was said
             // last ("Seeking", "Preparing speech") for as long as the passage lasted.
             // While the reader browses, it also says the view has stopped following: the notice
@@ -2954,7 +3044,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     private void ConfirmPhononDownload()
     {
         long mb = (long)Math.Round(PhononModel.TotalBytes / 1_000_000.0);
-        ShowNotice($"Download Phonon (phonon-31m-en and 25 English voices): {mb} MB, {PhononModel.Licence}, from huggingface.co?", "Download",
+        ShowNotice($"Download Phonon's speech model and 25 English voices from huggingface.co ({mb} MB, {PhononModel.LicenceName})?", "Download",
             () => RunObserved(DownloadPhononAsync(), "The download failed"));
     }
 
