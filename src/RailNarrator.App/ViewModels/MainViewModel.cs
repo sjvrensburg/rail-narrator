@@ -434,7 +434,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         set
         {
             if (!Set(ref _playbackRate, value)) return;
-            Coordinator.SetPlaybackRate(value);
+            RunObserved(Coordinator.SetPlaybackRateAsync(value), "Could not change the speed");
             PersistPreference(s => s with { PlaybackRate = value });
         }
     }

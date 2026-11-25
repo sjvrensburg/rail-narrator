@@ -69,6 +69,9 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
     private string? _segmentId;
     private SpeechAsset? _asset;
     private double _rate = 1.0;
+    // The rate last asked for, which a rate change applies when its turn comes: changes asked for
+    // while one renders collapse into one render at the last of them.
+    private double _requestedRate = 1.0;
     private PlaybackState _state = PlaybackState.Idle;
     private CancellationTokenSource? _writerCts;
     private Task? _writerTask;
@@ -80,8 +83,8 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
     private Task? _retiringWriter;
     private readonly object _writerLock = new();
     /// <summary>
-    /// Runs the operations that stop the writer and reset the clip (stop, load, pause, seek) one at
-    /// a time and in the order they were asked. Two seeks in quick succession each stop the
+    /// Runs the operations that stop the writer or render a clip (stop, load, pause, seek, a rate
+    /// change, queueing the next clip) one at a time and in the order they were asked. Two seeks in quick succession each stop the
     /// transport: the first one's stop awaited the writer and then flushed and emptied the engine,
     /// after the second had already loaded and started its clip, leaving the coordinator playing a
     /// transport that was idle (seen on Windows, where it was common; possible anywhere). This is
@@ -175,7 +178,10 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         await _operations.WaitAsync(CancellationToken.None).ConfigureAwait(false);
-        try { await LoadCoreAsync(segmentId, asset, pcm).ConfigureAwait(false); }
+        // On the thread pool: decoding, resampling and time-stretching a long passage takes a tenth
+        // of a second or more, and a caller on the UI thread whose awaits all completed at once
+        // (Play with the passage already prepared) did all of it there, freezing the window.
+        try { await Task.Run(() => LoadCoreAsync(segmentId, asset, pcm)).ConfigureAwait(false); }
         finally { _operations.Release(); }
     }
 
@@ -190,6 +196,11 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
         var deviceFormat = new AudioFormat(deviceRate, 1, SampleFormat.Float32LittleEndian);
 
         float[] atDeviceRate = Resampler.Resample(source, asset.Format.SampleRate, deviceRate);
+        // Outside the lock, which the window takes every frame to read the position. The rate
+        // cannot change meanwhile: a rate change waits for this operation.
+        double rate;
+        lock (_gate) rate = _rate;
+        var render = ApplyRate(atDeviceRate, deviceRate, rate);
 
         lock (_gate)
         {
@@ -198,7 +209,7 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
             _sourceRate = asset.Format.SampleRate;
             _outputFormat = deviceFormat;
             _sourceFloat = source;
-            _render = ApplyRate(atDeviceRate, deviceRate, _rate);
+            _render = render;
             _output = _render.Samples;
             _writeCursor = 0;
             _sessionOutputStart = 0;
@@ -220,41 +231,70 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
     /// that the media clock can invert. The position is preserved in <i>source</i>
     /// seconds, which is the quantity a cue is expressed in, so the highlight stays on the same words
     /// across the change.
+    /// <para>
+    /// The render takes a tenth of a second or more for a long passage, so it runs on the thread
+    /// pool, in turn with the other operations, and outside the engine lock, which the window takes
+    /// every frame to read the position. Done on the caller's thread inside the lock, every change
+    /// of speed froze the window for 50-180 ms. Changes asked for while one renders are applied as
+    /// one, at the last rate asked for.
+    /// </para>
     /// </remarks>
-    public void SetPlaybackRate(double rate)
+    public async Task SetPlaybackRateAsync(double rate, CancellationToken ct = default)
     {
         if (!double.IsFinite(rate)) throw new ArgumentOutOfRangeException(nameof(rate));
-        double clamped = Math.Clamp(rate, WsolaTimeStretcher.MinRate, WsolaTimeStretcher.MaxRate);
-        if (Math.Abs(clamped - PlaybackRate) < 1e-9) return;
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        Interlocked.Exchange(ref _requestedRate, Math.Clamp(rate, WsolaTimeStretcher.MinRate, WsolaTimeStretcher.MaxRate));
+        await _operations.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try { await Task.Run(ApplyRequestedRateAsync, CancellationToken.None).ConfigureAwait(false); }
+        finally { _operations.Release(); }
+    }
+
+    private async Task ApplyRequestedRateAsync()
+    {
+        double rate = Volatile.Read(ref _requestedRate);
+        if (Math.Abs(rate - PlaybackRate) < 1e-9) return;
         // Stop the producer before swapping buffers or flushing. A stale write after a flush would
         // otherwise queue old-rate samples into the new session even when its cursor is discarded.
-        StopWriterAsync().GetAwaiter().GetResult();
+        await StopWriterAsync().ConfigureAwait(false);
         bool playing = State == PlaybackState.Playing;
+        double sourceSeconds;
+        float[] source;
+        int sourceRate, outputRate;
+        QueuedClip? queued;
         lock (_gate)
         {
-            double sourceSeconds = PositionSeconds;
+            sourceSeconds = PositionSeconds;
+            // Paused while the clips render, so the presented count, and with it the position the
+            // window reads, holds still until the new render takes over.
             _device.Pause();
+            source = _sourceFloat;
+            sourceRate = _sourceRate;
+            outputRate = _outputFormat.SampleRate;
+            queued = _next;
+        }
+        // Nothing else changes the clips meanwhile: loading, stopping, seeking and queueing wait for
+        // this operation, and the writer is stopped.
+        var render = source.Length > 0 && outputRate > 0
+            ? ApplyRate(Resampler.Resample(source, sourceRate, outputRate), outputRate, rate) : null;
+        var nextRender = queued is not null && outputRate > 0
+            ? ApplyRate(Resampler.Resample(queued.Source, queued.SourceRate, outputRate), outputRate, rate) : null;
+        lock (_gate)
+        {
             _device.Flush();
-            _rate = clamped;
-            if (_sourceFloat.Length > 0 && _outputFormat.SampleRate > 0)
+            _rate = rate;
+            if (render is not null)
             {
-                var source = Resampler.Resample(_sourceFloat, _sourceRate, _outputFormat.SampleRate);
-                _render = ApplyRate(source, _outputFormat.SampleRate, clamped);
+                _render = render;
                 _output = _render.Samples;
                 _writeCursor = _render.OutputFrameAt(sourceSeconds * _outputFormat.SampleRate);
                 _sessionOutputStart = _writeCursor;
                 _deviceBase = 0;
                 _clipCompletedRaised = false;
             }
-            // The flush discarded whatever of the queued clip was written; render it at the new rate
-            // and write it again from its start after the current clip.
-            if (_next is { } next && _outputFormat.SampleRate > 0)
-                _next = next with
-                {
-                    Render = ApplyRate(Resampler.Resample(next.Source, next.SourceRate, _outputFormat.SampleRate), _outputFormat.SampleRate, clamped),
-                    WriteCursor = 0,
-                    Boundary = null,
-                };
+            // The flush discarded whatever of the queued clip was written; it is written again from
+            // its start after the current clip, at the new rate.
+            if (queued is not null && nextRender is not null)
+                _next = queued with { Render = nextRender, WriteCursor = 0, Boundary = null };
         }
         if (playing) { _device.Start(); StartWriter(); }
     }
@@ -429,16 +469,27 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
     /// to be written. Returns false when it is too late: nothing is loaded, the current clip has
     /// already completed, or another queued clip is already being written.
     /// </summary>
-    public Task<bool> QueueNextAsync(string segmentId, SpeechAsset asset, ReadOnlyMemory<byte> pcm, CancellationToken ct = default)
+    /// <remarks>
+    /// In turn with the other operations: a clip rendered beside a rate change could be queued at
+    /// the old rate after the change had re-rendered the clips it found.
+    /// </remarks>
+    public async Task<bool> QueueNextAsync(string segmentId, SpeechAsset asset, ReadOnlyMemory<byte> pcm, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(asset);
         ObjectDisposedException.ThrowIf(_disposed, this);
+        await _operations.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try { return await Task.Run(() => QueueNextCore(segmentId, asset, pcm), CancellationToken.None).ConfigureAwait(false); }
+        finally { _operations.Release(); }
+    }
+
+    private bool QueueNextCore(string segmentId, SpeechAsset asset, ReadOnlyMemory<byte> pcm)
+    {
         int deviceRate;
         double rate;
         lock (_gate)
         {
-            if (_segmentId is null || _clipCompletedRaised || _outputFormat.SampleRate <= 0) return Task.FromResult(false);
-            if (_next is { Boundary: not null }) return Task.FromResult(false);
+            if (_segmentId is null || _clipCompletedRaised || _outputFormat.SampleRate <= 0) return false;
+            if (_next is { Boundary: not null }) return false;
             deviceRate = _outputFormat.SampleRate;
             rate = _rate;
         }
@@ -450,11 +501,11 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
             // this was rendering.
             if (_segmentId is null || _clipCompletedRaised || _outputFormat.SampleRate != deviceRate
                 || Math.Abs(_rate - rate) > 1e-9 || _next is { Boundary: not null })
-                return Task.FromResult(false);
+                return false;
             _next = new QueuedClip(segmentId, asset, source, asset.Format.SampleRate, render, 0, null);
         }
         _writerGate.Set();
-        return Task.FromResult(true);
+        return true;
     }
 
     /// <summary>

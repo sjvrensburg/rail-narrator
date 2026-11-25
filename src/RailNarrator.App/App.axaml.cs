@@ -54,6 +54,7 @@ public sealed class App : Application
         HandleTerminationSignals(window);
         window.Show();
         splash.Close();
+        Views.StallProbe.Start();
     }
 
     /// <summary>

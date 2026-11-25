@@ -95,6 +95,7 @@ public sealed class PdfSurface : Control
 
     private bool _frameRequested;
     private TimeSpan? _lastFrameTime;
+    private RuntimeCounters? _lastFrameCounters;
 
     // The camera's glide: where the visible region's top-left is heading, in page points, and how
     // fast it is moving there. Null when the camera is at rest. Kept in page points rather than
@@ -168,7 +169,13 @@ public sealed class PdfSurface : Control
             double dt = _lastFrameTime is { } last ? (time - last).TotalSeconds : 0;
             _lastFrameTime = time;
             // Opt-in diagnostics: a frame this late is a stall the reader can see.
-            if (dt > FollowLog.FrameGapSeconds) FollowLog.Note($"frame gap {dt * 1000:F0} ms");
+            if (FollowLog.Enabled)
+            {
+                var counters = RuntimeCounters.Now();
+                if (dt > FollowLog.FrameGapSeconds && _lastFrameCounters is { } previous)
+                    FollowLog.Note($"frame gap {dt * 1000:F0} ms {counters.Since(previous)}");
+                _lastFrameCounters = counters;
+            }
             // While audio plays the camera follows the media clock every frame, travelling between
             // measured word positions at the measured pace; FollowRequested covers the rest (a
             // resume, a zoom, a seek while paused).
@@ -1065,6 +1072,8 @@ internal static class FollowLog
 
     /// <summary>A frame later than this is logged: three frames missed at 60 Hz.</summary>
     public const double FrameGapSeconds = 0.05;
+
+    public static bool Enabled => Path is not null;
 
     public static void Note(string text)
     {

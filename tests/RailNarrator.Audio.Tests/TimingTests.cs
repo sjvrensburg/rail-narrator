@@ -101,7 +101,7 @@ public sealed class DeviceIntegrationTests
         await Task.Delay(80);
         Assert.Equal(paused, engine.PositionSeconds, 6);
         await engine.SeekAsync(1.2);
-        engine.SetPlaybackRate(1.5);
+        await engine.SetPlaybackRateAsync(1.5);
         Assert.InRange(engine.PositionSeconds, 1.199, 1.201);
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         engine.ClipCompleted += _ => done.TrySetResult();

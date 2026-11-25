@@ -379,7 +379,7 @@ public sealed class PlaybackEngineTests
         var (engine, device, _) = Load(frames: 48000);
         await using (engine)
         {
-            engine.SetPlaybackRate(2.0);
+            await engine.SetPlaybackRateAsync(2.0);
             await engine.PlayAsync();
 
             // At 2x the clip plays out in about one device-second. WSOLA's output length is not
@@ -447,6 +447,91 @@ public sealed class PlaybackEngineTests
         }
     }
 
+    /// <summary>
+    /// A minute of speech at 1.5x: decoding, resampling and time-stretching it takes a tenth of a
+    /// second or more. Play with the passage already prepared awaited nothing that yielded, so all
+    /// of it ran on the caller's thread, which is the UI thread, and the window froze.
+    /// </summary>
+    [Fact]
+    public async Task LoadingALongClip_ReturnsBeforeItIsRendered()
+    {
+        var device = new FakeAudioOutputDevice(new AudioFormat(44100, 1, SampleFormat.Float32LittleEndian))
+        {
+            Devices = [new AudioDeviceInfo("0", "Fake", true, 44100, 1, 0.01)],
+        };
+        var engine = new AudioPlaybackEngine(device, new AudioEngineOptions(PreferredDeviceRate: 44100));
+        await using (engine)
+        {
+            await engine.SetPlaybackRateAsync(1.5);
+            const long frames = 24000 * 60;
+            var load = engine.LoadAsync("s0", SyntheticNarration.Clip("s0", frames, 24000), SyntheticNarration.TonePcm(frames, 24000));
+            Assert.False(load.IsCompleted, "the clip was rendered on the caller's thread");
+            await load;
+            Assert.Equal(60.0, engine.ClipDurationSeconds, 1);
+        }
+    }
+
+    /// <summary>Changing the speed re-renders the clip: not on the caller's thread either.</summary>
+    [Fact]
+    public async Task ARateChangeOnALongClip_ReturnsBeforeItIsRendered()
+    {
+        var (engine, _, _) = Load(frames: 24000 * 60);
+        await using (engine)
+        {
+            var change = engine.SetPlaybackRateAsync(1.5);
+            Assert.False(change.IsCompleted, "the clip was re-rendered on the caller's thread");
+            await change;
+            Assert.Equal(1.5, engine.PlaybackRate, 6);
+            Assert.Equal(60.0, engine.ClipDurationSeconds, 1);
+        }
+    }
+
+    /// <summary>
+    /// Several changes asked for while one renders end at the last rate asked for, with the
+    /// position held, whatever order their turns come in.
+    /// </summary>
+    [Fact]
+    public async Task QuickRateChanges_EndAtTheLastRate_AndHoldThePosition()
+    {
+        var (engine, device, _) = Load(frames: 48000);
+        await using (engine)
+        {
+            await engine.PlayAsync();
+            await WaitForQueuedAsync(engine, device, 22050);
+            device.AdvanceBySeconds(0.5);
+            Assert.Equal(0.5, engine.PositionSeconds, 1);
+
+            await Task.WhenAll(engine.SetPlaybackRateAsync(1.25), engine.SetPlaybackRateAsync(2.0), engine.SetPlaybackRateAsync(0.75));
+            Assert.Equal(0.75, engine.PlaybackRate, 6);
+            Assert.Equal(0.5, engine.PositionSeconds, 1);
+        }
+    }
+
+    /// <summary>
+    /// A clip queued while a rate change is under way plays at the new rate: queueing takes its turn
+    /// with the change, so the change either finds the clip and re-renders it or the clip is
+    /// rendered after it, at the new rate.
+    /// </summary>
+    [Fact]
+    public async Task AClipQueuedBesideARateChange_IsWrittenAtTheNewRate()
+    {
+        var (engine, device) = LoadAtSourceRate(24000);   // one second, the device at the clip's rate
+        await using (engine)
+        {
+            await engine.PlayAsync();
+            var queue = engine.QueueNextAsync("s1", SyntheticNarration.Clip("s1", 24000, 24000), SyntheticNarration.TonePcm(24000, 24000));
+            var change = engine.SetPlaybackRateAsync(2.0);
+            await Task.WhenAll(queue, change);
+            Assert.True(await queue);
+            Assert.Equal("s1", engine.QueuedSegmentId);
+
+            // Both seconds at 2x are about 24000 frames; the queued second at 1x would add 12000 more.
+            await WaitUntil(() => device.TotalWritten >= 20000, "both clips written at the new rate");
+            await Task.Delay(200);
+            Assert.InRange(device.TotalWritten, 20000, 27000);
+        }
+    }
+
     [Fact]
     public async Task RateChangeAfterSeek_PreservesThePosition()
     {
@@ -464,11 +549,11 @@ public sealed class PlaybackEngineTests
             device.AdvanceBySeconds(0.1);
             Assert.Equal(1.6, engine.PositionSeconds, 1);
 
-            engine.SetPlaybackRate(2.0);
+            await engine.SetPlaybackRateAsync(2.0);
             Assert.Equal(1.6, engine.PositionSeconds, 1);
 
             // A second change must also hold: the first change re-seats the base it must read.
-            engine.SetPlaybackRate(0.75);
+            await engine.SetPlaybackRateAsync(0.75);
             Assert.Equal(1.6, engine.PositionSeconds, 1);
         }
     }
@@ -603,7 +688,7 @@ public sealed class PlaybackEngineTests
             await engine.PlayAsync();
             await WaitUntil(() => device.TotalWritten >= 48000, "both clips written");
 
-            engine.SetPlaybackRate(2.0);   // flushes; both clips re-rendered at half length
+            await engine.SetPlaybackRateAsync(2.0);   // flushes; both clips re-rendered at half length
             await WaitUntil(() => device.TotalWritten >= 20000, "both clips written again at the new rate");
             Assert.Equal("s1", engine.QueuedSegmentId);
 

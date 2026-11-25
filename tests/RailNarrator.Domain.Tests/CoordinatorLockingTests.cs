@@ -76,7 +76,7 @@ public sealed class CoordinatorLockingTests
         public Task ResumeAsync(CancellationToken ct = default) => _inner.ResumeAsync(ct);
         public Task StopAsync(CancellationToken ct = default) => _inner.StopAsync(ct);
         public Task SeekAsync(double seconds, CancellationToken ct = default) => _inner.SeekAsync(seconds, ct);
-        public void SetPlaybackRate(double rate) => _inner.SetPlaybackRate(rate);
+        public Task SetPlaybackRateAsync(double rate, CancellationToken ct = default) => _inner.SetPlaybackRateAsync(rate, ct);
         public event Action<PlaybackState>? StateChanged;
         public event Action<string>? ClipCompleted;
         public event Action<string>? Underflow;

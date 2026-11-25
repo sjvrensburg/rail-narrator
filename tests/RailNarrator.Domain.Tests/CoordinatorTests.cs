@@ -1094,13 +1094,13 @@ public sealed class NarrationCoordinatorTests
         var transport = new FakeAudioTransport();
         await using var coordinator = new NarrationCoordinator(tts, transport);
 
-        coordinator.SetPlaybackRate(1.5);
+        await coordinator.SetPlaybackRateAsync(1.5);
         Assert.Equal(1.5, transport.PlaybackRate, 3);
 
-        coordinator.SetPlaybackRate(99);
+        await coordinator.SetPlaybackRateAsync(99);
         Assert.True(transport.PlaybackRate <= 3.0, "an absurd rate must be clamped, not applied");
 
-        coordinator.SetPlaybackRate(0);
+        await coordinator.SetPlaybackRateAsync(0);
         Assert.True(transport.PlaybackRate >= 0.5, "a rate below the usable range must be clamped");
     }
 
