@@ -31,6 +31,10 @@ public sealed class LetterNameTests
     [InlineData("given a, the estimate is", "given eh, the estimate is")]
     [InlineData("the sum over a of x", "the sum over eh of ex")]
     [InlineData("integrated from a to b", "integrated from eh to bee")]
+    [InlineData("Let a denote the intercept.", "Let eh denote the intercept.")]
+    [InlineData("Let a satisfy the bound.", "Let eh satisfy the bound.")]
+    [InlineData("the point a lies on the line", "the point eh lies on the line")]
+    [InlineData("suppose a exceeds one", "suppose eh exceeds one")]
     [InlineData("then a + b is", "then eh + bee is")]
     [InlineData("the constant a controls the decay", "the constant eh controls the decay")]
     [InlineData("(A + B) is invertible", "(eh + bee) is invertible")]
@@ -51,6 +55,7 @@ public sealed class LetterNameTests
     [InlineData("Let a model be fitted.")]
     [InlineData("at some point a shock arrives")]
     [InlineData("(A similar bound holds.)")]
+    [InlineData("That claim is a lie.")]
     [InlineData("“A model is a simplification.”")]
     public void ProseIsLeftAsItIs(string script, string? speech = null) => Assert.Equal(speech ?? script, Speech(script));
 

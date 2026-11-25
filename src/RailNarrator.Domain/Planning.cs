@@ -41,7 +41,7 @@ public static class NarrationVersions
     public const string LocalMathReader = "local-math/1";
 
     /// <summary>Bump when the prose normalisation pipeline changes.</summary>
-    public const string ProsePipeline = "prose/12-article-a-after-plus-over-given";
+    public const string ProsePipeline = "prose/13-symbol-a-before-a-verb";
 }
 
 /// <summary>Planner configuration.</summary>

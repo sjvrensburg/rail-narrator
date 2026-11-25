@@ -52,8 +52,11 @@ public static class LetterNames
     {
         "sub", "super", "squared", "cubed", "hat", "bar", "tilde", "prime", "star", "dagger", "transpose", "inverse",
         "plus", "minus", "times", "equals", "over", "divided", "is", "are", "and", "or", "denotes", "represents", "has", "must",
-        // ...and words an article is never followed by: "the sum over a of x", "from a to b".
+        // ...and words an article is never followed by: "the sum over a of x", "from a to b",
+        // "let a denote the intercept", "the point a lies on the line". Not "lie": "a lie" is a noun.
         "be", "of", "in", "to", "from", "with", "at", "on", "by", "than", "then",
+        "denote", "satisfy", "satisfies", "lies", "represent", "belong", "belongs", "exceed", "exceeds",
+        "converges", "tends",
     };
 
     // Words that only a symbol follows: "x sub a", "the constant a".
