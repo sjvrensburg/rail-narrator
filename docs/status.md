@@ -1948,4 +1948,10 @@ threads meeting.
      was identical under both analyzers on all 27 pages, which is what the offsets rely on.
    Not covered: a position saved by 0.1.5 or earlier has no plan or place and is restored by its
    id as before, once (the next save records both); a page read by OCR has text of its own, so a
-   change of OCR can move offsets; not driven in the window.
+   change of OCR can move offsets.
+   *Driven in the window* (headless compositor, the same paper): a position saved in the old
+   form at passage 300 of the model-free plan restored there by its id, and closing saved it
+   with its plan and place (page 14, offset 863); with Heron chosen and the app started again,
+   the new plan (586 passages; same plan id, another input fingerprint) resumed at `s00349`,
+   the same sentence ("Rejection frequencies for the robust LM-type test…"), where `s00300` now
+   names a passage of Section 4.1.
