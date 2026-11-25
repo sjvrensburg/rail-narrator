@@ -34,7 +34,13 @@ run, after about 5 s (one of its 5 s waits). It then passed 10 isolated runs and
 full-solution runs. The cause was not identified, and the failure message was not captured. It
 failed once more on 19 November 2026, in a full-solution run after about 0.4 s (an assertion, not a
 wait), then passed 6 isolated runs and 6 further full-solution runs; the message again was not
-captured. One Audio test failed once in a full-solution run while the local LLM was busy on
+captured. It failed a third time on 25 November 2026 in the v0.1.5 release workflow on Windows,
+at its first wait ("the first window (0-2)": Play started and exactly three passages
+requested), and passed when the job was run again. It did not fail in 20 local runs, 10 more
+pinned to one busy core, or with a slow fake engine and Play overtaking the load's first
+synthesis; the cause is still not known. The test now waits for passages 0-2 to have been asked
+for and for the requests to settle, checks that the advance asks for passage 3 alone, and says
+on a timeout how many times Play ran, the coordinator's state and which passages were asked for. One Audio test failed once in a full-solution run while the local LLM was busy on
 the same machine and passed in three reruns; it was not identified. On 23 November 2026
 `EngineLockingTests.SeeksRacingClipTransitions_DoNotDeadlock` failed once in a full-solution run
 after 1 min 1 s, which is its 60 s deadline, with a load average of 11 on the machine; it then
