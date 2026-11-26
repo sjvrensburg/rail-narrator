@@ -509,7 +509,7 @@ public sealed class ClaudeMathVerbaliser : IMathVerbaliser
             if (reply.Refused) { problems.Add("Claude declined to read this expression."); break; }
             if (reply.CutOff) { problems.Add("The response was cut off at the token limit."); continue; }
 
-            var result = MathResponseValidator.Validate(reply.Text, allowed, mode);
+            var result = MathResponseValidator.Validate(reply.Text, allowed, mode, MathPrompt.SourceText(request));
             if (result.IsValid)
             {
                 return new MathVerbalisationResult(

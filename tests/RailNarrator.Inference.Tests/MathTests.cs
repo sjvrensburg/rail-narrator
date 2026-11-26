@@ -215,6 +215,23 @@ public sealed class MathResponseValidatorTests
         Assert.Contains(result.Problems, p => p.Contains("coordinates or audio times"));
     }
 
+    [Theory]
+    [InlineData("the mean of x over 100 samples", "The average is taken over 100 samples of the signal.")]
+    [InlineData("the energy in the first 5 seconds", "where the first 5 seconds are discarded")]
+    public void AcceptsACountTheSourceGives(string faithful, string source)
+    {
+        var result = MathResponseValidator.Validate(Response(faithful), Allowed, MathModeRequest.NaturalFaithful, source);
+        Assert.True(result.IsValid, string.Join("; ", result.Problems));
+    }
+
+    [Fact]
+    public void RejectsATimingTheSourceDoesNotGive()
+    {
+        var result = MathResponseValidator.Validate(
+            Response("x squared for 250 ms"), Allowed, MathModeRequest.NaturalFaithful, "x squared over 100 samples");
+        Assert.Contains(result.Problems, p => p.Contains("coordinates or audio times"));
+    }
+
     [Fact]
     public void RejectsOverlongAndMissingFields()
     {

@@ -20,7 +20,7 @@ namespace RailNarrator.Inference;
 /// </remarks>
 public static class MathInterpretationPrompt
 {
-    public const string Version = "math-interpret/4";
+    public const string Version = "math-interpret/5";
 
     public const string System = """
         You are the narrator of an academic document that is being read aloud, passage by passage,
@@ -126,8 +126,10 @@ public static class MathInterpretationPrompt
 /// </remarks>
 public static partial class SpokenMathsValidator
 {
-    // Written notation: the narrate skill's pattern, plus Greek letters.
-    [GeneratedRegex(@"[$\\^_{}]|\b[a-zA-Z]_[a-zA-Z0-9]|[=<>±×÷∑∏∫√≤≥≈≠∞∂∇∈∼]|[α-ωΑ-Ω]")]
+    // Written notation: the narrate skill's pattern, plus Greek letters, the operators "+", "*"
+    // and "|", a slash beside a letter, digit or bracket ("x/y", "f(x)/n", "1/2"; not "and/or"),
+    // and a letter applied to a bracket ("f(x)"). An engine says "slash" and "plus sign".
+    [GeneratedRegex(@"[$\\^_{}+*|]|\b[a-zA-Z]_[a-zA-Z0-9]|[=<>±×÷∑∏∫√≤≥≈≠∞∂∇∈∼]|[α-ωΑ-Ω]|(?<!\p{L})[a-zA-Z0-9)]\s*/|/\s*[a-zA-Z0-9(](?!\p{L})|(?<!\p{L})[a-zA-Z]\(")]
     private static partial Regex Notation();
 
     // Spoken notation: a Greek letter's name, a notation word, or a lone letter other than the

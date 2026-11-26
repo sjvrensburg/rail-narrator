@@ -140,7 +140,7 @@ public sealed class OpenAiCompatibleMathVerbaliser : IMathVerbaliser, IDisposabl
                 continue;
             }
 
-            var result = MathResponseValidator.Validate(content, allowed, mode);
+            var result = MathResponseValidator.Validate(content, allowed, mode, MathPrompt.SourceText(request));
             if (result.IsValid)
             {
                 return new MathVerbalisationResult(

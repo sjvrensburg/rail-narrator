@@ -43,7 +43,12 @@ public static partial class MathResponseValidator
     /// <param name="json">Raw model output. May be wrapped in a Markdown code fence, which some endpoints add despite being told not to.</param>
     /// <param name="allowedSourceIds">The only ids a response may cite.</param>
     /// <param name="mode">Requested mode; an explanation outside Explain mode is dropped with a warning.</param>
-    public static ValidationResult Validate(string? json, IReadOnlySet<string> allowedSourceIds, MathModeRequest mode)
+    /// <param name="sourceText">
+    /// What the model was shown (the expression and its context). A count or a pair of numbers
+    /// that the source itself gives ("over 100 samples", "the first 5 seconds") is the reading,
+    /// not an invented coordinate or timing; without it, every such phrase is refused.
+    /// </param>
+    public static ValidationResult Validate(string? json, IReadOnlySet<string> allowedSourceIds, MathModeRequest mode, string? sourceText = null)
     {
         if (string.IsNullOrWhiteSpace(json))
             return ValidationResult.Fail("The model returned an empty response.");
@@ -101,7 +106,7 @@ public static partial class MathResponseValidator
             {
                 if (LaTeXLeak().IsMatch(faithful))
                     problems.Add("faithful narration still contains LaTeX or math markup, so it is not spoken language.");
-                if (CoordinateOrTime().IsMatch(faithful))
+                if (InventsCoordinatesOrTimes(faithful, sourceText))
                     problems.Add("faithful narration contains coordinates or audio times, which a model must not generate.");
                 if (faithful.Trim().Length == 0)
                     problems.Add("faithful narration is empty.");
@@ -170,6 +175,22 @@ public static partial class MathResponseValidator
     /// <summary>LaTeX or math markup that must not survive into spoken text.</summary>
     [GeneratedRegex(@"\\[a-zA-Z]+|[\^_{}$]|\\\[|\\\]|\$\$")]
     private static partial Regex LaTeXLeak();
+
+    /// <summary>A coordinate or timing in <paramref name="faithful"/> with a number the source does not give.</summary>
+    private static bool InventsCoordinatesOrTimes(string faithful, string? sourceText)
+    {
+        foreach (Match m in CoordinateOrTime().Matches(faithful))
+        {
+            if (sourceText is null) return true;
+            foreach (Match number in Number().Matches(m.Value))
+                if (!Regex.IsMatch(sourceText, @"(?<![\d.])" + Regex.Escape(number.Value) + @"(?![\d]|\.\d)"))
+                    return true;
+        }
+        return false;
+    }
+
+    [GeneratedRegex(@"\d+(\.\d+)?")]
+    private static partial Regex Number();
 
     /// <summary>Coordinates or timings, which a verbaliser has no business producing.</summary>
     [GeneratedRegex(@"\(\s*-?\d+(\.\d+)?\s*,\s*-?\d+|\b\d+(\.\d+)?\s*(ms|milliseconds?|seconds?|samples?|frames?)\b", RegexOptions.IgnoreCase)]
