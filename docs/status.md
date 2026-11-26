@@ -1989,3 +1989,18 @@ threads meeting.
    slower machine or a scanned document, where reading the pages takes longer and the saving is
    larger.
 
+119. **A Windows test reading a fixture's text as NULs** (`fix/windows-pdf-text-nul`, 2026-11-26).
+   Twice on Windows CI a Pdf test got the right blocks and the right number of characters, every
+   one U+0000 ("Acknowledgments" as fifteen NULs). Not PDFium: every call in Core 0.94.0 is behind
+   `PdfiumGate`, and the document bytes are pinned. The fixture's PDF itself had lost its text.
+   Skia's PDF writer builds each font's ToUnicode table from the platform's font manager, and on
+   Windows DirectWrite's `GetGlyphIndices` intermittently returns a glyph past the font's glyph
+   count (Skia m119, `SkTypeface_win_dw.cpp`, crbug.com/470146), at which Skia stops filling the
+   table. `SyntheticPdf` now reads each PDF it writes back through PDFium and writes it again,
+   up to five times, if a letter or digit it drew does not come back (`WriteChecked`). *Checked
+   here*: the whole suite passes with the check on; with a letter that was never drawn injected
+   into the expected counts, the fixture is written five times and the test fails with the
+   message. *Not checked*: the cause on Windows itself, which this machine cannot run; it is
+   inferred from the symptom and Skia's source. If a fixture there still fails, the message says
+   how many characters read as U+0000.
+

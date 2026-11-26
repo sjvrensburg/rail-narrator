@@ -1,3 +1,4 @@
+using RailReader.Core.Services;
 using SkiaSharp;
 
 namespace RailNarrator.TestFixtures;
@@ -126,18 +127,13 @@ public static class SyntheticPdf
     /// </summary>
     public static string WriteScanWithStrayText(string path, string strayText)
     {
-        using var stream = new FileStream(path, FileMode.Create, FileAccess.Write);
-        using var document = SKDocument.CreatePdf(stream);
-        var canvas = document.BeginPage(PageWidth, PageHeight);
-        using (var paint = new SKPaint { Color = SKColors.DarkGray, IsAntialias = true })
+        var stray = new FixtureLine(strayText, Margin, PageHeight - Margin);
+        return WriteChecked(path, [[stray]], canvas =>
         {
+            using var paint = new SKPaint { Color = SKColors.DarkGray, IsAntialias = true };
             for (int i = 0; i < 12; i++)
                 canvas.DrawRect(Margin, Margin + i * LinePitch, PageWidth - 2 * Margin, 6f, paint);
-        }
-        DrawLine(canvas, new FixtureLine(strayText, Margin, PageHeight - Margin));
-        document.EndPage();
-        document.Close();
-        return path;
+        });
     }
 
     /// <summary>
@@ -193,26 +189,101 @@ public static class SyntheticPdf
     /// Writes pages from explicit line placements. The general entry point the helpers build on.
     /// </summary>
     public static string Write(string path, IReadOnlyList<IReadOnlyList<FixtureLine>> pages)
+        => WriteChecked(path, pages, background: null);
+
+    /// <summary>How many times a PDF whose text does not read back is written again.</summary>
+    private const int WriteAttempts = 5;
+
+    // Only for reading back what was written; guarded by Core's PDFium gate like every other use.
+    private static readonly PdfTextService TextReader = new();
+
+    /// <summary>
+    /// Writes the pages, then reads their text back through PDFium and writes them again if a
+    /// letter or digit that was drawn does not come back.
+    /// </summary>
+    /// <remarks>
+    /// Skia's PDF writer takes each font's glyph-to-Unicode table from the platform's font
+    /// manager. On Windows that is DirectWrite, whose <c>GetGlyphIndices</c> intermittently returns
+    /// a glyph index past the font's glyph count (Skia, <c>SkTypeface_win_dw.cpp</c>, crbug.com/470146);
+    /// Skia then stops filling the table, so the document's glyphs map to U+0000. The page keeps
+    /// its glyphs and their positions and loses its text: twice on Windows CI a test read
+    /// "Acknowledgments" as fifteen NULs. Each new document asks DirectWrite again, so writing the
+    /// file again gives the text back. Linux (FreeType) is not affected.
+    /// Only letters and digits are compared, as counts: PDFium adds characters of its own (a NUL
+    /// between two spaces, line ends), and a character the font has no glyph for is not drawn as itself.
+    /// </remarks>
+    private static string WriteChecked(string path, IReadOnlyList<IReadOnlyList<FixtureLine>> pages,
+        Action<SKCanvas>? background)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
-        using var stream = new FileStream(path, FileMode.Create, FileAccess.Write);
-        using var document = SKDocument.CreatePdf(stream);
-
-        foreach (var pageLines in pages)
+        var drawn = pages.Select(DrawnLettersAndDigits).ToArray();
+        string problem = "";
+        for (int attempt = 1; attempt <= WriteAttempts; attempt++)
         {
-            var canvas = document.BeginPage(PageWidth, PageHeight);
-            foreach (var line in pageLines)
-                DrawLine(canvas, line);
-            document.EndPage();
+            using (var stream = new FileStream(path, FileMode.Create, FileAccess.Write))
+            using (var document = SKDocument.CreatePdf(stream))
+            {
+                foreach (var pageLines in pages)
+                {
+                    var canvas = document.BeginPage(PageWidth, PageHeight);
+                    background?.Invoke(canvas);
+                    foreach (var line in pageLines)
+                        DrawLine(canvas, line);
+                    document.EndPage();
+                }
+                document.Close();
+            }
+
+            problem = TextProblem(File.ReadAllBytes(path), drawn);
+            if (problem.Length == 0)
+                return path;
+            Console.Error.WriteLine($"SyntheticPdf: {Path.GetFileName(path)} attempt {attempt}: {problem}; writing it again.");
         }
-        document.Close();
-        return path;
+        throw new InvalidOperationException(
+            $"The fixture {Path.GetFileName(path)} did not read back after {WriteAttempts} attempts: {problem}.");
+    }
+
+    /// <summary>How many of each letter and digit a page draws in a glyph of the font.</summary>
+    private static Dictionary<char, int> DrawnLettersAndDigits(IReadOnlyList<FixtureLine> lines)
+    {
+        var counts = new Dictionary<char, int>();
+        foreach (var line in lines)
+        {
+            using var font = Font(line.FontSize);
+            foreach (char c in line.Text)
+                if (char.IsLetterOrDigit(c) && font.GetGlyph(c) != 0)
+                    counts[c] = counts.GetValueOrDefault(c) + 1;
+        }
+        return counts;
+    }
+
+    /// <summary>Empty when every page reads back every letter and digit it drew.</summary>
+    private static string TextProblem(byte[] pdf, Dictionary<char, int>[] drawn)
+    {
+        for (int page = 0; page < drawn.Length; page++)
+        {
+            string text = TextReader.ExtractPageText(pdf, page).Text;
+            int missing = drawn[page].Sum(d => Math.Max(0, d.Value - text.Count(c => c == d.Key)));
+            if (missing > 0)
+            {
+                int nuls = text.Count(c => c == '\0');
+                return $"page {page + 1} lacks {missing} of the letters and digits drawn on it " +
+                       $"({nuls} of its {text.Length} characters read as U+0000)";
+            }
+        }
+        return "";
+    }
+
+    private static SKFont Font(float size)
+    {
+        // FromFamilyName's typeface is shared and cannot be disposed by its caller.
+        var typeface = SKTypeface.FromFamilyName("DejaVu Serif", SKFontStyle.Normal);
+        return new SKFont(typeface ?? SKTypeface.Default, size);
     }
 
     private static void DrawLine(SKCanvas canvas, FixtureLine line)
     {
-        using var typeface = SKTypeface.FromFamilyName("DejaVu Serif", SKFontStyle.Normal);
-        using var font = new SKFont(typeface ?? SKTypeface.Default, line.FontSize);
+        using var font = Font(line.FontSize);
         using var paint = new SKPaint { Color = SKColors.Black, IsAntialias = true };
         // Skia's Y is measured from the top of the page with Y down, which matches the displayed
         // frame the extraction reports, so the baseline can be passed straight through.
