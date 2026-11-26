@@ -217,6 +217,19 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     /// afterwards took it for reading and began to read unasked. A newer start keeps its own mark.
     /// </summary>
     private void EndStartPending(long generation) => Interlocked.CompareExchange(ref _startPendingFor, -1, generation);
+
+    /// <summary>
+    /// The generation in which the reader pressed Pause while no clip was playing (between two
+    /// passages, or waiting for one); -1 when none. The transport ignores a Pause it is not playing
+    /// for, and the start under way then played the next passage after the window said Paused. That
+    /// start now loads its passage and stops there; the next Play, a new generation, reads it.
+    /// </summary>
+    private long _pauseRequestedFor = -1;
+
+    private bool PauseRequested(long generation) => Interlocked.Read(ref _pauseRequestedFor) == generation;
+
+    /// <summary>An edit or a voice change that carries a start on into its own generation keeps a pause with it.</summary>
+    private void CarryPause(long from, long to) => Interlocked.CompareExchange(ref _pauseRequestedFor, to, from);
     private Task? _prepareLoop;
     private bool _disposed;
     private bool _followSuspended;
@@ -524,7 +537,11 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     public async Task PauseAsync(CancellationToken ct = default)
     {
         ThrowIfDisposed();
+        long gen = Generation;
         await _audio.PauseAsync(ct).ConfigureAwait(false);
+        // Nothing was playing to pause: one passage has ended and the next is not yet playing. The
+        // start under way stops before it plays (StartCurrentSegmentAsync).
+        if (_audio.State != PlaybackState.Paused) Interlocked.Exchange(ref _pauseRequestedFor, gen);
         Publish(PlaybackState.Paused, "Paused");
     }
 
@@ -680,7 +697,9 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         _options = _options with { VoiceId = voiceId };
         // Another voice was asked for: the recording is in its own, so the engine speaks from here.
         _recording = null;
+        long before = Generation;
         long generation = AdvanceGeneration();
+        CarryPause(before, generation);
         if (wasPlaying && _plan is not null) MarkStartPending(generation);
         // Discarded now, with the change, not once the transport has stopped: a seek that finishes
         // while it is stopping would otherwise find the old voice's clip ready and play it.
@@ -726,6 +745,23 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             ? await _resolver.ResolveAsync(plan, segment, ct).ConfigureAwait(false)
             : await _resolver.RefreshAsync(plan, segment, ct).ConfigureAwait(false);
         if (ReferenceEquals(fresh, segment)) return segment;
+        // Not answered (a refusal, an endpoint down): the same words with a warning added. Nothing
+        // to say again, so the paused position and the prepared speech stand.
+        bool sameWords = fresh.SpokenText == segment.SpokenText && fresh.Provenance == segment.Provenance
+                         && fresh.ScriptRevision == segment.ScriptRevision;
+        if (sameWords)
+        {
+            lock (_gate)
+            {
+                if (_plan is not { } current || current.Header != plan.Header) return null;
+                var now = current.Segment(segmentId);
+                if (now is null || now.ScriptRevision != segment.ScriptRevision || now.Provenance != segment.Provenance) return now;
+                _plan = current with { Segments = current.Segments.Select(s => s.Id == segmentId ? fresh : s).ToList() };
+            }
+            PublishSnapshotOnly();
+            SegmentResolved?.Invoke(fresh);
+            return fresh;
+        }
 
         lock (_gate)
         {
@@ -735,15 +771,20 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             if (now is null || now.ScriptRevision != segment.ScriptRevision || now.Provenance != segment.Provenance) return now;
             _plan = current with { Segments = current.Segments.Select(s => s.Id == segmentId ? fresh : s).ToList() };
         }
-        bool startUnderWay = Interlocked.Read(ref _startPendingFor) == Generation;
+        // The passage being heard was changed: it is read again in its new words, from its start.
+        // Left playing, its old audio went on with no highlight, then took the new words' timings.
+        bool playingIt = _audio.State == PlaybackState.Playing && IsCurrentSegment(segmentId);
+        long before = Generation;
+        bool startUnderWay = playingIt || Interlocked.Read(ref _startPendingFor) == before;
         long gen = AdvanceGeneration();
         if (startUnderWay) MarkStartPending(gen);
+        CarryPause(before, gen);
         lock (_gate)
         {
             _scheduler = new CueScheduler(_plan!);
             _prepared.Clear();
         }
-        if (_audio.State == PlaybackState.Paused) await _audio.StopAsync(ct).ConfigureAwait(false);
+        if (_audio.State == PlaybackState.Paused || playingIt) await _audio.StopAsync(ct).ConfigureAwait(false);
         // A queued clip may be this passage in its old words.
         else await _audio.ClearQueuedAsync(ct).ConfigureAwait(false);
         StartPreparation(gen);
@@ -780,9 +821,14 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             documentHash = current.Header.Extraction.DocumentContentHash;
         }
 
-        bool startUnderWay = Interlocked.Read(ref _startPendingFor) == Generation;
+        // The passage being heard was changed: it is read again in its new words, from its start.
+        // Left playing, its old audio went on with no highlight, then took the new words' timings.
+        bool playingIt = _audio.State == PlaybackState.Playing && IsCurrentSegment(segmentId);
+        long before = Generation;
+        bool startUnderWay = playingIt || Interlocked.Read(ref _startPendingFor) == before;
         long gen = AdvanceGeneration();
         if (startUnderWay) MarkStartPending(gen);
+        CarryPause(before, gen);
         lock (_gate)
         {
             _scheduler = new CueScheduler(_plan!);
@@ -790,7 +836,7 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         }
         // A paused transport still holds the old wording. Play resumes a paused clip, so it must be
         // stopped here or the correction would not be heard until the passage was reached again.
-        if (_audio.State == PlaybackState.Paused) await _audio.StopAsync(ct).ConfigureAwait(false);
+        if (_audio.State == PlaybackState.Paused || playingIt) await _audio.StopAsync(ct).ConfigureAwait(false);
         // A queued clip may be the edited passage in its old words.
         else await _audio.ClearQueuedAsync(ct).ConfigureAwait(false);
         // Overtaken while the transport stopped (another document, another edit): this edit's
@@ -801,6 +847,13 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         StartPreparation(gen);
         PublishSnapshotOnly();
         if (startUnderWay) _ = CarryOnOvertakenStartAsync(gen);
+    }
+
+    private bool IsCurrentSegment(string segmentId)
+    {
+        lock (_gate)
+            return _plan is { } plan && _segmentIndex >= 0 && _segmentIndex < plan.SegmentCount
+                   && plan.Segments[_segmentIndex].Id == segmentId;
     }
 
     /// <summary>
@@ -1702,8 +1755,23 @@ public sealed class NarrationCoordinator : IAsyncDisposable
             await _audio.SeekAsync(withinSeconds, ct).ConfigureAwait(false);
             if (generation != Generation) return;
         }
+        if (PauseRequested(generation))
+        {
+            // Paused between passages: this one is loaded and waits for Play.
+            Interlocked.CompareExchange(ref _startPendingFor, -1, generation);
+            Publish(PlaybackState.Paused, "Paused");
+            return;
+        }
         await _audio.PlayAsync(ct).ConfigureAwait(false);
         if (generation != Generation) return;
+        if (PauseRequested(generation))
+        {
+            // Pause came while the transport was being told to play.
+            await _audio.PauseAsync(ct).ConfigureAwait(false);
+            Interlocked.CompareExchange(ref _startPendingFor, -1, generation);
+            Publish(PlaybackState.Paused, "Paused");
+            return;
+        }
         // Playing now: the transport says so from here.
         Interlocked.CompareExchange(ref _startPendingFor, -1, generation);
         Publish(PlaybackState.Playing, null);
@@ -1737,6 +1805,13 @@ public sealed class NarrationCoordinator : IAsyncDisposable
         bool queued;
         try { queued = await _audio.QueueNextAsync(nextId, clip.Asset, clip.Pcm).ConfigureAwait(false); }
         catch (Exception) { queued = false; }   // the clip is loaded the old way when this one completes
+        if (queued && generation != Generation)
+        {
+            // Overtaken while queueing (an edit, a regenerated reading): the clip may hold the old
+            // words, and whatever overtook this cleared the queue before the clip was in it.
+            try { await _audio.ClearQueuedAsync().ConfigureAwait(false); } catch (Exception) { }
+            queued = false;
+        }
         if (!queued)
             lock (_gate) if (_queuedSegmentId == nextId) _queuedSegmentId = null;
     }
@@ -1978,6 +2053,9 @@ public sealed class NarrationCoordinator : IAsyncDisposable
 
     private void Publish(PlaybackState state, string? message, NarrationError? error = null, PreparationProgress? preparation = null)
     {
+        // A start waiting for its passage after the reader paused is not reading: it stays Paused.
+        if (state is PlaybackState.Buffering or PlaybackState.Preparing && PauseRequested(Generation))
+            (state, message, preparation) = (PlaybackState.Paused, "Paused", null);
         lock (_gate)
         {
             _snapshot = _snapshot with { State = state, Message = message, Error = error, Preparation = preparation };

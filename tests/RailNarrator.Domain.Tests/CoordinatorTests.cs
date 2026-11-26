@@ -541,6 +541,69 @@ public sealed class NarrationCoordinatorTests
         }
     }
 
+    /// <summary>A provider that holds back the passage whose text holds a marker until released.</summary>
+    private sealed class HoldsOnePassage(string marker) : ITtsProvider
+    {
+        private readonly FakeTtsProvider _inner = new();
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public string ProviderId => _inner.ProviderId;
+        public Task<TtsCapabilities> GetCapabilitiesAsync(CancellationToken ct = default) => _inner.GetCapabilitiesAsync(ct);
+        public Task<IReadOnlyList<TtsVoice>> ListVoicesAsync(CancellationToken ct = default) => _inner.ListVoicesAsync(ct);
+        public Task<ProviderSelfTestResult> SelfTestAsync(string voiceId, CancellationToken ct = default) => _inner.SelfTestAsync(voiceId, ct);
+        public ValueTask DisposeAsync() => _inner.DisposeAsync();
+        public async Task<TtsSynthesisResult> SynthesizeAsync(TtsSynthesisRequest request, CancellationToken ct = default)
+        {
+            if (request.Text.Contains(marker, StringComparison.Ordinal)) await Release.Task.WaitAsync(ct);
+            return await _inner.SynthesizeAsync(request, ct);
+        }
+    }
+
+    [Fact]
+    public async Task PauseBetweenTwoPassages_IsKept()
+    {
+        // One passage has ended and the next is still being synthesised. The transport ignores a
+        // Pause it is not playing for, and the next passage played after the window said Paused.
+        var tts = new HoldsOnePassage("number 1");
+        var transport = new FakeAudioTransport { AcceptQueue = false };
+        await using var coordinator = new NarrationCoordinator(tts, transport);
+        var plan = PlanWith(3);
+        await coordinator.LoadPlanAsync(plan);
+        await coordinator.PlayAsync();
+        await WaitUntil(() => transport.PlayCount == 1, what: "playback to start");
+
+        transport.CompleteClip(plan.Segments[0].Id);
+        await coordinator.PauseAsync();
+        tts.Release.SetResult();
+        await WaitUntil(() => transport.Loaded[^1].SegmentId == plan.Segments[1].Id, what: "the next passage to be loaded");
+        await Task.Delay(100);
+
+        Assert.Equal(1, transport.PlayCount);
+        Assert.Equal(PlaybackState.Paused, coordinator.Snapshot.State);
+
+        await coordinator.PlayAsync();
+        await WaitUntil(() => transport.PlayCount == 2, what: "Play to read the next passage");
+        Assert.Equal(plan.Segments[1].Id, transport.CurrentSegmentId);
+    }
+
+    [Fact]
+    public async Task EditingThePassageBeingHeard_ReadsItAgainInItsNewWords()
+    {
+        var tts = new FakeTtsProvider();
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(tts, transport);
+        var plan = PlanWith(3);
+        await coordinator.LoadPlanAsync(plan);
+        await coordinator.PlayAsync();
+        await WaitUntil(() => transport.PlayCount == 1, what: "playback to start");
+
+        await coordinator.ApplyScriptEditAsync(plan.Segments[0].Id, "A corrected first sentence.");
+
+        await WaitUntil(() => transport.PlayCount == 2, what: "the passage to be read again");
+        Assert.Equal(plan.Segments[0].Id, transport.CurrentSegmentId);
+        Assert.Contains(tts.Requests, r => r.Text == "A corrected first sentence.");
+        Assert.True(transport.StopCount > 0, "the old wording must stop");
+    }
+
     [Fact]
     public async Task AFailureAhead_DoesNotHideThatTheCurrentPassageIsPlaying()
     {

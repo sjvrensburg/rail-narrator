@@ -236,7 +236,13 @@ public sealed class FakeAudioTransport : IAudioTransport
         return Task.CompletedTask;
     }
 
-    public Task PauseAsync(CancellationToken ct = default) { PauseCount++; SetState(PlaybackState.Paused); return Task.CompletedTask; }
+    /// <summary>Pauses only what is playing, as the real engine does: a Pause between clips does nothing.</summary>
+    public Task PauseAsync(CancellationToken ct = default)
+    {
+        PauseCount++;
+        if (State == PlaybackState.Playing) SetState(PlaybackState.Paused);
+        return Task.CompletedTask;
+    }
 
     public int ResumeCount { get; private set; }
 
@@ -319,6 +325,13 @@ public sealed class FakeAudioTransport : IAudioTransport
 
     /// <summary>Raises clip completion, as the real transport does once the last samples have drained.</summary>
     public void RaiseClipCompleted(string segmentId) => ClipCompleted?.Invoke(segmentId);
+
+    /// <summary>As <see cref="RaiseClipCompleted"/>, in the state the real engine is in then: Completed.</summary>
+    public void CompleteClip(string segmentId)
+    {
+        SetState(PlaybackState.Completed);
+        ClipCompleted?.Invoke(segmentId);
+    }
 
     public void RaiseUnderflow(string segmentId) { SetState(PlaybackState.Buffering); Underflow?.Invoke(segmentId); }
 
