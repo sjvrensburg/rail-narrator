@@ -145,6 +145,20 @@ public sealed class InterpretationTests
     }
 
     [Fact]
+    public async Task ARejectedInterpretation_GivesEachReasonOnce()
+    {
+        var plan = await PlanAsync(Interpret);
+        string refused = "Request rejected (400) by maths.example.";
+        var resolver = new MathInterpretationResolver(
+            new FakeInterpreter(_ => MathInterpretationResult.Reject(refused, refused, "it still has symbols", refused)), options: Interpret);
+
+        var segment = await resolver.ResolveAsync(plan, plan.Segments[2]);
+
+        var warning = Assert.Single(segment.Warnings, w => w.StartsWith("The interpretation was rejected", StringComparison.Ordinal));
+        Assert.Equal($"The interpretation was rejected: {refused}; it still has symbols", warning);
+    }
+
+    [Fact]
     public async Task APassageIsInterpretedOnce_ThenServedFromTheCache()
     {
         var plan = await PlanAsync(Interpret);

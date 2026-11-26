@@ -291,7 +291,8 @@ public sealed class MathInterpretationResolver : ISegmentResolver
             if (!result.Succeeded)
             {
                 if (result.EndpointProblem is { } problem) EndpointProblem?.Invoke(problem);
-                string reason = "The interpretation was rejected: " + string.Join("; ", result.Problems);
+                // Each reason once: a refused endpoint gives the same one for every retry.
+                string reason = "The interpretation was rejected: " + string.Join("; ", result.Problems.Distinct());
                 // An equation alone is read from the formula model's transcription, which is already
                 // made. A sentence leading into one is better read whole from the interpreter's own
                 // transcription, which also reads the maths inside the sentence; the formula model
