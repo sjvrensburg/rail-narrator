@@ -336,6 +336,41 @@ public sealed class PlaybackEngineTests
     }
 
     [Fact]
+    public async Task ADeviceThatCannotStart_IsAnError_NotSilentPlaying()
+    {
+        var (engine, device, _) = Load();
+        await using (engine)
+        {
+            string? failure = null;
+            engine.DeviceFailed += d => failure = d;
+            device.FailStartWith = "the sink went away";
+
+            await Assert.ThrowsAsync<InvalidOperationException>(() => engine.PlayAsync());
+
+            Assert.Equal(PlaybackState.Error, engine.State);
+            Assert.Equal("the sink went away", failure);
+        }
+    }
+
+    [Fact]
+    public async Task ClearingTheQueue_WaitsForAClipStillBeingQueued()
+    {
+        var (engine, _, _) = Load();
+        await using (engine)
+        {
+            // A long clip, so queueing it (decode, resample) is still running when the clear comes.
+            const long frames = 24000 * 30;
+            var queueing = engine.QueueNextAsync("s1", SyntheticNarration.Clip("s1", frames, 24000), SyntheticNarration.TonePcm(frames, 24000));
+            var clearing = engine.ClearQueuedAsync();
+            bool queued = await queueing;
+            await clearing;
+
+            Assert.True(queued);
+            Assert.Null(engine.QueuedSegmentId);
+        }
+    }
+
+    [Fact]
     public async Task ResamplesFromTheClipRateToTheDeviceRate()
     {
         // Kokoro produces 24 kHz; the devices on the reference machine run at 44.1 kHz and PortAudio's
