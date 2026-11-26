@@ -225,7 +225,7 @@ internal sealed class ClaudeMessages
                 if (effort && Mentions(message, "effort")) { _effortRejected = true; continue; }
                 if (schema && (Mentions(message, "schema") || Mentions(message, "format"))) { _schemaRejected = true; continue; }
                 if ((effort || schema) && Mentions(message, "output_config")) { _effortRejected = _schemaRejected = true; continue; }
-                return ClaudeReply.Failed("Claude rejected the request: " + Short(message), final: true);
+                return ClaudeReply.Failed($"Claude rejected the request ({(int)ex.StatusCode}).", final: true);   // not the body: it may echo part of the key
             }
             catch (Exception ex)
             {
@@ -332,8 +332,6 @@ internal sealed class ClaudeMessages
 
     private static bool Mentions(string message, string word) => message.Contains(word, StringComparison.OrdinalIgnoreCase);
 
-    private static string Short(string s) => s.Length <= 300 ? s : s[..300] + "…";
-
     /// <summary>An SDK failure in the reader's words. The key is in none of them.</summary>
     internal static string Describe(Exception ex, ClaudeEndpointSettings settings) => ex switch
     {
@@ -342,7 +340,7 @@ internal sealed class ClaudeMessages
         AnthropicForbiddenException => "The API key may not use this model.",
         AnthropicNotFoundException => $"Claude does not know the model '{settings.EffectiveModel}'.",
         AnthropicRateLimitException => "Claude is rate-limiting requests; the passage was not answered.",
-        AnthropicApiException api => "Claude answered with an error: " + Short(api.Message),
+        AnthropicApiException api => $"Claude answered with an error ({(int)api.StatusCode}).",
         // The SDK's own message is a bare "I/O exception"; the cause is on the inner exception.
         AnthropicIOException io => $"Could not reach {settings.Address}: {io.InnerException?.Message ?? io.Message}",
         HttpRequestException http => $"Could not reach {settings.Address}: {http.Message}",

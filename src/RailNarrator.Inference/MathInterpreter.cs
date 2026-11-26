@@ -255,7 +255,7 @@ public sealed partial class OpenAiCompatibleMathInterpreter : IMathInterpreter, 
             new JsonObject { ["role"] = "system", ["content"] = MathTranscriptionReading.System },
             new JsonObject { ["role"] = "user", ["content"] = user },
         ];
-        var (content, finish, _, error) = await ChatAsync(messages, noThinking: true, ct).ConfigureAwait(false);
+        var (content, finish, _, error, _) = await ChatAsync(messages, noThinking: true, ct).ConfigureAwait(false);
         if (error is not null || finish == "length") return null;
         return MathTranscriptionReading.Spoken(content, request);
     }
@@ -307,7 +307,7 @@ public sealed partial class OpenAiCompatibleMathInterpreter : IMathInterpreter, 
         for (int guard = 0; answers <= Math.Max(1, _settings.MaxRetries) && guard < 8; guard++)
         {
             ct.ThrowIfCancellationRequested();
-            var (content, finish, status, error) = await ChatAsync(messages, noThinking, ct).ConfigureAwait(false);
+            var (content, finish, status, error, rejection) = await ChatAsync(messages, noThinking, ct).ConfigureAwait(false);
             bool protocolFallback = status == HttpStatusCode.BadRequest
                 && ((noThinking && !_thinkingFieldRejected) || withImages);
             // A reasoning model that spent the whole budget thinking has not answered yet: ask it
@@ -322,9 +322,9 @@ public sealed partial class OpenAiCompatibleMathInterpreter : IMathInterpreter, 
                 continue;
             }
             if (status == HttpStatusCode.BadRequest && noThinking && !_thinkingFieldRejected
-                && error is not null && (error.Contains("chat_template_kwargs", StringComparison.OrdinalIgnoreCase)
-                    || error.Contains("enable_thinking", StringComparison.OrdinalIgnoreCase)
-                    || error.Contains("Unrecognized request argument", StringComparison.OrdinalIgnoreCase)))
+                && rejection is not null && (rejection.Contains("chat_template_kwargs", StringComparison.OrdinalIgnoreCase)
+                    || rejection.Contains("enable_thinking", StringComparison.OrdinalIgnoreCase)
+                    || rejection.Contains("Unrecognized request argument", StringComparison.OrdinalIgnoreCase)))
             {
                 _thinkingFieldRejected = true;   // not a llama.cpp/vLLM server; let it think
                 noThinking = false;
@@ -389,7 +389,12 @@ public sealed partial class OpenAiCompatibleMathInterpreter : IMathInterpreter, 
         ];
     }
 
-    private async Task<(string? Content, string? Finish, HttpStatusCode? Status, string? Error)> ChatAsync(JsonArray messages, bool noThinking, CancellationToken ct)
+    /// <returns>
+    /// <c>Error</c> is what may be shown and stored (status and host only); <c>Rejection</c> is the
+    /// endpoint's response body for a refused request, read here to recognise a refused field and
+    /// never put in a message or a warning, because a body may echo part of the key.
+    /// </returns>
+    private async Task<(string? Content, string? Finish, HttpStatusCode? Status, string? Error, string? Rejection)> ChatAsync(JsonArray messages, bool noThinking, CancellationToken ct)
     {
         var body = new JsonObject
         {
@@ -406,18 +411,18 @@ public sealed partial class OpenAiCompatibleMathInterpreter : IMathInterpreter, 
             using var response = await _http.PostAsJsonAsync("chat/completions", body, ct).ConfigureAwait(false);
             string text = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             if (!response.IsSuccessStatusCode)
-                return (null, null, response.StatusCode, $"HTTP {(int)response.StatusCode}: {(text.Length > 300 ? text[..300] + "…" : text)}");
+                return (null, null, response.StatusCode, EndpointRefusal.DescribeAny(Host, response.StatusCode), text);
             using var document = JsonDocument.Parse(text);
             var choices = document.RootElement.GetProperty("choices");
-            if (choices.GetArrayLength() == 0) return (null, null, response.StatusCode, "The endpoint returned no choices.");
+            if (choices.GetArrayLength() == 0) return (null, null, response.StatusCode, "The endpoint returned no choices.", null);
             var choice = choices[0];
             string? finish = choice.TryGetProperty("finish_reason", out var f) && f.ValueKind == JsonValueKind.String ? f.GetString() : null;
             var message = choice.GetProperty("message");
             string? content = message.TryGetProperty("content", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString() : null;
-            return (content, finish, response.StatusCode, null);
+            return (content, finish, response.StatusCode, null, null);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        catch (Exception ex) { return (null, null, null, $"request failed: {ex.Message}"); }
+        catch (Exception ex) { return (null, null, null, $"request failed: {ex.Message}", null); }
     }
 
     public void Dispose()

@@ -184,8 +184,8 @@ public sealed class OpenAiCompatibleMathVerbaliser : IMathVerbaliser, IDisposabl
         using var response = await _http.PostAsJsonAsync("chat/completions", body, JsonOptions, ct).ConfigureAwait(false);
         if (!response.IsSuccessStatusCode)
         {
-            string detail = await SafeReadAsync(response, ct).ConfigureAwait(false);
-            throw new InvalidOperationException($"HTTP {(int)response.StatusCode}: {Truncate(detail)}");
+            // Status and host only: the body may echo part of the key (EndpointRefusal).
+            throw new InvalidOperationException(EndpointRefusal.DescribeAny(_http.BaseAddress?.Host ?? "the maths endpoint", response.StatusCode));
         }
 
         using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
@@ -203,14 +203,6 @@ public sealed class OpenAiCompatibleMathVerbaliser : IMathVerbaliser, IDisposabl
             ? content.GetString()
             : null;
     }
-
-    private static async Task<string> SafeReadAsync(HttpResponseMessage response, CancellationToken ct)
-    {
-        try { return await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false); }
-        catch { return "(no body)"; }
-    }
-
-    private static string Truncate(string s, int max = 300) => s.Length <= max ? s : s[..max] + "…";
 
     public void Dispose()
     {
