@@ -14,11 +14,10 @@
   <Window.KeyBindings>
     <KeyBinding Gesture="Ctrl+O" Command="{Binding OpenDocument}" />
     <KeyBinding Gesture="Ctrl+OemComma" Command="{Binding OpenSettings}" />
-    <!-- Space and Escape are handled in MainWindow.OnPreviewKeyDown, not here: a window-level
-         binding also fires while a text box is being typed in or a menu is being dismissed. -->
+    <!-- Space, Escape and Ctrl+Left/Right are handled in MainWindow.OnPreviewKeyDown, not here: a
+         window-level binding also fires while a text box is being typed in (where Ctrl+Left/Right
+         move by a word) or a menu is being dismissed. -->
     <KeyBinding Gesture="Ctrl+P" Command="{Binding PlayPause}" />
-    <KeyBinding Gesture="Ctrl+Right" Command="{Binding Next}" />
-    <KeyBinding Gesture="Ctrl+Left" Command="{Binding Previous}" />
     <KeyBinding Gesture="Ctrl+R" Command="{Binding Replay}" />
     <KeyBinding Gesture="Ctrl+OemPlus" Command="{Binding ZoomIn}" />
     <KeyBinding Gesture="Ctrl+OemMinus" Command="{Binding ZoomOut}" />
