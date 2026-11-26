@@ -31,6 +31,13 @@ public sealed class CitationTests
     [InlineData("the GJR-GARCH(p, q) model is nested in (2) when g is one.")]
     [InlineData("a weight of (0.5) on the first lag.")]
     [InlineData("the vector v[2] holds the second weight.")]
+    [InlineData("the weight takes values in [0, 1] for every t.")]
+    [InlineData("on the interval [1,2], the density is flat.")]
+    [InlineData("for x ∈ [1, 3] the bound holds.")]
+    [InlineData("indices in the set [0,1,2] are kept.")]
+    [InlineData("The sample runs (from January 1990 to March 2015) daily.")]
+    [InlineData("prices fell sharply (in September 2008) across markets.")]
+    [InlineData("In the Great Depression (1929) prices fell.")]
     public void ContentInBracketsIsKept(string text) => Assert.Equal(text, Dropped(text));
 
     [Fact]

@@ -24,4 +24,11 @@ public static class EndpointRefusal
         HttpStatusCode.NotFound => $"Address or model not known (404) at {host}.",
         _ => $"Server error ({(int)status}) from {host}.",
     };
+
+    /// <summary>
+    /// Any refused request in the same terms: <see cref="Describe"/> for the endpoint's own
+    /// problems, else that this one request was rejected. Never the response body.
+    /// </summary>
+    public static string DescribeAny(string host, HttpStatusCode status)
+        => IsEndpoints(status) ? Describe(host, status) : $"Request rejected ({(int)status}) by {host}.";
 }

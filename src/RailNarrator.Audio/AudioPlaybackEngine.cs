@@ -300,7 +300,7 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
             if (queued is not null && nextRender is not null)
                 _next = queued with { Render = nextRender, WriteCursor = 0, Boundary = null };
         }
-        if (playing) { _device.Start(); StartWriter(); }
+        if (playing) { StartDevice(); StartWriter(); }
     }
 
     private static PlaybackRender ApplyRate(float[] atDeviceRate, int deviceRate, double rate)
@@ -390,9 +390,23 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
             SetState(PlaybackState.Buffering);
             return;
         }
+        StartDevice();
         SetState(PlaybackState.Playing);
-        _device.Start();
         StartWriter();
+    }
+
+    /// <summary>
+    /// Starts the device, or reports why it cannot: an unplugged sink made Play report Playing with
+    /// no writer and no sound, and Error was never reached.
+    /// </summary>
+    private void StartDevice()
+    {
+        try { _device.Start(); }
+        catch (Exception ex)
+        {
+            OnDeviceFailed(ex.Message);
+            throw;
+        }
     }
 
     public async Task PauseAsync(CancellationToken ct = default)
@@ -415,7 +429,7 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
         try
         {
             lock (_gate) if (_state != PlaybackState.Paused) return;
-            _device.Start();
+            StartDevice();
             SetState(PlaybackState.Playing);
             StartWriter();
         }
@@ -480,7 +494,7 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
             if (_next is { } next) _next = next with { WriteCursor = 0, Boundary = null };
             _clipCompletedRaised = false;
         }
-        if (State == PlaybackState.Playing) { _device.Start(); StartWriter(); }
+        if (State == PlaybackState.Playing) { StartDevice(); StartWriter(); }
     }
 
     /// <summary>
@@ -533,19 +547,26 @@ public sealed class AudioPlaybackEngine : IAudioTransport, IAsyncDisposable
     /// it, the device is flushed and the current clip's tail written again, so the stale clip is never
     /// heard.
     /// </summary>
+    /// <remarks>
+    /// In turn with the other operations: a <see cref="QueueNextAsync"/> still rendering the old
+    /// words found nothing queued here, then queued them after the clear.
+    /// </remarks>
     public async Task ClearQueuedAsync(CancellationToken ct = default)
     {
-        bool written;
-        lock (_gate)
+        await _operations.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
         {
-            if (_next is null) return;
-            written = _next.Boundary is not null;
-            if (!written) { _next = null; return; }
+            lock (_gate)
+            {
+                if (_next is null) return;
+                if (_next.Boundary is null) { _next = null; return; }
+            }
+            // Part of it is in the device. Re-seat at the current position, which flushes it.
+            double position = PositionSeconds;
+            lock (_gate) _next = null;
+            await SeekCoreAsync(position).ConfigureAwait(false);
         }
-        // Part of it is in the device. Re-seat at the current position, which flushes it.
-        double position = PositionSeconds;
-        lock (_gate) _next = null;
-        await SeekAsync(position, ct).ConfigureAwait(false);
+        finally { _operations.Release(); }
     }
 
     private double ClipDurationSecondsCore()

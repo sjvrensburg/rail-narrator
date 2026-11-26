@@ -335,6 +335,29 @@ public sealed class LayoutRoleTests
         Assert.Contains("l=1", equation.OriginalText);
     }
 
+    /// <summary>
+    /// "Restore as prose" over a display block of several lines: its lines were merged into one
+    /// equation, so removing only a range equal to one line removed nothing.
+    /// </summary>
+    [Fact]
+    public void RestoreAsProse_OverAMultiLineDisplayBlock_ReadsItAsProse()
+    {
+        var snapshot = new LayoutPage()
+            .Block(BlockKind.Text, "The model is described next.")
+            .Block(BlockKind.DisplayMath, "This paragraph was taken for a formula by the layout model,", "although it is plain prose on two lines.")
+            .Block(BlockKind.Text, "The estimation follows.")
+            .Snapshot();
+        Assert.Single(Units(snapshot), u => u.Kind == ReadingUnitKind.DisplayMath);
+        var display = snapshot.Pages[0].Blocks.Single(b => b.Kind == BlockKind.DisplayMath).BBox;
+
+        var units = new ReadingUnitBuilder(new ReadingUnitBuilderOptions(
+            NarrationFilterSettings.Default,
+            Overrides: [new MathsRegionOverride(0, display, TreatAsMaths: false)])).Build(snapshot);
+
+        Assert.DoesNotContain(units, u => u.Kind == ReadingUnitKind.DisplayMath);
+        Assert.Contains(units, u => u.Kind == ReadingUnitKind.Prose && u.OriginalText.Contains("plain prose", StringComparison.Ordinal));
+    }
+
     [Fact]
     public void AHeadingDoesNotRunIntoTheParagraphAfterIt()
     {

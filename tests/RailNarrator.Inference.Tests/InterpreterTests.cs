@@ -27,6 +27,10 @@ public sealed class InterpreterTests
     [InlineData("The weight α is positive.", "α")]
     [InlineData("The variance is \\sigma^2.", "\\")]
     [InlineData("The component ht is smooth.", "ht")]
+    [InlineData("The ratio x/y is at most one.", "x/")]
+    [InlineData("It is x + y over two.", "+")]
+    [InlineData("The density f(x) is flat.", "f(")]
+    [InlineData("The norm |x| is bounded.", "|")]
     public void WrittenNotationAndGluedLetters_AreRejected(string spoken, string culprit)
     {
         var problems = SpokenMathsValidator.Problems(spoken, Request());
@@ -42,6 +46,7 @@ public sealed class InterpreterTests
     [InlineData("The conditional variance, sigma t squared, rises after a negative shock.")]
     [InlineData("The short-run component h t equals a constant plus a weighted sum of past squared shocks.")]
     [InlineData("It has a finite moment of order two plus phi, for some positive phi.")]
+    [InlineData("A weight and/or a constant (the intercept) is added.")]
     public void PlainSpeech_AndSpokenNotationBesideItsMeaning_AreAccepted(string spoken)
         => Assert.Empty(SpokenMathsValidator.Problems(spoken, Request()));
 

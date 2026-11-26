@@ -1524,7 +1524,19 @@ public sealed class ReadingUnitBuilder
                 if (PageRect.UnionAll(rects) is not { } bbox) continue;
                 if (!o.Contains(o.PageIndex, bbox)) continue;
                 if (o.TreatAsMaths) displayRanges.Add(r);
-                else displayRanges.RemoveAll(d => d == r);
+                else
+                {
+                    // The lines of a display block were merged into one range above, so a line
+                    // rarely equals a range: take the line out of every range it falls in.
+                    for (int k = displayRanges.Count - 1; k >= 0; k--)
+                    {
+                        var d = displayRanges[k];
+                        if (d.End <= r.Start || d.Start >= r.End) continue;
+                        displayRanges.RemoveAt(k);
+                        if (r.End < d.End) displayRanges.Insert(k, TextRange.FromBounds(r.End, d.End));
+                        if (d.Start < r.Start) displayRanges.Insert(k, TextRange.FromBounds(d.Start, r.Start));
+                    }
+                }
             }
         }
 

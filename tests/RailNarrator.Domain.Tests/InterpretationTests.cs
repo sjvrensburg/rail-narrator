@@ -145,6 +145,20 @@ public sealed class InterpretationTests
     }
 
     [Fact]
+    public async Task ARejectedInterpretation_GivesEachReasonOnce()
+    {
+        var plan = await PlanAsync(Interpret);
+        string refused = "Request rejected (400) by maths.example.";
+        var resolver = new MathInterpretationResolver(
+            new FakeInterpreter(_ => MathInterpretationResult.Reject(refused, refused, "it still has symbols", refused)), options: Interpret);
+
+        var segment = await resolver.ResolveAsync(plan, plan.Segments[2]);
+
+        var warning = Assert.Single(segment.Warnings, w => w.StartsWith("The interpretation was rejected", StringComparison.Ordinal));
+        Assert.Equal($"The interpretation was rejected: {refused}; it still has symbols", warning);
+    }
+
+    [Fact]
     public async Task APassageIsInterpretedOnce_ThenServedFromTheCache()
     {
         var plan = await PlanAsync(Interpret);
@@ -399,6 +413,32 @@ public sealed class InterpretationTests
         Assert.Equal("Second wording of the passage.", fresh?.SpokenText);
         Assert.Equal("Second wording of the passage.", coordinator.Plan!.Segments[1].SpokenText);
         await WaitUntil(() => tts.Requests.Any(r => r.Text == "Second wording of the passage."), "the regenerated wording to be synthesised");
+    }
+
+    [Fact]
+    public async Task ARegenerationTheModelRefuses_KeepsThePausedPosition()
+    {
+        var plan = await PlanAsync(Interpret);
+        int call = 0;
+        var interpreter = new FakeInterpreter(_ => Interlocked.Increment(ref call) == 1
+            ? new MathInterpretationResult("First wording of the passage.", [], [])
+            : MathInterpretationResult.Reject("refused"));
+        var transport = new FakeAudioTransport();
+        await using var coordinator = new NarrationCoordinator(new FakeTtsProvider(), transport,
+            options: new NarrationCoordinatorOptions(LookaheadSegments: 3, LookaheadSeconds: 0),
+            resolver: new MathInterpretationResolver(interpreter, options: Interpret));
+        await coordinator.LoadPlanAsync(plan);
+        await WaitUntil(() => coordinator.Plan?.Segments[1].Provenance == ScriptProvenance.ModelGenerated, "the first interpretation");
+        await coordinator.PlayAsync();
+        await WaitUntil(() => transport.State == PlaybackState.Playing, "playback to start");
+        await coordinator.PauseAsync();
+        int stops = transport.StopCount;
+
+        var fresh = await coordinator.RegenerateSegmentAsync(plan.Segments[1].Id);
+
+        Assert.Equal("First wording of the passage.", fresh?.SpokenText);
+        Assert.Equal(stops, transport.StopCount);
+        Assert.Equal(PlaybackState.Paused, transport.State);
     }
 
     [Fact]

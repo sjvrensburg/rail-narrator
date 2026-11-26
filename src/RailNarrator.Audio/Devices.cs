@@ -467,6 +467,9 @@ public sealed class FakeAudioOutputDevice : IAudioOutputDevice
     /// <summary>Throw this message from <see cref="Open"/> to simulate an unusable device.</summary>
     public string? FailOpenWith { get; set; }
 
+    /// <summary>Throw this message from <see cref="Start"/>, as a sink unplugged since it was opened.</summary>
+    public string? FailStartWith { get; set; }
+
     /// <summary>Total frames written since the last flush. Lets a test assert nothing stale was queued.</summary>
     public long TotalWritten { get { lock (_gate) return _written; } }
 
@@ -498,6 +501,7 @@ public sealed class FakeAudioOutputDevice : IAudioOutputDevice
 
     public void Start()
     {
+        if (FailStartWith is { } reason) throw new InvalidOperationException(reason);
         lock (_gate)
         {
             if (!_opened) throw new InvalidOperationException("The fake device is not open.");

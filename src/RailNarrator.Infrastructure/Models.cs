@@ -466,15 +466,23 @@ public sealed class SidecarManager : IAsyncDisposable
             // into a command line.
             foreach (string arg in BuildArguments()) startInfo.ArgumentList.Add(arg);
 
-            _process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
-            _process.OutputDataReceived += (_, e) => { if (e.Data is not null) AppendLog(e.Data); };
-            _process.ErrorDataReceived += (_, e) => { if (e.Data is not null) AppendLog(e.Data); };
-            _process.Exited += (_, _) =>
+            var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
+            _process = process;
+            process.OutputDataReceived += (_, e) => { if (e.Data is not null) AppendLog(e.Data); };
+            process.ErrorDataReceived += (_, e) => { if (e.Data is not null) AppendLog(e.Data); };
+            // The process this handler was attached to, not the field: StopAsync clears the field
+            // before the process exits, and reading it here threw on a thread-pool thread, which
+            // ended the application. An exit that StopAsync asked for is not a failure.
+            process.Exited += (_, _) =>
             {
+                if (!ReferenceEquals(_process, process)) return;
                 if (State == SidecarState.Ready || State == SidecarState.Starting)
                 {
+                    string code;
+                    try { code = process.ExitCode.ToString(System.Globalization.CultureInfo.InvariantCulture); }
+                    catch (InvalidOperationException) { code = "unknown"; }
                     State = SidecarState.Failed;
-                    FailureReason = $"Sidecar exited with code {_process.ExitCode}. See the diagnostics log.";
+                    FailureReason = $"Sidecar exited with code {code}. See the diagnostics log.";
                 }
             };
 
@@ -553,8 +561,11 @@ public sealed class SidecarManager : IAsyncDisposable
             if (!process.HasExited)
             {
                 // Ask first: a graceful shutdown lets the runtime release its model memory and any GPU
-                // allocation, which a kill can leave behind.
-                process.CloseMainWindow();
+                // allocation, which a kill can leave behind. A console server has no main window
+                // to close, so on Linux and macOS it is sent SIGTERM; CloseMainWindow did nothing
+                // there, and every stop waited out the timeout before the kill.
+                if (OperatingSystem.IsWindows()) process.CloseMainWindow();
+                else _ = PosixSignal.Terminate(process.Id);
                 if (!process.WaitForExit((int)_options.ShutdownTimeoutValue.TotalMilliseconds))
                     process.Kill(entireProcessTree: true);
             }
@@ -566,6 +577,20 @@ public sealed class SidecarManager : IAsyncDisposable
             State = SidecarState.Stopped;
         }
         await Task.CompletedTask.ConfigureAwait(false);
+    }
+
+    private static class PosixSignal
+    {
+        private const int SigTerm = 15;
+
+        [System.Runtime.InteropServices.DllImport("libc", EntryPoint = "kill", SetLastError = true)]
+        private static extern int Kill(int pid, int signal);
+
+        public static bool Terminate(int pid)
+        {
+            try { return Kill(pid, SigTerm) == 0; }
+            catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException) { return false; }
+        }
     }
 
     private void AppendLog(string line)

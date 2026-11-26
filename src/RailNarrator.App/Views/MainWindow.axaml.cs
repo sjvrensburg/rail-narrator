@@ -606,6 +606,15 @@ public partial class MainWindow : Window
         if (_viewModel.IsPickerOpen) { e.Handled = true; return; }
         var focused = FocusManager?.GetFocusedElement();
         if (HandleReviewKey(e, focused)) { e.Handled = true; return; }
+        if (e.KeyModifiers == KeyModifiers.Control && e.Key is Key.Left or Key.Right)
+        {
+            // Next and Previous passage, except in a text box, where these keys move by a word.
+            if (focused is TextBox || MainMenu.IsOpen || IsInsideOpenDropDown(focused)) return;
+            var command = e.Key == Key.Right ? _viewModel.Next : _viewModel.Previous;
+            if (command.CanExecute(null)) command.Execute(null);
+            e.Handled = true;
+            return;
+        }
         if (e.KeyModifiers != KeyModifiers.None) return;
 
         if (e.Key == Key.Space)

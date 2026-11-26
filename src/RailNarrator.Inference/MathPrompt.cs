@@ -18,6 +18,10 @@ namespace RailNarrator.Inference;
 /// </remarks>
 public static class MathPrompt
 {
+    /// <summary>What the model is shown of the source, for the validator to tell given numbers from invented ones.</summary>
+    public static string SourceText(RailNarrator.Domain.MathVerbalisationRequest request)
+        => string.Join(" ", request.ContextBefore, request.Representation, request.ContextAfter);
+
     /// <summary>Bump whenever the instruction below changes meaning.</summary>
     public const string Version = "math-verbalise/1";
 

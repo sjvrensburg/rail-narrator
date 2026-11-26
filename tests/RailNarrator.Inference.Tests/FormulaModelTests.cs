@@ -355,7 +355,7 @@ public sealed class FormulaModelTests
             Write what the narrator says in place of the passage.
             """;
         Assert.Equal(expected, MathInterpretationPrompt.User(request, withImages: false));
-        Assert.Equal("math-interpret/4", MathInterpretationPrompt.Version);
+        Assert.Equal("math-interpret/5", MathInterpretationPrompt.Version);
     }
 
     [Fact]

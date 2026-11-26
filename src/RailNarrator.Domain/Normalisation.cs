@@ -128,8 +128,13 @@ public static class TextNormaliser
         return new TransformedText(sb.ToString(), mappings, input);
     }
 
+    // A capitalised word that dates rather than names: "(from January 1990 to March 2015)".
+    private const string NotAName =
+        @"(?!(?:January|February|March|April|May|June|July|August|September|October|November|December"
+        + @"|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec|Spring|Summer|Autumn|Fall|Winter)\b)";
+
     // An author name: capitalised, possibly with an initial particle, a hyphen or diacritics.
-    private const string Author = @"(?:(?:van|von|de|der|den|du|da|di|le|la)\s+)*\p{Lu}[\p{L}'’\-]+";
+    private const string Author = @"(?:(?:van|von|de|der|den|du|da|di|le|la)\s+)*" + NotAName + @"\p{Lu}[\p{L}'’\-]+";
     private const string Year = @"(?:1[5-9]|20)\d{2}[a-z]?";
 
     // "(Hamilton, 1989; Ang & Timmermann, 2012)", "(see Engle, 1982)", "(Glosten et al., 1993, p. 4)".
@@ -137,14 +142,19 @@ public static class TextNormaliser
         @"\s*\((?=[^()]*" + Author + @"(?:\s*(?:,|and|&)\s*" + Author + @")*(?:\s+et\s+al\.?)?,?\s+" + Year + @")[^()]{1,300}\)",
         System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
-    // "Engle (1982)", "Amado and Teräsvirta (2008, 2013)": the bracket holds only years.
+    // "Engle (1982)", "Amado and Teräsvirta (2008, 2013)": the bracket holds only years. A name of
+    // an event or a thing after "the" ("the Great Depression (1929)") is not an author.
     private static readonly System.Text.RegularExpressions.Regex Narrative = new(
-        @"(?<=(?:" + Author + @"|al\.)\s*)\s*\(\s*" + Year + @"(?:\s*[,;]\s*" + Year + @")*\s*\)",
+        @"(?<=(?:(?<!\b[Tt]he\s+(?:\p{Lu}[\p{L}'’\-]*\s+)*)" + Author + @"|al\.)\s*)\s*\(\s*" + Year + @"(?:\s*[,;]\s*" + Year + @")*\s*\)",
         System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
-    // " [12]", " [3, 7]", " [4–6]": after a space, so an index such as "v[2]" is not a citation.
+    // " [12]", " [3, 7]", " [4–6]": after a space, so an index such as "v[2]" is not a citation. A
+    // bracket holding a 0 is an interval or an index set, as is one after a word that introduces
+    // an interval ("on [1, 2]", "x ∈ [1,2]"): references are numbered from one.
     private static readonly System.Text.RegularExpressions.Regex Numeric = new(
-        @"\s+\[\d{1,3}(?:\s*[,–\-]\s*\d{1,3})*\]", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        @"(?<!(?:\b(?:interval|intervals|range|ranges|on|over|within|onto|domain|support|between|values\s+in|lies?\s+in|takes?\s+values\s+in)|[∈=<>≤≥])\s*)"
+        + @"\s+\[(?!0)(?!(?:\d{1,3}\s*[,–\-]\s*)*0\b)\d{1,3}(?:\s*[,–\-]\s*\d{1,3})*\]",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
     /// <summary>
     /// Leaves out in-line citation markers, as a reader does on a first reading: "Engle (1982)
