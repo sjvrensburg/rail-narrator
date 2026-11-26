@@ -37,19 +37,26 @@ public static class HeadlessNarration
     public static async Task<int> RunAsync(string[] args, TextWriter output, TextWriter errors, CancellationToken ct = default)
     {
         string command = args[0];
-        string? Option(string name)
+        if (!TryParse(args, out var parsed, out string? parseError))
         {
-            int i = Array.IndexOf(args, name);
-            return i >= 0 && i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal) ? args[i + 1] : null;
+            errors.WriteLine(parseError is null ? Usage : parseError + "\n" + Usage);
+            return 2;
         }
-        string? document = args.Skip(1).FirstOrDefault(a => !a.StartsWith("--", StringComparison.Ordinal));
-        if (document is null || args.Contains("--help")) { errors.WriteLine(Usage); return 2; }
-        document = Path.GetFullPath(document);
+        string? Option(string name) => parsed.Values.GetValueOrDefault(name);
+        bool Flag(string name) => parsed.Flags.Contains(name);
+        if (parsed.Document is null || Flag("--help")) { errors.WriteLine(Usage); return 2; }
+        string document = Path.GetFullPath(parsed.Document);
         if (!File.Exists(document)) { errors.WriteLine($"No such file: {document}"); return 2; }
 
         string narrationPath = Option("--out") is { } o ? Path.GetFullPath(o) : SavedNarration.PathFor(document);
-        bool wantBook = args.Contains("--m4b") || command == "export";
+        bool wantBook = Flag("--m4b") || command == "export";
         string bookPath = Option("--m4b") is { } b ? Path.GetFullPath(b) : Path.ChangeExtension(document, ".m4b");
+        foreach (var (what, path) in new[] { ("--out", narrationPath), ("--m4b", bookPath) })
+            if (string.Equals(path, document, OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal))
+            {
+                errors.WriteLine($"{what} would write over the document itself ({document}).");
+                return 2;
+            }
         string title = Path.GetFileNameWithoutExtension(document);
 
         try
@@ -57,7 +64,7 @@ public static class HeadlessNarration
             string hash = CacheKey.Sha256HexOfFile(document);
             if (command == "narrate")
             {
-                if (File.Exists(narrationPath) && !args.Contains("--force"))
+                if (File.Exists(narrationPath) && !Flag("--force"))
                 {
                     errors.WriteLine($"{narrationPath} already exists. Pass --force to narrate the document again and replace it.");
                     return 1;
@@ -83,7 +90,7 @@ public static class HeadlessNarration
                         lastReport = clock.ElapsedMilliseconds;
                         output.WriteLine(string.Create(CultureInfo.InvariantCulture,
                             $"  {p.Done,5} of {p.Total}  {Minutes(p.AudioSeconds)} of audio  {Minutes(clock.Elapsed.TotalSeconds)} elapsed"));
-                    }), ct, allowUninterpreted: args.Contains("--allow-uninterpreted")).ConfigureAwait(false);
+                    }), ct, allowUninterpreted: Flag("--allow-uninterpreted")).ConfigureAwait(false);
 
                 output.WriteLine(Summary(manifest, narrationPath));
                 if (last is not null)
@@ -129,6 +136,56 @@ public static class HeadlessNarration
         var units = services.CreateUnitBuilder([]).Build(snapshot, out _);
         if (units.Count == 0) throw new InvalidOperationException("Nothing narratable was found in the document.");
         return await services.CreatePlanner().BuildPlanAsync(snapshot, units, services.CurrentSettings.Filters, ct: ct).ConfigureAwait(false);
+    }
+
+    /// <summary>The arguments after the command, read apart: the document, options with a value, flags.</summary>
+    public sealed record Arguments(string? Document, IReadOnlyDictionary<string, string> Values, IReadOnlySet<string> Flags);
+
+    /// <summary>
+    /// Reads the arguments after the command. <c>--out</c> and <c>--voice</c> always take the next
+    /// argument; <c>--m4b</c> takes it only when it names an <c>.m4b</c> file, so that
+    /// <c>--m4b paper.pdf</c> means "also an audiobook" and never "write the audiobook over the PDF".
+    /// An option's value is never taken as the document, and an unknown option or a second document
+    /// is an error rather than being ignored.
+    /// </summary>
+    public static bool TryParse(string[] args, out Arguments parsed, out string? error)
+    {
+        var values = new Dictionary<string, string>(StringComparer.Ordinal);
+        var flags = new HashSet<string>(StringComparer.Ordinal);
+        string? document = null;
+        error = null;
+        parsed = new Arguments(null, values, flags);
+        for (int i = 1; i < args.Length; i++)
+        {
+            string a = args[i];
+            bool hasNext = i + 1 < args.Length && !args[i + 1].StartsWith("--", StringComparison.Ordinal);
+            switch (a)
+            {
+                case "--out":
+                    if (!hasNext) { error = "--out needs a file name."; return false; }
+                    if (!args[i + 1].EndsWith(".narration", StringComparison.OrdinalIgnoreCase)) { error = $"--out must name a .narration file, not {args[i + 1]}."; return false; }
+                    values[a] = args[++i];
+                    break;
+                case "--voice":
+                    if (!hasNext) { error = "--voice needs a voice id."; return false; }
+                    values[a] = args[++i];
+                    break;
+                case "--m4b":
+                    flags.Add(a);
+                    if (hasNext && args[i + 1].EndsWith(".m4b", StringComparison.OrdinalIgnoreCase)) values[a] = args[++i];
+                    break;
+                case "--force" or "--allow-uninterpreted" or "--help":
+                    flags.Add(a);
+                    break;
+                default:
+                    if (a.StartsWith("--", StringComparison.Ordinal)) { error = $"Unknown option {a}."; return false; }
+                    if (document is not null) { error = $"One document at a time: {document} and {a} were both given."; return false; }
+                    document = a;
+                    break;
+            }
+        }
+        parsed = new Arguments(document, values, flags);
+        return true;
     }
 
     /// <summary>What was saved, with what a listener should know about its maths.</summary>
