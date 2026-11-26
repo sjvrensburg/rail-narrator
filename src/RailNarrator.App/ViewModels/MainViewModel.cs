@@ -2989,8 +2989,11 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     private async Task RegenerateMathsAsync()
     {
         if (MathsReview is null || Plan is null || _snapshot is null) return;
-        var unit = Plan.Segment(MathsReview.SegmentId)?.ReadingUnitIds.Select(id => Plan.Unit(id)).FirstOrDefault(u => u is not null);
-        if (_services.ResolvesMathsLate && unit is { Kind: ReadingUnitKind.DisplayMath } or { ContainsMaths: true })
+        // Every unit of the passage: a sentence leading into an equation is one passage whose first
+        // unit has no maths of its own, and judged by it alone the passage was re-planned instead,
+        // which asked no model and lost the reading position.
+        var passageUnits = Plan.Segment(MathsReview.SegmentId)?.ReadingUnitIds.Select(id => Plan.Unit(id)) ?? [];
+        if (_services.ResolvesMathsLate && passageUnits.Any(u => u is { Kind: ReadingUnitKind.DisplayMath } or { ContainsMaths: true }))
         {
             // An interpreted passage: ask the model again for this one passage, bypassing its cache.
             Busy = true;
