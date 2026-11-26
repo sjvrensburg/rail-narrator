@@ -49,6 +49,11 @@
   </provides>
 
   <releases>
+    <release version="0.1.7" date="2026-11-26">
+      <description>
+        <p>Fixes fifteen bugs found in a review of the whole program: a pause between two passages is kept, a corrected passage is read again in its new words, intervals and dates are no longer dropped with citations, and an audiobook can no longer be written over its PDF.</p>
+      </description>
+    </release>
     <release version="0.1.6" date="2026-11-26">
       <description>
         <p>Keeps your place in a document when its narration is prepared again (after an update, a new layout model or changed filters), and opens a document with a saved narration sooner.</p>
