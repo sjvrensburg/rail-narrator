@@ -6,6 +6,8 @@ using RailNarrator.Pdf;
 using RailReader.Core.Models;
 
 // Measures maths interpretation on a real document, with no cache, so every number is a model call.
+// Each request to an OpenAI-compatible endpoint is printed (REQ: interpret, repair or transcribe,
+// thinking or not, its time, tokens and finish) and totalled at the end by kind of passage and outcome.
 // usage: rail-narrator-mathbench <pdf> <layout.onnx> [options]
 //   --layout NAME        heron | pp-doclayout-v3 (default: heron when the model's file name says so, else pp-doclayout-v3)
 //   --dump-crops DIR     write each crop the formula model is given as a PNG, named by passage
@@ -19,13 +21,14 @@ using RailReader.Core.Models;
 //   --max-tokens N       completion budget (default 4000; with claude, 16000)
 //   --no-images          text layer and context only
 //   --no-reader          no transcription fallback when an interpretation is refused
+//   --repair-no-thinking the repair turn with thinking off even when the first attempt thought (the application lets it think)
 //   --formula-model PATH the formula model (PP-FormulaNet_plus-M .onnx); its inference.yml is looked for beside it
 //   --formula-config PATH its inference.yml, when it is elsewhere
 //   --evidence WHAT      what the language model is given with a formula model: image | latex | both (default both)
 //   --no-llm             no language model: display equations read by rule from the formula model
 if (args.Length < 2)
 {
-    Console.Error.WriteLine("usage: rail-narrator-mathbench <pdf> <layout.onnx> [--layout heron|pp-doclayout-v3] [--provider openai|claude] [--endpoint URL] [--api-key-env NAME] [--model NAME] [--pages A-B] [--only i,j] [--thinking off|equations|always] [--max-tokens N] [--no-images] [--no-reader] [--formula-model PATH [--formula-config PATH] [--evidence image|latex|both] [--no-llm] [--dump-crops DIR]]");
+    Console.Error.WriteLine("usage: rail-narrator-mathbench <pdf> <layout.onnx> [--layout heron|pp-doclayout-v3] [--provider openai|claude] [--endpoint URL] [--api-key-env NAME] [--model NAME] [--pages A-B] [--only i,j] [--thinking off|equations|always] [--max-tokens N] [--no-images] [--no-reader] [--repair-no-thinking] [--formula-model PATH [--formula-config PATH] [--evidence image|latex|both] [--no-llm] [--dump-crops DIR]]");
     return 2;
 }
 
@@ -77,11 +80,14 @@ var evidence = (Option("--evidence") ?? "both") switch
 bool noLlm = args.Contains("--no-llm");
 if (noLlm && formulas is null) { Console.Error.WriteLine("--no-llm needs --formula-model"); return 2; }
 
+// Every request to an OpenAI-compatible endpoint, timed, so a passage's time can be split by call.
+var trace = new TracingHandler();
 IMathInterpreter? interpreter = noLlm ? null : claude
     ? new ClaudeMathInterpreter(new ClaudeEndpointSettings(model, BaseUrl: endpoint, MaxTokens: maxTokens), thinking: thinking)
     : new OpenAiCompatibleMathInterpreter(
         new MathEndpointSettings(endpoint!, model!, ApiKey: Option("--api-key-env") is { } keyVariable ? Environment.GetEnvironmentVariable(keyVariable) : null, Temperature: 0.2, MaxTokens: maxTokens, MaxRetries: 1, RequestTimeout: TimeSpan.FromMinutes(3)),
-        thinking: thinking);
+        new HttpClient(trace) { Timeout = TimeSpan.FromMinutes(3) },
+        thinking: thinking) { ThinkOnRepair = !args.Contains("--repair-no-thinking") };
 using var disposeInterpreter = interpreter as IDisposable;
 using var disposeFormulas = formulas;
 // With a formula model the crops are needed even without images: it reads its own.
@@ -105,6 +111,7 @@ foreach (var (segment, index) in pending)
 {
     var unit = plan.Units.First(u => u.Id == segment.ReadingUnitIds[0]);
     formulas?.Read.Clear();
+    trace.Calls.Clear();
     formulas?.Passage = index;
     var clock = Stopwatch.StartNew();
     var result = await resolver.ResolveAsync(plan, segment);
@@ -116,6 +123,10 @@ foreach (var (segment, index) in pending)
         $"\n#{index} [{kind} p{unit.PageIndex + 1}, {clock.Elapsed.TotalSeconds:F1}s, {result.Provenance}]\n  SRC: {printed}\n  SAY: {result.SpokenText}"));
     foreach (var (read, seconds) in formulas?.Read ?? [])
         Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"  TEX ({seconds:F2}s): {read.Latex ?? "— " + read.Problem}"));
+    foreach (var call in trace.Calls)
+        Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
+            $"  REQ {call.Kind}{(call.Thinking ? " thinking" : "")}: {call.Seconds:F1}s, {call.CompletionTokens} tokens, {call.Finish ?? "error " + call.Status}"));
+    trace.All.AddRange(trace.Calls.Select(c => (Call: c, result.Provenance, Index: index, Passage: segment.ReadingUnitIds.Count > 1 ? "lead-in" : unit.Kind == ReadingUnitKind.DisplayMath ? "equation" : "sentence")));
     foreach (var warning in result.Warnings.Where(w => !w.StartsWith("Interpreted by", StringComparison.Ordinal)))
         Console.WriteLine($"  !! {warning}");
 }
@@ -124,6 +135,14 @@ if (times.Count == 0) return 0;
 var sorted = times.Order().ToList();
 Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
     $"\n{string.Join(", ", outcomes.Select(o => $"{o.Key} {o.Value}"))}; median {sorted[sorted.Count / 2]:F1}s, max {sorted[^1]:F1}s, total {times.Sum():F0}s"));
+foreach (var group in trace.All.GroupBy(c => (Kind: c.Passage, c.Provenance)).OrderBy(g => g.Key.Kind).ThenBy(g => g.Key.Provenance.ToString()))
+{
+    var calls = group.Select(g => g.Call).ToList();
+    int passages = trace.All.Where(c => c.Passage == group.Key.Kind && c.Provenance == group.Key.Provenance).Select(c => c.Index).Distinct().Count();
+    Console.WriteLine(FormattableString.Invariant(
+        $"{group.Key.Kind,-8} {passages} {group.Key.Provenance}: {calls.Count} requests, {calls.Sum(c => c.Seconds):F0}s; ") +
+        string.Join(", ", calls.GroupBy(c => (c.Kind, c.Thinking, c.Finish)).Select(k => FormattableString.Invariant($"{k.Key.Kind}{(k.Key.Thinking ? "+think" : "")}/{k.Key.Finish ?? "error"} {k.Count()} in {k.Sum(c => c.Seconds):F0}s"))));
+}
 if (formulas is { All.Count: > 0 })
 {
     var formulaTimes = formulas.All.Select(f => f.Seconds).Order().ToList();
@@ -158,4 +177,39 @@ internal sealed class TimedFormulas(PpFormulaNetRecogniser inner, string? dumpDi
     }
 
     public void Dispose() => inner.Dispose();
+}
+
+/// <summary>Times each chat request and notes what it was: an interpretation, a repair or a transcription, thinking or not.</summary>
+internal sealed class TracingHandler() : DelegatingHandler(new HttpClientHandler())
+{
+    public sealed record Call(string Kind, bool Thinking, double Seconds, int CompletionTokens, string? Finish, int Status);
+
+    public List<Call> Calls { get; } = [];
+    public List<(Call Call, ScriptProvenance Provenance, int Index, string Passage)> All { get; } = [];
+
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        if (request.Content is null || !request.RequestUri!.AbsolutePath.EndsWith("chat/completions", StringComparison.Ordinal))
+            return await base.SendAsync(request, ct);
+        string body = await request.Content.ReadAsStringAsync(ct);
+        var sent = System.Text.Json.Nodes.JsonNode.Parse(body)!;
+        var messages = sent["messages"]!.AsArray();
+        string system = messages[0]!["content"]!.GetValue<string>();
+        string kind = system.StartsWith("You transcribe", StringComparison.Ordinal) ? "transcribe" : messages.Count > 2 ? "repair" : "interpret";
+        bool thinking = sent["chat_template_kwargs"]?["enable_thinking"]?.GetValue<bool>() != false;
+        var clock = Stopwatch.StartNew();
+        var response = await base.SendAsync(request, ct);
+        string text = await response.Content.ReadAsStringAsync(ct);
+        int tokens = 0; string? finish = null;
+        if (response.IsSuccessStatusCode)
+        {
+            var answer = System.Text.Json.Nodes.JsonNode.Parse(text)!;
+            tokens = answer["usage"]?["completion_tokens"]?.GetValue<int>() ?? 0;
+            finish = answer["choices"]?[0]?["finish_reason"]?.GetValue<string>();
+        }
+        Calls.Add(new Call(kind, thinking, clock.Elapsed.TotalSeconds, tokens, finish, (int)response.StatusCode));
+        var copy = new HttpResponseMessage(response.StatusCode) { Content = new StringContent(text, System.Text.Encoding.UTF8, "application/json") };
+        response.Dispose();
+        return copy;
+    }
 }
