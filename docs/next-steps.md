@@ -172,9 +172,6 @@ In rough priority order:
   `rail-narrator narrate` and its time report that model time and speaking time overlap; if the
   model is then what a narration waits for, several interpretations at once is the next step
   for an endpoint that allows it.
-- **Extraction when a saved narration is opened.** It still runs (cached after the first time),
-  layout model and all, although the narration brings its own plan. What the window needs from
-  it (hit-testing, region corrections) could be made on demand.
 - **Offer the Phonon patch upstream** (gradium-ai/xn-ptts): `tools/phonon-word-timing.patch`
   adds `ptts_speak_aligned`. Accepted, the application would stop carrying a patch against a
   pinned commit.

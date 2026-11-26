@@ -1975,3 +1975,17 @@ threads meeting.
    rather than proven. Not adopted: interpretation already runs well ahead of the narration, and
    the reader asked for plain language first. Not measured: Claude's repair (its effort is set
    per passage, and the runs cost money).
+118. **A document with a saved narration opens without waiting for its pages to be read**
+   (`feat/saved-narration-fast-open`, 2026-11-26). The narration brings its plan, but the open
+   still ran the whole extraction, layout model and all, before the window was ready. The pages
+   are now read after the document opens (`MainViewModel.ExtractBehindAsync`), for what needs
+   their text: notes, highlights and bringing notes over, which say "The pages are still being
+   read" until then. The next open, a close and quitting cancel it. *Measured in the window*
+   (headless compositor, the GARCH paper with a Kokoro narration of 586 passages, Heron INT8, the
+   extraction cache emptied before each open, reference machine): "Ready" at 4.8 s before and
+   2.2 s after, in two runs each. H pressed at once said the pages were still being read; then
+   playing gave sound at the sink, H highlighted the sentence being read, and a close while the
+   pages were read left no extraction in the cache and the application running. Not measured: a
+   slower machine or a scanned document, where reading the pages takes longer and the saving is
+   larger.
+
