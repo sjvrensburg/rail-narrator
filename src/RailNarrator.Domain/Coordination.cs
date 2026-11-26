@@ -274,6 +274,9 @@ public sealed class NarrationCoordinator : IAsyncDisposable
     /// <summary>True while passages are played from a saved narration rather than spoken afresh.</summary>
     public bool PlaysFromRecording => _recording is not null;
 
+    /// <summary>Lets go of the saved narration (its document was closed); the engine speaks from here.</summary>
+    public void ForgetRecording() => _recording = null;
+
     public NarrationCoordinator(
         ITtsProvider tts,
         IAudioTransport audio,

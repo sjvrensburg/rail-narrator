@@ -309,7 +309,9 @@ public sealed class SavedNarration : IRecordedNarration, IDisposable
         ZipArchive? zip = null;
         try
         {
-            zip = new ZipArchive(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read), ZipArchiveMode.Read);
+            // FileShare.Delete: saving the narration again replaces this file while it is open (the
+            // document was opened from it), which Windows refuses without it.
+            zip = new ZipArchive(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete), ZipArchiveMode.Read);
             var manifest = Read<SavedNarrationManifest>(zip, "manifest.json");
             if (manifest is null) { problem = "it has no manifest"; return Fail(); }
             if (manifest.Format != SavedNarrationManifest.CurrentFormat)

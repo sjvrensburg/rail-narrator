@@ -1865,6 +1865,12 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         KeepDraftOnLeaving();
         await FlushReviewAsync();
         await Coordinator.StopAsync();
+        // The saved narration is the closed document's: let go of the file, which stayed open
+        // (and, on Windows, could not be replaced by saving it again).
+        Coordinator.ForgetRecording();
+        _savedNarration?.Dispose();
+        _savedNarration = null;
+        OnPropertyChanged(nameof(PlaysSavedNarration));
         DetachReview();
         // No document, no progress: the coordinator keeps its plan, and its last snapshot with it.
         Playback = Playback with { SegmentId = null, SegmentIndex = 0, SegmentCount = 0, PositionSeconds = 0,
