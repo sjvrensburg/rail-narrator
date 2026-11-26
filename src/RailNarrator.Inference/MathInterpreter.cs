@@ -171,7 +171,7 @@ public static partial class SpokenMathsValidator
 /// </summary>
 /// <remarks>
 /// Every response is validated; a response with notation gets one repair turn, as in the narrate
-/// skill, and is then refused. A response cut off at the token limit is a failure, not a shorter
+/// skill, and is then refused. The repair thinks when the first attempt did (<see cref="OpenAiCompatibleMathInterpreter.ThinkOnRepair"/>). A response cut off at the token limit is a failure, not a shorter
 /// answer — except that a reasoning model which ran out while still thinking is asked once more
 /// with thinking off (on the GARCH paper, 37 of 144 thinking answers ran out at 4000 tokens). An endpoint that rejects images is asked again with text only, and remembered as
 /// text-only so later passages do not pay for the failed attempt.
@@ -222,6 +222,14 @@ public sealed partial class OpenAiCompatibleMathInterpreter : IMathInterpreter, 
     }
 
     public string Revision => $"{MathInterpretationPrompt.Version}|{_settings.BaseUrl.TrimEnd('/')}|{_settings.Model}";
+
+    /// <summary>
+    /// Whether the repair turn may think when the first attempt did (the default). Off saved 14 % of
+    /// the model time on the GARCH paper (1,783 s against 2,069 s), but its repairs rescued 46 of 90
+    /// passages against 56 of 93 with thinking, so more passages were read by rule; kept on because
+    /// interpretation already runs well ahead of the narration (status item 117).
+    /// </summary>
+    public bool ThinkOnRepair { get; init; } = true;
 
     string IMathReader.Revision => $"{MathTranscriptionReading.PromptVersion}|{LocalLatexSpeaker.Version}|{_settings.BaseUrl.TrimEnd('/')}|{_settings.Model}";
 
@@ -358,6 +366,7 @@ public sealed partial class OpenAiCompatibleMathInterpreter : IMathInterpreter, 
                 ["role"] = "user",
                 ["content"] = MathAnswerText.RepairRequest(found),
             });
+            if (!ThinkOnRepair) noThinking = true;
         }
         return new MathInterpretationResult(null, warnings, problems.Count > 0 ? problems : ["No usable response."]) { EndpointProblem = endpointProblem };
     }

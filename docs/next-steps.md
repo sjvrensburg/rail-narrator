@@ -236,11 +236,13 @@ In rough priority order:
 - **Kokoro's CPU thread default.** 4–6 threads were about 10 % faster than the provider's 8 on the
   i7-12700H; re-measure on the reference machine before changing it.
 
-- **Make rule-read passages cheaper.** A passage that ends up read by rule costs a thinking
-  attempt (often running out of tokens), a thinking-off retry, a refusal and then a
-  transcription: about 66 s for a lead-in. That is the main reason model time is close to
-  narration time. Options: a smaller thinking budget for the first attempt, or transcribing in
-  parallel when the server has a second slot. Measure with `rail-narrator-mathbench`.
+- **Make rule-read passages cheaper** (`status.md` item 117). Measured again with today's
+  defaults: model time is about 40 % of narration time on the GARCH paper (2,069 s), so it no
+  longer holds narration back; a lead-in read by rule costs about 35 s, most of it the first
+  thinking attempt that every lead-in makes. A repair with thinking off saves 14 % but likely
+  rescues fewer passages, and was not adopted. What is left: knowing before the first attempt
+  that a passage will be refused (they are mostly long lead-ins whose answer reads notation), or
+  a second server slot for the transcription.
 - **Proof-read a sample of rule readings against the printed equations**, symbol by symbol. So
   far they have been checked only for leftover notation.
 - **Identify the flaky Audio test.** It failed once in a full-solution run while the LLM was

@@ -253,6 +253,34 @@ public sealed class InterpreterTests
     }
 
     [Fact]
+    public async Task TheRepairTurn_ThinksWhenTheFirstAttemptDid()
+    {
+        var stub = new Stub(() => Answer("The component h_t equals α0."), () => Answer(Good));
+
+        var result = await Make(stub, thinking: MathThinking.Always).InterpretAsync(Request());
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(2, stub.Bodies.Count);
+        Assert.False(AskedNotToThink(stub.Bodies[0]));
+        Assert.False(AskedNotToThink(stub.Bodies[1]));
+        Assert.Equal(4, stub.Bodies[1].RootElement.GetProperty("messages").GetArrayLength());   // the rejected answer and the complaint
+    }
+
+    [Fact]
+    public async Task TheRepairTurn_CanBeAskedWithThinkingOff()
+    {
+        var stub = new Stub(() => Answer("The component h_t equals α0."), () => Answer(Good));
+        var interpreter = new OpenAiCompatibleMathInterpreter(new MathEndpointSettings("http://127.0.0.1:9/v1", "m", MaxRetries: 1),
+            new HttpClient(stub) { BaseAddress = new Uri("http://127.0.0.1:9/v1/") }, MathThinking.Always) { ThinkOnRepair = false };
+
+        var result = await interpreter.InterpretAsync(Request());
+
+        Assert.True(result.Succeeded);
+        Assert.False(AskedNotToThink(stub.Bodies[0]));
+        Assert.True(AskedNotToThink(stub.Bodies[1]));
+    }
+
+    [Fact]
     public async Task TheThinkingSwitchIsDroppedWhenTheEndpointDoesNotKnowIt()
     {
         var stub = new Stub(
