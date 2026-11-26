@@ -49,6 +49,11 @@
   </provides>
 
   <releases>
+    <release version="0.1.6" date="2026-11-26">
+      <description>
+        <p>Keeps your place in a document when its narration is prepared again (after an update, a new layout model or changed filters), and opens a document with a saved narration sooner.</p>
+      </description>
+    </release>
     <release version="0.1.5" date="2026-11-25">
       <description>
         <p>Fixes playback getting stuck or starting on its own after quick presses, edits and voice changes, and reads a lone letter "a" in maths as the letter rather than the article more reliably.</p>
