@@ -816,6 +816,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             ShowNotice("That offer was for another document.");
             return;
         }
+        if (PagesStillBeingRead) { ShowNotice(PagesStillBeingReadMessage); return; }
         if (_session is not { } session || _review is not { } review || _snapshot is not { } snapshot || _carrying) return;
         if (review.BroughtFrom.Contains(hash)) return;
         _carrying = true;
@@ -1150,6 +1151,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             _drag = drag;
             if (refusal is not null) StatusMessage = refusal;
         }
+        else if (PagesStillBeingRead) StatusMessage = PagesStillBeingReadMessage;
         return true;
     }
 
@@ -1357,7 +1359,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         // Found before pausing: the pause must not move what "just read" means.
         if (JustRead(wholePassage) is not { } target)
         {
-            StatusMessage = "Nothing has been read yet to put a note on.";
+            StatusMessage = PagesStillBeingRead ? PagesStillBeingReadMessage : "Nothing has been read yet to put a note on.";
             return;
         }
         if (_playback.IsAudible) await Coordinator.PauseAsync();
@@ -1372,7 +1374,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         if (_session is null) return;
         if (JustRead(wholePassage) is not { } target)
         {
-            StatusMessage = "Nothing has been read yet to highlight.";
+            StatusMessage = PagesStillBeingRead ? PagesStillBeingReadMessage : "Nothing has been read yet to highlight.";
             return;
         }
         if (_session.MadeOn(target) is { } existing)
@@ -1858,6 +1860,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     {
         if (!HasDocument || IsLoading) return;
         _pendingStartSegmentId = null;
+        StopExtractingBehind();
         await SavePositionAsync();
         KeepDraftOnLeaving();
         await FlushReviewAsync();
@@ -2261,6 +2264,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
         // dropped file or a recent document that silently does nothing looks broken.
         if (Busy) { StatusMessage = $"Wait for the current task to finish, then open {Path.GetFileName(path)} again."; return; }
         _pendingStartSegmentId = null;
+        StopExtractingBehind();
 
         // Build into locals and commit DocumentPath/_snapshot/Plan together only on success. A
         // failed open (corrupt PDF, empty extraction) then leaves the previous document fully
@@ -2300,24 +2304,31 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
             await Task.Run(() => _services.Extraction.AttachDocument(path));
             var request = _services.CreateExtractionRequest(path);
-            ReportLoading("Reading the pages");
-            // Progress is posted, so a report can land after extraction has returned — with a cache
-            // hit, after "Ready" — and overwrite the status. Reports are ignored once it is done.
-            bool extracting = true;
-            var snapshot = await _services.CachedExtraction.ExtractAsync(request,
-                new Progress<ExtractionProgress>(p => Dispatcher.UIThread.Post(() =>
-                {
-                    if (extracting) ReportLoading(ExtractionStage(p.Stage), p.PagesDone, p.PagesTotal);
-                })));
-            extracting = false;
-
-            foreach (string warning in snapshot.AllWarnings().Take(8))
-                if (!Notes.Contains(warning)) Notes.Add(warning);
-
-            if (snapshot.Pages.All(p => p.Coverage.CharCount == 0))
+            // A saved narration brings its plan, so reading does not wait for the pages to be read
+            // (layout model and all, minutes on a cold cache): they are read after the document
+            // opens, for what still needs them (notes, bringing notes over), by ExtractBehindAsync.
+            ExtractionSnapshot? snapshot = null;
+            if (saved is null)
             {
-                StatusMessage = "This document has no readable text. Enable OCR in settings and try again.";
-                return;
+                ReportLoading("Reading the pages");
+                // Progress is posted, so a report can land after extraction has returned — with a cache
+                // hit, after "Ready" — and overwrite the status. Reports are ignored once it is done.
+                bool extracting = true;
+                snapshot = await _services.CachedExtraction.ExtractAsync(request,
+                    new Progress<ExtractionProgress>(p => Dispatcher.UIThread.Post(() =>
+                    {
+                        if (extracting) ReportLoading(ExtractionStage(p.Stage), p.PagesDone, p.PagesTotal);
+                    })));
+                extracting = false;
+
+                foreach (string warning in snapshot.AllWarnings().Take(8))
+                    if (!Notes.Contains(warning)) Notes.Add(warning);
+
+                if (snapshot.Pages.All(p => p.Coverage.CharCount == 0))
+                {
+                    StatusMessage = "This document has no readable text. Enable OCR in settings and try again.";
+                    return;
+                }
             }
 
             ReportLoading("Finding the reading order");
@@ -2329,7 +2340,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
                 ? (saved.Plan.Units, (IReadOnlyList<string>)[])
                 : await Task.Run(() =>
                 {
-                    var built = builder.Build(snapshot, out var notes);
+                    var built = builder.Build(snapshot!, out var notes);
                     return (built, notes);
                 });
             foreach (string d in diagnostics) if (!Notes.Contains(d)) Notes.Add(d);
@@ -2358,8 +2369,8 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
                 // merely from the same file: changed filters, maths mode or region overrides rebuild.
                 if (saved is not null) return (saved.Plan, true);
                 string fingerprint = NarrationPlanner.ComputeInputFingerprint(planner.Options, filters, units);
-                if (cachedPlan is { } c && c.Matches(snapshot.Identity, fingerprint)) return (c, true);
-                var built = await planner.BuildPlanAsync(snapshot, units, filters, progress: planProgress).ConfigureAwait(false);
+                if (cachedPlan is { } c && c.Matches(snapshot!.Identity, fingerprint)) return (c, true);
+                var built = await planner.BuildPlanAsync(snapshot!, units, filters, progress: planProgress).ConfigureAwait(false);
                 return (built, false);
             });
             planningNow = false;
@@ -2391,7 +2402,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             }
 
             // ---- commit point: everything below describes the new document ----
-            _snapshot = snapshot;
+            _snapshot = snapshot;   // null until ExtractBehindAsync reads the pages, with a saved narration
             Plan = plan;
             DocumentPath = path;
             _documentHash = hash;
@@ -2435,10 +2446,15 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
             }
             OnPropertyChanged(nameof(MathEndpointSummary));
             OnPropertyChanged(nameof(CacheBytes));
-            _recent.Opened(path, snapshot.Pages.Count);
+            _recent.Opened(path, snapshot?.Pages.Count ?? 0);   // 0 keeps the count known before
             if (position is not null && plan.SegmentCount > 0)
                 _recent.Progressed(path, (double)Coordinator.Snapshot.SegmentIndex / plan.SegmentCount);
             RefreshRecent();
+            if (snapshot is null)
+            {
+                _extractingBehind = new CancellationTokenSource();
+                RunObserved(ExtractBehindAsync(path, hash, request, _extractingBehind.Token), "Could not read the pages");
+            }
             DocumentLoaded?.Invoke(path);
         }
         catch (Exception ex)
@@ -2463,6 +2479,46 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
     }
 
     // ---- a narration saved with the document, and an audiobook from it ----------------------
+
+    /// <summary>The pages of a document opened with a saved narration, being read after it opened.</summary>
+    private CancellationTokenSource? _extractingBehind;
+
+    /// <summary>True while a document opened with a saved narration has not had its pages read yet.</summary>
+    private bool PagesStillBeingRead => Plan is not null && _snapshot is null && _extractingBehind is not null;
+
+    private const string PagesStillBeingReadMessage = "The pages are still being read; notes can be made in a moment.";
+
+    private void StopExtractingBehind()
+    {
+        _extractingBehind?.Cancel();
+        _extractingBehind?.Dispose();
+        _extractingBehind = null;
+    }
+
+    /// <summary>
+    /// Reads the pages of a document opened with its saved narration, after it opened: playing needs
+    /// only the narration's plan, but notes need the page text. Cancelled by the next open or a close.
+    /// </summary>
+    private async Task ExtractBehindAsync(string path, string hash, ExtractionRequest request, CancellationToken ct)
+    {
+        ExtractionSnapshot snapshot;
+        try { snapshot = await _services.CachedExtraction.ExtractAsync(request, ct: ct); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            Notes.Add($"The pages could not be read, so notes cannot be made on this document: {ex.Message}");
+            return;
+        }
+        // Back on the window's thread: the open that started this is still the document shown.
+        if (ct.IsCancellationRequested || DocumentPath != path || _documentHash != hash) return;
+        _snapshot = snapshot;
+        if (_review is not null) _pageText = new PageTextCache(snapshot);
+        foreach (string warning in snapshot.AllWarnings().Take(8))
+            if (!Notes.Contains(warning)) Notes.Add(warning);
+        _recent.Opened(path, snapshot.Pages.Count);
+        RefreshRecent();
+        RefreshReviewCommands();
+    }
 
     private SavedNarration? _savedNarration;
     private CancellationTokenSource? _narration;
@@ -3188,6 +3244,7 @@ public sealed class MainViewModel : ViewModelBase, IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        StopExtractingBehind();
         SaveZoomPreferenceNow();   // a zoom made in the last moments before closing
         // Written before the window closes: a restart reads them in the new process. A failure
         // now would reach only a window that is going away, so it is kept for the next start
