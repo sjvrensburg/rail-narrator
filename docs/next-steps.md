@@ -256,13 +256,10 @@ In rough priority order:
   isolated runs. The message was lost again, but reaching the deadline means the UI thread kept
   ticking and the transitions fell short: the reading stopped advancing, or was slowed more than
   eightfold. Run it in a loop under that load and keep the count of transitions it reports.
-  On Windows CI, a Pdf test has twice read a page's text as NUL characters:
-  `SparsePageOcrTests.NearlyEmptyPage_IsNotRecognised` on 2026-11-24 and
-  `ModelReadingOrderTests.AModelsOwnOrderIsKept_WhenItsBlocksArriveByConfidence(withDuplicate: True)`
-  on 2026-11-26 (the release PR #77, a version bump only; the re-run passed). The blocks were right
-  and their text was all `\0`, so PDFium's text came back empty-filled rather than wrong: look at
-  text extraction running in parallel test classes on Windows (whether every text call is behind
-  `PdfiumGate` there). Not seen on Linux.
+  On Windows CI, a Pdf test twice read a fixture's text as NUL characters (2026-11-24 and
+  2026-11-26). The cause is DirectWrite losing the fixture PDF's glyph-to-Unicode table in Skia's
+  writer, and the fixture now writes such a PDF again (`status.md` item 119). If it comes back,
+  the failure says "did not read back after 5 attempts".
 - **More documents.** Everything about maths was measured on one paper. Try a physics paper,
   a pure-maths paper and an ML paper.
 
