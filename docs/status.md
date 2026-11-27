@@ -271,7 +271,7 @@ not been clicked in a running application.
 | **Scanned-document OCR at 300 dpi** | A 131 ppi scan with handwriting was run and reads as sentences; the handwriting is recognised as stray words | Check a clean 300 dpi scan for coverage, warnings and reading order |
 | **Clean-machine install** | The archive was built and run here, not on a fresh system | Install on a stock Fedora/Debian with only `libportaudio2` added |
 | **Long-document endurance** | Runs of three to seven minutes of a 27-page paper, 1.5–1.7 GB resident; played clips are now released, but a whole document has not been played through | Play a 40-page paper to the end: peak RSS, preparation lag versus playback, cache growth |
-| **Claude on a real paper** | Run against the real API on one drawn equation only (item 84) | `rail-narrator-mathbench --provider claude` on the GARCH paper for the tally, time and cost a passage, beside item 39's numbers for the local model; then listen |
+| **Claude on a real paper** | The GARCH paper through `rail-narrator-mathbench --provider claude` (item 122): 206 of 208 interpreted, 556 s, about US$2.84 | Listen; the Settings Test button with a key; caching the shared instructions |
 | **Layout on other GPUs** | GPU layout ran on one NVIDIA laptop GPU (Vulkan) | Run `LayoutAccelerationTests` with `RN_WEBGPU_INTEGRATION=1` on AMD and Intel GPUs, including the Fedora reference machine's Radeon 8060S |
 | **Windows** | Implemented, not run: the application and `rail-narrator-cli.exe` cross-publish for win-x64 from Linux, and `.github/workflows/windows.yml` builds, tests and packages on a Windows runner, but nobody has run it on Windows yet. Written without a Windows machine: PortAudio through WASAPI (its own DLL, built from v19.7.0 with MSVC), settings in `%APPDATA%` and data in `%LOCALAPPDATA%`, speech-cache folders without the colon of asset ids, Phonon's `ptts_ffi.dll` (built with MSVC on the runner and carried in the package; not yet heard speaking), the GPU through Direct3D 12. Word alignment (MFA) is Linux-only | The workflow green; then on a Windows PC: open and play a PDF, `smoke audio --clicks` against a recording for the WASAPI clock (ADR-0003), Kokoro and Phonon speaking, the GPU tests with `RN_WEBGPU_INTEGRATION=1` |
 | **The AppImage and the Windows installer** | Implemented and run on CI only: `packages.yml` starts the AppImage on Ubuntu 22.04 (it prints the narrate usage; its PortAudio needs only ALSA and the C library), and installs, runs and uninstalls the installer on a Windows runner. Neither has opened a window on a desktop, and no AppImageUpdate has been tried | Run the AppImage on a stock desktop (GNOME, KDE) and play a PDF; install with the installer on a Windows PC, open a PDF from *Open with*; update an AppImage of one release to the next with AppImageUpdate |
@@ -2038,3 +2038,27 @@ threads meeting.
    - *Not checked with a real device*: a device that fails to start (only the fake device's
      `FailStartWith`; making a real one fail here risked sending test speech to the default
      output), and a saved narration replaced on Windows.
+
+122. **Claude on a whole paper, and a device that will not start, in the window**
+   (`feat/mathbench-claude-usage`, 2026-11-27, reference machine).
+   - *Claude on the GARCH paper*: `rail-narrator-mathbench --provider claude` with the application's
+     defaults (Claude Opus 5.5, Heron INT8, the formula model, evidence both, thinking for equations
+     and lead-ins as medium effort). Of 208 maths passages, 206 interpreted and 2 read by rule
+     (item 117, the local Ornith-35B: 186, 21 and 1 read as printed); 556 s for the paper including
+     65 s of the formula model, median 1.9 s and longest 11.8 s a passage (local: 2,069 s). 229
+     requests (16 repairs, 2 transcriptions; no refusal, no answer cut off), 590,314 input and
+     24,100 output tokens: about US$2.84 at $4 and $20 a million, 1.4 cents a passage. No request
+     read the prompt cache; whether the shared instructions (about 2,000 tokens) can be cached was
+     not looked at. Both rule readings are answers the validator rejected as mostly notation. The
+     bench now passes its request tracer to the Claude client and prints each request's tokens and
+     the run's totals. *Read, not listened to*: eight answers (three equations, three lead-ins, the
+     two rule readings) were read beside the page; they say the meaning in plain language and keep
+     the bounds and factors.
+   - *A device that will not start* (review finding of PR #80): every output device on the
+     machine opened and started, HDMI with nothing attached included, so the refusal was injected:
+     a stand-in `libportaudio.so.2` on `LD_LIBRARY_PATH` forwarded every call to the system
+     PortAudio and returned "Device unavailable" from `Pa_StartStream` while a flag file existed.
+     Play from a stop then showed "Something went wrong: Device unavailable" with the Play button
+     back; with the flag removed Play sounded at the sink (RMS 0.1); paused, flag set, resumed:
+     the same message and silence. The build before PR #80, same refusal, sat on "Preparing
+     speech" with Cancel, silent and with no message, for 30 s and more.

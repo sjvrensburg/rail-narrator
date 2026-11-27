@@ -199,13 +199,10 @@ In rough priority order:
   boxes (the layout models have an inline-maths class; whether its boxes are tight enough to crop was
   not looked at)
   or a line-level model.
-- **Claude on a real paper** (`status.md` item 84). The five opt-in tests pass against Anthropic's
-  real API, but they send one drawn equation. Next: `rail-narrator-mathbench --provider claude`
-  on the GARCH paper, first with `--pages` or `--only` to see the cost of a passage, then the
-  whole paper for the tally and the time, against the local model's 180 interpreted, 43 by rule
-  and 1 announced. Then the Settings dialogue's Test button with a key (without one it was seen
-  to report the missing key), and listening. A thing to watch: whether medium effort for
-  equations is more than the task needs.
+- **Claude after its first whole paper** (`status.md` item 122). On the GARCH paper Claude Opus 5.5
+  interpreted 206 of 208 maths passages (the local model 186) in 556 s, for about US$2.84. Still to
+  do: listen to it; the Settings dialogue's Test button with a key; whether caching the shared
+  instructions lowers the cost; and whether low effort for equations does as well as medium.
 - **The order survey on the whole corpus for Core 0.94.0.** It was the same before and after on
   the 92 pages that were on the machine; the 44 RailDLA papers of item 80's 767 pages were not.
   Nothing in 0.94.0 touches the resolver, so this is a formality.
