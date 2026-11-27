@@ -80,10 +80,12 @@ var evidence = (Option("--evidence") ?? "both") switch
 bool noLlm = args.Contains("--no-llm");
 if (noLlm && formulas is null) { Console.Error.WriteLine("--no-llm needs --formula-model"); return 2; }
 
-// Every request to an OpenAI-compatible endpoint, timed, so a passage's time can be split by call.
+// Every request, to an OpenAI-compatible endpoint or to Claude, timed, so a passage's time (and with
+// Claude its tokens, for the cost) can be split by call.
 var trace = new TracingHandler();
 IMathInterpreter? interpreter = noLlm ? null : claude
-    ? new ClaudeMathInterpreter(new ClaudeEndpointSettings(model, BaseUrl: endpoint, MaxTokens: maxTokens), thinking: thinking)
+    ? new ClaudeMathInterpreter(new ClaudeEndpointSettings(model, BaseUrl: endpoint, MaxTokens: maxTokens),
+        new HttpClient(trace) { Timeout = TimeSpan.FromMinutes(5) }, thinking: thinking)
     : new OpenAiCompatibleMathInterpreter(
         new MathEndpointSettings(endpoint!, model!, ApiKey: Option("--api-key-env") is { } keyVariable ? Environment.GetEnvironmentVariable(keyVariable) : null, Temperature: 0.2, MaxTokens: maxTokens, MaxRetries: 1, RequestTimeout: TimeSpan.FromMinutes(3)),
         new HttpClient(trace) { Timeout = TimeSpan.FromMinutes(3) },
@@ -124,8 +126,10 @@ foreach (var (segment, index) in pending)
     foreach (var (read, seconds) in formulas?.Read ?? [])
         Console.WriteLine(string.Create(CultureInfo.InvariantCulture, $"  TEX ({seconds:F2}s): {read.Latex ?? "— " + read.Problem}"));
     foreach (var call in trace.Calls)
-        Console.WriteLine(string.Create(CultureInfo.InvariantCulture,
-            $"  REQ {call.Kind}{(call.Thinking ? " thinking" : "")}: {call.Seconds:F1}s, {call.CompletionTokens} tokens, {call.Finish ?? "error " + call.Status}"));
+        Console.WriteLine(
+            FormattableString.Invariant($"  REQ {call.Kind}{(call.Thinking ? " thinking" : "")}: {call.Seconds:F1}s, {call.CompletionTokens} tokens") +
+            (call.InputTokens + call.CacheWriteTokens + call.CacheReadTokens > 0 ? FormattableString.Invariant($" ({call.InputTokens} in, {call.CacheWriteTokens} cache write, {call.CacheReadTokens} cache read)") : "") +
+            $", {call.Finish ?? "error " + call.Status}");
     trace.All.AddRange(trace.Calls.Select(c => (Call: c, result.Provenance, Index: index, Passage: segment.ReadingUnitIds.Count > 1 ? "lead-in" : unit.Kind == ReadingUnitKind.DisplayMath ? "equation" : "sentence")));
     foreach (var warning in result.Warnings.Where(w => !w.StartsWith("Interpreted by", StringComparison.Ordinal)))
         Console.WriteLine($"  !! {warning}");
@@ -142,6 +146,12 @@ foreach (var group in trace.All.GroupBy(c => (Kind: c.Passage, c.Provenance)).Or
     Console.WriteLine(FormattableString.Invariant(
         $"{group.Key.Kind,-8} {passages} {group.Key.Provenance}: {calls.Count} requests, {calls.Sum(c => c.Seconds):F0}s; ") +
         string.Join(", ", calls.GroupBy(c => (c.Kind, c.Thinking, c.Finish)).Select(k => FormattableString.Invariant($"{k.Key.Kind}{(k.Key.Thinking ? "+think" : "")}/{k.Key.Finish ?? "error"} {k.Count()} in {k.Sum(c => c.Seconds):F0}s"))));
+}
+if (trace.All.Any(c => c.Call.InputTokens + c.Call.CacheWriteTokens + c.Call.CacheReadTokens > 0))
+{
+    var all = trace.All.Select(c => c.Call).ToList();
+    Console.WriteLine(FormattableString.Invariant(
+        $"tokens: {all.Sum(c => c.InputTokens)} input, {all.Sum(c => c.CacheWriteTokens)} cache write, {all.Sum(c => c.CacheReadTokens)} cache read, {all.Sum(c => c.CompletionTokens)} output, over {all.Count} requests"));
 }
 if (formulas is { All.Count: > 0 })
 {
@@ -182,13 +192,17 @@ internal sealed class TimedFormulas(PpFormulaNetRecogniser inner, string? dumpDi
 /// <summary>Times each chat request and notes what it was: an interpretation, a repair or a transcription, thinking or not.</summary>
 internal sealed class TracingHandler() : DelegatingHandler(new HttpClientHandler())
 {
-    public sealed record Call(string Kind, bool Thinking, double Seconds, int CompletionTokens, string? Finish, int Status);
+    /// <param name="InputTokens">Claude only: uncached input, cache writes and cache reads, which are priced apart.</param>
+    public sealed record Call(string Kind, bool Thinking, double Seconds, int CompletionTokens, string? Finish, int Status,
+        int InputTokens = 0, int CacheWriteTokens = 0, int CacheReadTokens = 0);
 
     public List<Call> Calls { get; } = [];
     public List<(Call Call, ScriptProvenance Provenance, int Index, string Passage)> All { get; } = [];
 
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     {
+        if (request.Content is not null && request.RequestUri!.AbsolutePath.EndsWith("/messages", StringComparison.Ordinal))
+            return await SendToClaudeAsync(request, ct);
         if (request.Content is null || !request.RequestUri!.AbsolutePath.EndsWith("chat/completions", StringComparison.Ordinal))
             return await base.SendAsync(request, ct);
         string body = await request.Content.ReadAsStringAsync(ct);
@@ -208,8 +222,43 @@ internal sealed class TracingHandler() : DelegatingHandler(new HttpClientHandler
             finish = answer["choices"]?[0]?["finish_reason"]?.GetValue<string>();
         }
         Calls.Add(new Call(kind, thinking, clock.Elapsed.TotalSeconds, tokens, finish, (int)response.StatusCode));
+        return await CopyAsync(response, text);
+    }
+
+    // Claude's Messages API: "thinking" here is medium effort (ClaudeMessages sends low otherwise), and
+    // the usage block gives the tokens a request is billed for. Nothing of the request's headers is read.
+    private async Task<HttpResponseMessage> SendToClaudeAsync(HttpRequestMessage request, CancellationToken ct)
+    {
+        var sent = System.Text.Json.Nodes.JsonNode.Parse(await request.Content!.ReadAsStringAsync(ct))!;
+        var system = sent["system"];
+        string systemText = system is System.Text.Json.Nodes.JsonArray blocks
+            ? string.Concat(blocks.Select(b => b?["text"]?.GetValue<string>()))
+            : system?.GetValue<string>() ?? "";
+        string kind = systemText.StartsWith("You transcribe", StringComparison.Ordinal) ? "transcribe"
+            : sent.ToJsonString().Contains("WHICH WAS REJECTED", StringComparison.Ordinal) ? "repair" : "interpret";
+        bool thinking = sent["output_config"]?["effort"]?.GetValue<string>() is "medium" or "high";
+        var clock = Stopwatch.StartNew();
+        var response = await base.SendAsync(request, ct);
+        string text = await response.Content.ReadAsStringAsync(ct);
+        int output = 0, input = 0, write = 0, read = 0; string? finish = null;
+        if (response.IsSuccessStatusCode)
+        {
+            var answer = System.Text.Json.Nodes.JsonNode.Parse(text)!;
+            var usage = answer["usage"];
+            output = usage?["output_tokens"]?.GetValue<int>() ?? 0;
+            input = usage?["input_tokens"]?.GetValue<int>() ?? 0;
+            write = usage?["cache_creation_input_tokens"]?.GetValue<int>() ?? 0;
+            read = usage?["cache_read_input_tokens"]?.GetValue<int>() ?? 0;
+            finish = answer["stop_reason"]?.GetValue<string>();
+        }
+        Calls.Add(new Call(kind, thinking, clock.Elapsed.TotalSeconds, output, finish, (int)response.StatusCode, input, write, read));
+        return await CopyAsync(response, text);
+    }
+
+    private static Task<HttpResponseMessage> CopyAsync(HttpResponseMessage response, string text)
+    {
         var copy = new HttpResponseMessage(response.StatusCode) { Content = new StringContent(text, System.Text.Encoding.UTF8, "application/json") };
         response.Dispose();
-        return copy;
+        return Task.FromResult(copy);
     }
 }
