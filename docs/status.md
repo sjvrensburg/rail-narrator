@@ -2018,3 +2018,23 @@ threads meeting.
    probe now reads on a thread of its own and waits 10 s. *Checked here*: with the event raised
    inside the lock the test fails for Buffering, Playing and Paused; it passed 20 runs out of 20
    with every core busy, and CI passed. *Not checked*: the citation change on a real paper.
+
+121. **Four of PR #80's review fixes checked against real components** (2026-11-27, reference
+   machine; headless window, ZONOS3 speaking to a null sink, Heron INT8 layout, the GARCH paper).
+   - *Restore as prose on an equation of several lines*: on equation (4), whose block holds three
+     lines (the sum's upper limit, the equation, the lower limit), Maths ▸ Restore this passage as
+     prose and Reload turned unit `u00063` from DisplayMath into Prose with all three lines; no
+     other unit of the 585 passages changed.
+   - *A queued passage edited before it plays*: while the passage before equation (5) played, with
+     (5) queued behind it, a new wording was applied from Maths review. A recording of the sink,
+     cross-correlated with the cached clips, has the sentence from 1.52 s to 6.19 s and the new
+     wording from 6.19 s with no gap (scores 0.98–1.0 over its 9.7 s); the old announcement does
+     not occur (best score 0.15). The race the fix closes (a queueing still under way when the
+     queue is cleared) is held by `PlaybackTests` only.
+   - *The verbaliser and numbers the source gives*: `OpenAiCompatibleMathVerbaliser` against the
+     local model (ornith-1.5-35b-a3b) on three expressions whose context names "100 samples", "5
+     seconds" and "250 frames", in two modes: none of the six answers was rejected, among them
+     "T equals 250 frames" and "the mean of the 100 samples", which the earlier check refused.
+   - *Not checked with a real device*: a device that fails to start (only the fake device's
+     `FailStartWith`; making a real one fail here risked sending test speech to the default
+     output), and a saved narration replaced on Windows.
