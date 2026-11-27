@@ -1,8 +1,8 @@
 # Next steps and open decisions
 
-Handover note, 23 November 2026, on the `fix/gui-test-findings` branch (from `main`
-after PR #49). It builds with 0 warnings; the test runner reports 770 passed and 16 skipped.
-`status.md` gives 765 passing and 21 opt-in, because it
+Handover note, 27 November 2026, on `main` after 0.1.7 (PR #81) and the fixes since. It builds
+with 0 warnings; the test runner reports 961 passed and 17 skipped.
+`status.md` gives 956 passing and 22 opt-in, because it
 counts as opt-in the five tests (four of Phonon, one of Kokoro with durations) that return early
 without an install and so report as passed. What is verified, and how it was measured, is in `status.md`. How to run the real models,
 the GUI and the audio path on a new machine is in `testing-real-world.md`.
@@ -247,6 +247,10 @@ In rough priority order:
   out of 40 on the reference machine with one and a half busy loops per core, so plain CPU
   starvation does not bring it out. Next time it fails, keep the test's name and message; if it
   must be hunted, try memory pressure or the LLM server running, which is what was different.
+  Settled on 2026-11-27 (`status.md` item 120): `EngineLockingTests.StateEvents_AreRaisedOutsideTheEngineLock`
+  failed once on the Windows runner for 0.1.7 ("Buffering was raised while the engine lock was
+  held"). That Buffering is raised outside the lock; the test's probe waited on the thread pool from
+  a handler that already blocked a pool thread. The probe now has a thread of its own.
   Also on 2026-11-23, `NarrationCoordinatorTests.APassageLongerThanTheProviderAccepts_IsSpokenInPieces_AsOneClip`
   failed once in a full-solution run and passed in ten runs of its suite alone; its message was
   not kept either. A guess to check: the load and the Play each prepare the passage under their

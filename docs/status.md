@@ -7,7 +7,7 @@ Ryzen AI MAX+ 395 (Strix Halo, Radeon 8060S integrated), 124 GB RAM, 17 November
 The point of this document is that "implemented" and "verified" are different
 claims, and only the second one is worth relying on.
 
-## Verified by automated tests — 951 passing, 22 opt-in skips, 0 warnings
+## Verified by automated tests — 956 passing, 22 opt-in skips, 0 warnings
 
 | Suite | Tests | What it covers |
 |---|---|---|
@@ -2004,3 +2004,17 @@ threads meeting.
    inferred from the symptom and Skia's source. If a fixture there still fails, the message says
    how many characters read as U+0000.
 
+120. **An interval after "a value in" or a lone variable, and a lock probe that waited on the pool**
+   (`fix/interval-citations-and-handover`, 2026-11-27). With citations off, "x takes a value in
+   [1, 5]" and "for k in [1, 5]" lost their brackets as numeric citations; "values in [1, 5]"
+   was already kept, though the 0.1.7 notes said otherwise. "value in" and a lone letter before
+   "in" now count as introducing an interval; "as shown in [12]", "the proof is in [3, 7]" and
+   "described in [4]" are still citations (tests hold both). "is in" and "from" were left as they
+   were, since the citations "the proof is in [12]" and "adapted from [12]" read the same way.
+   `ProsePipeline` is now `prose/16-interval-after-a-value-or-variable`. Separately,
+   `EngineLockingTests.StateEvents_AreRaisedOutsideTheEngineLock` failed once on Windows CI: its
+   Buffering comes from the writer's underrun branch, outside the lock, and the probe's
+   `Task.Run`, queued from a handler that already blocked a pool thread, missed its 1.5 s wait. The
+   probe now reads on a thread of its own and waits 10 s. *Checked here*: with the event raised
+   inside the lock the test fails for Buffering, Playing and Paused; it passed 20 runs out of 20
+   with every core busy, and CI passed. *Not checked*: the citation change on a real paper.

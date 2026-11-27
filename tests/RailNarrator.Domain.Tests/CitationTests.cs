@@ -24,6 +24,8 @@ public sealed class CitationTests
     [InlineData("the process of Glosten et al. (1993) is used", "the process of Glosten et al. is used")]
     [InlineData("see the survey (van Bellegem and von Sachs, 2004) for details", "see the survey for details")]
     [InlineData("as shown before [12] and in later work [3, 7] and [4–6].", "as shown before and in later work and.")]
+    [InlineData("as shown in [12], the proof is in [3, 7].", "as shown in, the proof is in.")]
+    [InlineData("This was described in [4] in detail.", "This was described in in detail.")]
     public void CitationMarkersAreLeftOut(string text, string expected) => Assert.Equal(expected, Dropped(text));
 
     [Theory]
@@ -35,6 +37,9 @@ public sealed class CitationTests
     [InlineData("on the interval [1,2], the density is flat.")]
     [InlineData("for x ∈ [1, 3] the bound holds.")]
     [InlineData("indices in the set [0,1,2] are kept.")]
+    [InlineData("the weight takes values in [1, 5] for every t.")]
+    [InlineData("x takes a value in [1, 5] at random.")]
+    [InlineData("for k in [1, 5] the bound holds.")]
     [InlineData("The sample runs (from January 1990 to March 2015) daily.")]
     [InlineData("prices fell sharply (in September 2008) across markets.")]
     [InlineData("In the Great Depression (1929) prices fell.")]

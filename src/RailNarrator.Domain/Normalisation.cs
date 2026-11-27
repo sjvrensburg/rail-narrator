@@ -150,9 +150,11 @@ public static class TextNormaliser
 
     // " [12]", " [3, 7]", " [4–6]": after a space, so an index such as "v[2]" is not a citation. A
     // bracket holding a 0 is an interval or an index set, as is one after a word that introduces
-    // an interval ("on [1, 2]", "x ∈ [1,2]"): references are numbered from one.
+    // an interval ("on [1, 2]", "x ∈ [1,2]", "a value in [1, 5]"), or after a lone letter and "in"
+    // ("for k in [1, 5]"): references are numbered from one. A word before "in" is not enough on
+    // its own: "as shown in [12]" and "the proof is in [12]" are citations.
     private static readonly System.Text.RegularExpressions.Regex Numeric = new(
-        @"(?<!(?:\b(?:interval|intervals|range|ranges|on|over|within|onto|domain|support|between|values\s+in|lies?\s+in|takes?\s+values\s+in)|[∈=<>≤≥])\s*)"
+        @"(?<!(?:\b(?:interval|intervals|range|ranges|on|over|within|onto|domain|support|between|values?\s+in|lies?\s+in|takes?\s+values\s+in)|(?<![\p{L}\p{N}])\p{L}\s+in|[∈=<>≤≥])\s*)"
         + @"\s+\[(?!0)(?!(?:\d{1,3}\s*[,–\-]\s*)*0\b)\d{1,3}(?:\s*[,–\-]\s*\d{1,3})*\]",
         System.Text.RegularExpressions.RegexOptions.CultureInvariant | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
