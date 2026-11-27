@@ -21,9 +21,17 @@ public sealed class EngineLockingTests
         await using var engine = new AudioPlaybackEngine(device);
         var observed = new ConcurrentQueue<(PlaybackState State, bool LockWasFree)>();
         // PositionSeconds needs the engine lock. Read from another thread, it can only return while
-        // this handler runs if the thread raising the event is not holding that lock.
+        // this handler runs if the thread raising the event is not holding that lock. The read gets a
+        // thread of its own rather than Task.Run: this handler already blocks a pool thread, and on a
+        // two-core runner the queued read waited for the pool to grow and missed a 1.5 s wait with the
+        // lock free (a Buffering raised from the writer's underrun branch). A held lock never returns,
+        // so the longer wait costs only a failing run.
         engine.StateChanged += state =>
-            observed.Enqueue((state, Task.Run(() => engine.PositionSeconds).Wait(1500)));
+        {
+            var reader = new Thread(() => _ = engine.PositionSeconds) { IsBackground = true };
+            reader.Start();
+            observed.Enqueue((state, reader.Join(TimeSpan.FromSeconds(10))));
+        };
 
         const long frames = 24000;
         await engine.LoadAsync("s0", SyntheticNarration.Clip("s0", frames), SyntheticNarration.TonePcm(frames));
