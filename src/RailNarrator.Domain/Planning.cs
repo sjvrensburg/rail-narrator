@@ -41,7 +41,7 @@ public static class NarrationVersions
     public const string LocalMathReader = "local-math/1";
 
     /// <summary>Bump when the prose normalisation pipeline changes.</summary>
-    public const string ProsePipeline = "prose/15-intervals-dates-and-prose-override";
+    public const string ProsePipeline = "prose/16-interval-after-a-value-or-variable";
 }
 
 /// <summary>Planner configuration.</summary>
